@@ -1252,6 +1252,10 @@ test('message and task clicks merge returned conversation updates before falling
     clickSource.indexOf("if (action === 'message-task')"),
     clickSource.indexOf("if (action === 'task-claim')"),
   );
+  const taskLifecycleSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'task-claim')"),
+    clickSource.indexOf("if (action === 'run-task-codex')"),
+  );
   const finallySource = clickSource.slice(
     clickSource.lastIndexOf('} finally {'),
     clickSource.lastIndexOf('});'),
@@ -1272,6 +1276,14 @@ test('message and task clicks merge returned conversation updates before falling
   assert.match(followSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
   assert.match(messageTaskSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/task`/);
   assert.match(messageTaskSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  for (const action of ['task-claim', 'task-unclaim', 'task-review', 'task-approve', 'task-close', 'task-reopen']) {
+    const actionSource = taskLifecycleSource.slice(
+      taskLifecycleSource.indexOf(`if (action === '${action}')`),
+      taskLifecycleSource.indexOf(`toast(`, taskLifecycleSource.indexOf(`if (action === '${action}')`)),
+    );
+    assert.match(actionSource, /const result = await api/);
+    assert.match(actionSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  }
   assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(finallySource, /if \(action === 'open-thread'\) scrollToMessage\(threadMessageId\)/);
 });

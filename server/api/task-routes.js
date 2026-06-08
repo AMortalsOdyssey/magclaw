@@ -30,6 +30,7 @@ export async function handleTaskApi(req, res, url, deps) {
     now,
     persistState,
     readJson,
+    recordRealtimeEvent,
     resolveConversationSpace,
     routeTaskAssignees,
     root,
@@ -46,6 +47,74 @@ export async function handleTaskApi(req, res, url, deps) {
 
   function broadcastTaskStatusState() {
     broadcastState();
+  }
+
+  function taskThreadMessage(task = null) {
+    if (!task) return null;
+    const threadId = task.threadMessageId || task.messageId || task.sourceMessageId || '';
+    return (state.messages || []).find((message) => (
+      (threadId && message.id === threadId)
+      || message.taskId === task.id
+    )) || null;
+  }
+
+  function taskThreadMessageId(task = null) {
+    return taskThreadMessage(task)?.id || task?.threadMessageId || task?.messageId || task?.sourceMessageId || '';
+  }
+
+  function latestTaskThreadReply(task = null) {
+    const parentMessageId = taskThreadMessageId(task);
+    if (!parentMessageId) return null;
+    return (state.replies || [])
+      .filter((reply) => reply?.parentMessageId === parentMessageId)
+      .sort(compareTaskRecords)[0] || null;
+  }
+
+  function captureTaskThreadReply(task = null, operation = () => {}) {
+    const beforeReplyIds = new Set((state.replies || []).map((reply) => reply?.id).filter(Boolean));
+    const result = operation();
+    const parentMessageId = taskThreadMessageId(task);
+    const reply = (state.replies || [])
+      .filter((item) => item?.parentMessageId === parentMessageId && !beforeReplyIds.has(item.id))
+      .sort(compareTaskRecords)[0] || null;
+    return {
+      result,
+      reply,
+    };
+  }
+
+  function taskRealtimeScope(task = null, reply = null) {
+    const thread = taskThreadMessage(task);
+    const workspaceId = workspaceIdForRecord(reply || task || thread, thread?.workspaceId || 'local') || 'local';
+    const spaceType = reply?.spaceType || task?.spaceType || thread?.spaceType || '';
+    const spaceId = reply?.spaceId || task?.spaceId || thread?.spaceId || '';
+    const threadMessageId = reply?.parentMessageId || thread?.id || task?.threadMessageId || task?.messageId || '';
+    return { workspaceId, spaceType, spaceId, threadMessageId };
+  }
+
+  function recordTaskRealtimeChange(task = null, { reply = null } = {}) {
+    if (typeof recordRealtimeEvent !== 'function' || !task?.id) return null;
+    const scope = taskRealtimeScope(task, reply);
+    return recordRealtimeEvent('conversation_record_changed', {
+      workspaceId: scope.workspaceId,
+      spaceType: scope.spaceType,
+      spaceId: scope.spaceId,
+      recordId: reply?.id || task.id,
+      parentMessageId: reply?.parentMessageId || scope.threadMessageId || '',
+      recordKind: reply ? 'reply' : 'task',
+      task,
+      ...(reply ? { reply } : {}),
+    }, {
+      workspaceId: scope.workspaceId,
+      scopeType: scope.spaceType || 'workspace',
+      scopeId: scope.spaceId || scope.workspaceId,
+      threadMessageId: scope.threadMessageId || null,
+    });
+  }
+
+  function broadcastTaskRealtimeState(task = null, { reply = null } = {}) {
+    recordTaskRealtimeChange(task, { reply });
+    broadcastState({ realtimeOnly: true });
   }
 
   function workspaceIdForRecord(record = null, fallback = '') {
@@ -227,15 +296,16 @@ export async function handleTaskApi(req, res, url, deps) {
     }
     const body = await readJson(req);
     const actorId = String(body.actorId || body.assigneeId || 'agt_codex');
+    let reply = null;
     try {
-      claimTask(task, actorId, { force: body.force });
+      ({ reply } = captureTaskThreadReply(task, () => claimTask(task, actorId, { force: body.force })));
     } catch (error) {
       sendError(res, error.status || 409, error.message);
       return true;
     }
     await persistTaskState(task, 'task_claimed');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -253,19 +323,21 @@ export async function handleTaskApi(req, res, url, deps) {
 
     // Releasing a claim rewinds execution-only fields, but keeps the assignee
     // list so humans do not lose the intended owner suggestions.
-    const actorId = task.claimedBy || 'hum_local';
-    task.claimedBy = null;
-    task.assigneeId = task.assigneeIds?.[0] || null;
-    task.claimedAt = null;
-    task.status = 'todo';
-    task.reviewRequestedAt = null;
-    addTaskHistory(task, 'unclaimed', 'Claim released.', actorId);
-    const thread = ensureTaskThread(task);
-    addSystemReply(thread.id, 'Task claim released.');
-    addTaskTimelineMessage(task, `🔓 ${displayActor(actorId)} released ${taskLabel(task)}`, 'task_unclaimed');
+    const { reply } = captureTaskThreadReply(task, () => {
+      const actorId = task.claimedBy || 'hum_local';
+      task.claimedBy = null;
+      task.assigneeId = task.assigneeIds?.[0] || null;
+      task.claimedAt = null;
+      task.status = 'todo';
+      task.reviewRequestedAt = null;
+      addTaskHistory(task, 'unclaimed', 'Claim released.', actorId);
+      const thread = ensureTaskThread(task);
+      addSystemReply(thread.id, 'Task claim released.');
+      addTaskTimelineMessage(task, `🔓 ${displayActor(actorId)} released ${taskLabel(task)}`, 'task_unclaimed');
+    });
     await persistTaskState(task, 'task_unclaimed');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -284,15 +356,17 @@ export async function handleTaskApi(req, res, url, deps) {
       sendError(res, 409, 'Task must be claimed before requesting review.');
       return true;
     }
-    task.status = 'in_review';
-    task.reviewRequestedAt = now();
-    addTaskHistory(task, 'review_requested', 'Review requested.', task.claimedBy);
-    const thread = ensureTaskThread(task);
-    addSystemReply(thread.id, 'Review requested. Waiting for human approval.');
-    addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy)} moved ${taskLabel(task)} to In Review`, 'task_review');
+    const { reply } = captureTaskThreadReply(task, () => {
+      task.status = 'in_review';
+      task.reviewRequestedAt = now();
+      addTaskHistory(task, 'review_requested', 'Review requested.', task.claimedBy);
+      const thread = ensureTaskThread(task);
+      addSystemReply(thread.id, 'Review requested. Waiting for human approval.');
+      addTaskTimelineMessage(task, `👀 ${displayActor(task.claimedBy)} moved ${taskLabel(task)} to In Review`, 'task_review');
+    });
     await persistTaskState(task, 'task_review_requested');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -307,15 +381,17 @@ export async function handleTaskApi(req, res, url, deps) {
       sendError(res, 409, 'Task must be in review before approval.');
       return true;
     }
-    task.status = 'done';
-    task.completedAt = now();
-    addTaskHistory(task, 'approved', 'Human review approved; task marked done.');
-    const thread = ensureTaskThread(task);
-    addSystemReply(thread.id, 'Human review approved. Task marked done.');
-    addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
+    const { reply } = captureTaskThreadReply(task, () => {
+      task.status = 'done';
+      task.completedAt = now();
+      addTaskHistory(task, 'approved', 'Human review approved; task marked done.');
+      const thread = ensureTaskThread(task);
+      addSystemReply(thread.id, 'Human review approved. Task marked done.');
+      addTaskTimelineMessage(task, `✅ ${displayActor('hum_local')} moved ${taskLabel(task)} to Done`, 'task_done');
+    });
     await persistTaskState(task, 'task_approved');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -329,22 +405,24 @@ export async function handleTaskApi(req, res, url, deps) {
 
     // Reopen clears terminal stop markers together; otherwise old
     // status timestamps can make a newly reopened task look already resolved.
-    task.status = 'todo';
-    task.claimedBy = null;
-    task.assigneeId = task.assigneeIds?.[0] || null;
-    task.claimedAt = null;
-    task.reviewRequestedAt = null;
-    task.completedAt = null;
-    task.closedAt = null;
-    task.endIntentAt = null;
-    task.stoppedAt = null;
-    addTaskHistory(task, 'reopened', 'Task reopened by human.');
-    const thread = ensureTaskThread(task);
-    addSystemReply(thread.id, 'Task reopened.');
-    addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
+    const { reply } = captureTaskThreadReply(task, () => {
+      task.status = 'todo';
+      task.claimedBy = null;
+      task.assigneeId = task.assigneeIds?.[0] || null;
+      task.claimedAt = null;
+      task.reviewRequestedAt = null;
+      task.completedAt = null;
+      task.closedAt = null;
+      task.endIntentAt = null;
+      task.stoppedAt = null;
+      addTaskHistory(task, 'reopened', 'Task reopened by human.');
+      const thread = ensureTaskThread(task);
+      addSystemReply(thread.id, 'Task reopened.');
+      addTaskTimelineMessage(task, `↩ ${displayActor('hum_local')} reopened ${taskLabel(task)}`, 'task_reopened');
+    });
     await persistTaskState(task, 'task_reopened');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -360,10 +438,12 @@ export async function handleTaskApi(req, res, url, deps) {
       return true;
     }
     const body = await readJson(req);
-    closeTask(task, String(body.actorId || 'hum_local'), String(body.reason || 'Task closed by human.'));
+    const { reply } = captureTaskThreadReply(task, () => {
+      closeTask(task, String(body.actorId || 'hum_local'), String(body.reason || 'Task closed by human.'));
+    });
     await persistTaskState(task, 'task_closed');
-    broadcastTaskStatusState();
-    sendJson(res, 200, { task });
+    broadcastTaskRealtimeState(task, { reply });
+    sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
     return true;
   }
 
@@ -461,10 +541,12 @@ export async function handleTaskApi(req, res, url, deps) {
         return true;
       }
       if (nextStatus === 'closed') {
-        closeTask(task, 'hum_local', String(body.reason || 'Task closed by human.'));
+        const { reply } = captureTaskThreadReply(task, () => {
+          closeTask(task, 'hum_local', String(body.reason || 'Task closed by human.'));
+        });
         await persistTaskState(task, 'task_closed');
-        broadcastTaskStatusState();
-        sendJson(res, 200, { task });
+        broadcastTaskRealtimeState(task, { reply });
+        sendJson(res, 200, { task, ...(reply ? { reply } : {}) });
         return true;
       }
       task.status = nextStatus;
@@ -504,7 +586,7 @@ export async function handleTaskApi(req, res, url, deps) {
     task.updatedAt = now();
     addCollabEvent('task_updated', `Task updated: ${task.title}`, { taskId: task.id });
     await persistTaskState(task, 'task_updated');
-    if (taskStatusChanged) broadcastTaskStatusState();
+    if (taskStatusChanged) broadcastTaskRealtimeState(task);
     else broadcastState();
     sendJson(res, 200, { task });
     return true;

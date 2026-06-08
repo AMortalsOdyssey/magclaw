@@ -19,17 +19,54 @@ function routeDeps(overrides = {}) {
       title: 'Existing task',
       body: 'Existing body',
       status: 'todo',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      messageId: 'msg_1',
+      threadMessageId: 'msg_1',
       assigneeIds: [],
       attachmentIds: [],
       localReferences: [],
     }],
-    messages: [{ id: 'msg_1', taskId: 'task_1', body: 'Task source' }],
+    messages: [{
+      id: 'msg_1',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      taskId: 'task_1',
+      body: 'Task source',
+      replyCount: 0,
+      createdAt: '2026-05-01T00:00:00.000Z',
+      updatedAt: '2026-05-01T00:00:00.000Z',
+    }],
+    replies: [],
     missions: [],
     runs: [],
   };
   const deps = {
     addCollabEvent: () => {},
-    addSystemReply: () => {},
+    addSystemReply: (parentMessageId, body, extra = {}) => {
+      const parent = state.messages.find((message) => message.id === parentMessageId);
+      const reply = {
+        id: `rep_${state.replies.length + 1}`,
+        workspaceId: parent?.workspaceId || 'local',
+        parentMessageId,
+        spaceType: parent?.spaceType || 'channel',
+        spaceId: parent?.spaceId || 'chan_all',
+        authorType: 'system',
+        authorId: 'system',
+        body,
+        createdAt: '2026-05-02T00:00:00.000Z',
+        updatedAt: '2026-05-02T00:00:00.000Z',
+        ...extra,
+      };
+      state.replies.push(reply);
+      if (parent) {
+        parent.replyCount = Number(parent.replyCount || 0) + 1;
+        parent.updatedAt = reply.updatedAt;
+      }
+      return reply;
+    },
     addTaskHistory: (task, type, message, actorId, extra = {}) => {
       task.history = [...(task.history || []), { type, message, actorId, ...extra }];
     },
@@ -41,6 +78,8 @@ function routeDeps(overrides = {}) {
       task.assigneeIds = deps.normalizeIds([...(task.assigneeIds || []), actorId]);
       task.claimedAt = deps.now();
       task.status = 'in_progress';
+      const thread = deps.ensureTaskThread(task);
+      deps.addSystemReply(thread.id, `Task claimed by ${actorId}.`);
       return task;
     },
     createTaskMessage: (input) => {
@@ -54,13 +93,36 @@ function routeDeps(overrides = {}) {
         attachmentIds: input.attachmentIds,
         localReferences: [],
       };
-      const message = { id: 'msg_new', taskId: task.id, body: input.title };
+      const message = { id: 'msg_new', workspaceId: 'local', spaceType: input.spaceType, spaceId: input.spaceId, taskId: task.id, body: input.title };
       state.tasks.unshift(task);
       state.messages.unshift(message);
       return { message, task };
     },
     displayActor: (id) => id,
-    ensureTaskThread: (task) => ({ id: `thread_${task.id}` }),
+    ensureTaskThread: (task) => {
+      let message = state.messages.find((item) => (
+        item.id === task.threadMessageId
+        || item.id === task.messageId
+        || item.taskId === task.id
+      ));
+      if (!message) {
+        message = {
+          id: `thread_${task.id}`,
+          workspaceId: task.workspaceId || 'local',
+          spaceType: task.spaceType || 'channel',
+          spaceId: task.spaceId || 'chan_all',
+          taskId: task.id,
+          body: task.title,
+          replyCount: 0,
+          createdAt: '2026-05-01T00:00:00.000Z',
+          updatedAt: '2026-05-01T00:00:00.000Z',
+        };
+        state.messages.push(message);
+      }
+      task.messageId = message.id;
+      task.threadMessageId = message.id;
+      return message;
+    },
     findTask: (id) => state.tasks.find((task) => task.id === id),
     getState: () => state,
     makeId: (prefix) => `${prefix}_new`,
@@ -68,6 +130,7 @@ function routeDeps(overrides = {}) {
     now: () => '2026-05-02T00:00:00.000Z',
     persistState: async () => {},
     readJson: async () => ({}),
+    recordRealtimeEvent: () => null,
     resolveConversationSpace: () => ({ spaceType: 'channel', spaceId: 'chan_all', label: '#all' }),
     root: '/tmp/root',
     sendError: (res, statusCode, message) => {
@@ -424,12 +487,17 @@ test('task route group rejects done transition before review', async () => {
 test('task route group records direct manual status transitions and lets SSE debounce coalesce updates', async () => {
   const timeline = [];
   const broadcastOptions = [];
+  const realtimeEvents = [];
   const deps = routeDeps({
     addTaskTimelineMessage: (task, body, eventType) => {
       timeline.push({ taskId: task.id, body, eventType });
     },
     broadcastState: (options = {}) => {
       broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
     },
     readJson: async () => ({ status: 'in_progress' }),
   });
@@ -450,7 +518,76 @@ test('task route group records direct manual status transitions and lets SSE deb
     eventType: 'task_progress',
   }]);
   assert.ok(deps.state.tasks[0].history.some((item) => item.type === 'status_changed'));
-  assert.deepEqual(broadcastOptions, [{}]);
+  assert.deepEqual(broadcastOptions, [{ realtimeOnly: true }]);
+  assert.equal(realtimeEvents[0]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[0]?.[1].task.id, 'task_1');
+  assert.equal(realtimeEvents[0]?.[1].recordKind, 'task');
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: 'msg_1',
+  });
+});
+
+test('task lifecycle routes broadcast lightweight task and thread patches', async () => {
+  const broadcastOptions = [];
+  const realtimeEvents = [];
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
+    },
+  });
+
+  async function post(path, readJson = async () => ({})) {
+    const res = makeResponse();
+    await handleTaskApi(
+      { method: 'POST' },
+      res,
+      new URL(`http://local${path}`),
+      { ...deps, readJson },
+    );
+    assert.equal(res.statusCode, 200);
+    return res.data;
+  }
+
+  const claimed = await post('/api/tasks/task_1/claim', async () => ({ actorId: 'agt_codex' }));
+  const claimedStatus = claimed.task.status;
+  const unclaimed = await post('/api/tasks/task_1/unclaim');
+  const unclaimedStatus = unclaimed.task.status;
+  await post('/api/tasks/task_1/claim', async () => ({ actorId: 'agt_codex' }));
+  const review = await post('/api/tasks/task_1/request-review');
+  const reviewStatus = review.task.status;
+  const approved = await post('/api/tasks/task_1/approve');
+  const approvedStatus = approved.task.status;
+  const reopened = await post('/api/tasks/task_1/reopen');
+  const reopenedStatus = reopened.task.status;
+  const closed = await post('/api/tasks/task_1/close');
+  const closedStatus = closed.task.status;
+
+  assert.equal(claimedStatus, 'in_progress');
+  assert.equal(claimed.reply.parentMessageId, 'msg_1');
+  assert.equal(unclaimedStatus, 'todo');
+  assert.equal(unclaimed.reply.parentMessageId, 'msg_1');
+  assert.equal(reviewStatus, 'in_review');
+  assert.equal(approvedStatus, 'done');
+  assert.equal(reopenedStatus, 'todo');
+  assert.equal(closedStatus, 'closed');
+  assert.equal(realtimeEvents.length, 7);
+  assert.deepEqual(broadcastOptions, Array.from({ length: 7 }, () => ({ realtimeOnly: true })));
+  assert.ok(realtimeEvents.every((event) => event[0] === 'conversation_record_changed'));
+  assert.ok(realtimeEvents.every((event) => event[1].task.id === 'task_1'));
+  assert.ok(realtimeEvents.every((event) => event[1].reply?.parentMessageId === 'msg_1'));
+  assert.deepEqual(realtimeEvents[0][2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: 'msg_1',
+  });
 });
 
 test('task route group closes tasks without review and keeps closed terminal', async () => {

@@ -335,3 +335,38 @@ test('submitted task merge updates task state and links the backing message', as
   assert.equal(context.appState.messages[0].taskId, 'task_1');
   assert.equal(context.appState.messages[0].updatedAt, '2026-05-22T09:03:00.000Z');
 });
+
+test('submitted task merge can include a task thread reply patch', async () => {
+  const { context } = await createHarness({
+    messages: [{
+      id: 'msg_task',
+      taskId: 'task_1',
+      replyCount: 0,
+      createdAt: '2026-05-22T09:00:00.000Z',
+      updatedAt: '2026-05-22T09:00:00.000Z',
+    }],
+    replies: [],
+    tasks: [{ id: 'task_1', status: 'todo', messageId: 'msg_task' }],
+  });
+
+  assert.equal(context.applySubmittedConversationResult({
+    task: {
+      id: 'task_1',
+      status: 'in_review',
+      messageId: 'msg_task',
+      updatedAt: '2026-05-22T09:04:00.000Z',
+    },
+    reply: {
+      id: 'rep_task_status',
+      parentMessageId: 'msg_task',
+      body: 'Review requested.',
+      createdAt: '2026-05-22T09:04:00.000Z',
+      updatedAt: '2026-05-22T09:04:00.000Z',
+    },
+  }), true);
+
+  assert.equal(context.appState.tasks[0].status, 'in_review');
+  assert.deepEqual([...context.appState.replies.map((reply) => reply.id)], ['rep_task_status']);
+  assert.equal(context.appState.messages[0].replyCount, 1);
+  assert.equal(context.appState.messages[0].updatedAt, '2026-05-22T09:04:00.000Z');
+});

@@ -2062,27 +2062,33 @@ document.addEventListener('click', async (event) => {
       toast('Task created from message');
     }
     if (action === 'task-claim') {
-      await api(`/api/tasks/${target.dataset.id}/claim`, { method: 'POST', body: JSON.stringify({ actorId: 'agt_codex' }) });
+      const result = await api(`/api/tasks/${target.dataset.id}/claim`, { method: 'POST', body: JSON.stringify({ actorId: 'agt_codex' }) });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task claimed');
     }
     if (action === 'task-unclaim') {
-      await api(`/api/tasks/${target.dataset.id}/unclaim`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/unclaim`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task unclaimed');
     }
     if (action === 'task-review') {
-      await api(`/api/tasks/${target.dataset.id}/request-review`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/request-review`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Review requested');
     }
     if (action === 'task-approve') {
-      await api(`/api/tasks/${target.dataset.id}/approve`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/approve`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task approved');
     }
     if (action === 'task-close') {
-      await api(`/api/tasks/${target.dataset.id}/close`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/close`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task closed');
     }
     if (action === 'task-reopen') {
-      await api(`/api/tasks/${target.dataset.id}/reopen`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/reopen`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast('Task reopened');
     }
     if (action === 'run-task-codex') {
