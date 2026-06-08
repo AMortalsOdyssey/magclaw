@@ -303,6 +303,103 @@ test('message writes broadcast lightweight conversation realtime events instead 
   assert.deepEqual(broadcastOptions[1], { realtimeOnly: true });
 });
 
+test('message mutation routes broadcast lightweight conversation realtime patches', async () => {
+  const realtimeEvents = [];
+  const broadcastOptions = [];
+  let requestBody = {};
+  const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    currentActor: () => ({ member: { humanId: 'hum_mutator', workspaceId: 'local' } }),
+    findHuman: (id) => (id === 'hum_mutator' ? { id, name: 'Morgan' } : null),
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
+    },
+    readJson: async () => requestBody,
+    createTaskFromMessage: (message, title) => ({
+      id: 'task_from_message',
+      messageId: message.id,
+      title,
+      updatedAt: '2026-05-04T00:00:00.000Z',
+    }),
+  });
+
+  const saveRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    saveRes,
+    new URL('http://local/api/messages/msg_1/save'),
+    deps,
+  );
+
+  requestBody = { key: 'rocket' };
+  const reactionRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    reactionRes,
+    new URL('http://local/api/messages/rep_1/reactions'),
+    deps,
+  );
+
+  const followRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    followRes,
+    new URL('http://local/api/messages/rep_1/follow'),
+    deps,
+  );
+
+  requestBody = { title: 'Turn this into a task' };
+  const taskRes = makeResponse();
+  await handleMessageApi(
+    { method: 'POST' },
+    taskRes,
+    new URL('http://local/api/messages/msg_2/task'),
+    deps,
+  );
+
+  assert.equal(saveRes.statusCode, 200);
+  assert.equal(reactionRes.statusCode, 200);
+  assert.equal(followRes.statusCode, 200);
+  assert.equal(taskRes.statusCode, 201);
+  assert.deepEqual(broadcastOptions, [
+    { realtimeOnly: true },
+    { realtimeOnly: true },
+    { realtimeOnly: true },
+    { realtimeOnly: true },
+  ]);
+  assert.deepEqual(realtimeEvents.map((event) => event[0]), [
+    'conversation_record_changed',
+    'conversation_record_changed',
+    'conversation_record_changed',
+    'conversation_record_changed',
+  ]);
+  assert.equal(realtimeEvents[0][1].message.id, 'msg_1');
+  assert.equal(realtimeEvents[0][1].recordKind, 'message');
+  assert.deepEqual(realtimeEvents[0][2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: null,
+  });
+  assert.equal(realtimeEvents[1][1].message.id, 'rep_1');
+  assert.equal(realtimeEvents[1][1].recordKind, 'reply');
+  assert.equal(realtimeEvents[1][1].parentMessageId, 'msg_3');
+  assert.deepEqual(realtimeEvents[1][2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: 'msg_3',
+  });
+  assert.equal(realtimeEvents[2][1].message.id, 'msg_3');
+  assert.equal(realtimeEvents[2][1].recordKind, 'message');
+  assert.equal(realtimeEvents[3][1].message.id, 'msg_2');
+  assert.equal(realtimeEvents[3][1].task.id, 'task_from_message');
+  assert.equal(taskRes.data.message.id, 'msg_2');
+});
+
 test('message search supports filter-only newest-first results and conversation privacy', async () => {
   const deps = routeDeps();
   deps.state.channels = [

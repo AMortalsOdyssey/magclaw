@@ -1217,7 +1217,7 @@ test('full refresh fallback restores focused thread composer draft and caret', a
   assert.match(renderSource, /restoreComposerFocus\(composerFocus\);[\s\S]*restorePendingComposerFocus\(\)/);
 });
 
-test('task clicks merge returned task updates before falling back to full refresh', async () => {
+test('message and task clicks merge returned conversation updates before falling back to full refresh', async () => {
   const app = await readAppSource();
   const mergeSource = app.slice(
     app.indexOf('function applySubmittedConversationResult(result = {})'),
@@ -1231,6 +1231,22 @@ test('task clicks merge returned task updates before falling back to full refres
   const taskStatusSource = clickSource.slice(
     clickSource.indexOf("if (action === 'task-status-set')"),
     clickSource.indexOf("if (action === 'message-task')"),
+  );
+  const saveMessageSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'save-message')"),
+    clickSource.indexOf("if (action === 'remove-saved-message')"),
+  );
+  const removeSavedSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'remove-saved-message')"),
+    clickSource.indexOf("if (action === 'toggle-message-reaction')"),
+  );
+  const reactionSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'toggle-message-reaction')"),
+    clickSource.indexOf("if (action === 'toggle-thread-follow')"),
+  );
+  const followSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'toggle-thread-follow')"),
+    clickSource.indexOf("if (action === 'open-saved-message')"),
   );
   const messageTaskSource = clickSource.slice(
     clickSource.indexOf("if (action === 'message-task')"),
@@ -1246,6 +1262,14 @@ test('task clicks merge returned task updates before falling back to full refres
   assert.match(clickSource, /let skipFinalRefresh = false/);
   assert.match(taskStatusSource, /const result = await api\(`\/api\/tasks\/\$\{taskId\}`/);
   assert.match(taskStatusSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(saveMessageSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/save`/);
+  assert.match(saveMessageSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(removeSavedSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/save`/);
+  assert.match(removeSavedSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(reactionSource, /applySubmittedConversationResult\(result\)/);
+  assert.doesNotMatch(reactionSource, /appState\.(messages|replies) = upsertConversationRecord/);
+  assert.match(followSource, /const result = await api\(`\/api\/messages\/\$\{encodeURIComponent\(target\.dataset\.id\)\}\/follow`/);
+  assert.match(followSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
   assert.match(messageTaskSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/task`/);
   assert.match(messageTaskSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
   assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);

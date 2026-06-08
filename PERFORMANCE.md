@@ -139,12 +139,13 @@ membership fanout visible in the budget. It currently enforces:
   under 90 KB total, compacts status activity entries for SSE transport,
   coalesces to one realtime event per client, keeps all activity entries in the
   coalesced payload, and sends no heartbeat payloads or resync events.
-- A normal conversation message or reply write fans out as a scoped
-  `conversation_record_changed` realtime event. With 100 clients subscribed to
-  the affected channel, the smoke test stays under 80 KB total, sends exactly
-  one realtime event per matching client, sends no heartbeat or
-  `state-resync-required` packets, and does not leak the event to unrelated
-  channel subscribers.
+- Normal conversation message/reply writes and common message mutations
+  (save, reaction, thread follow, and message-to-task promotion) fan out as
+  scoped `conversation_record_changed` realtime events. Route tests cover the
+  mutation paths directly; the shared 100-client fanout smoke stays under 80 KB
+  total, sends exactly one realtime event per matching client, sends no
+  heartbeat or `state-resync-required` packets, and does not leak the event to
+  unrelated channel subscribers.
 - Browser human-presence writes are coordinated by a same-origin tab lease so
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate

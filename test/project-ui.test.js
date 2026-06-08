@@ -3228,7 +3228,7 @@ test('message reactions, context menus, and share mode expose MagClaw-style inte
   assert.match(app, /share-preview-spinner/);
   assert.match(app, /messageShareState = emptyMessageShareState\(\)/);
   assert.match(app, /sharePreviewState = \{ open: false, imageUrl: '', recordIds: \[\] \}/);
-  assert.match(app, /upsertConversationRecord\(appState\.messages, result\.message\)/);
+  assert.match(app, /applySubmittedConversationResult\(result\)/);
   assert.match(app, /data-context-scope="saved"/);
   assert.match(app, /Copy markdown/);
   assert.match(app, /Share messages\.\.\./);

@@ -885,6 +885,22 @@ export async function handleMessageApi(req, res, url, deps) {
     broadcastState({ realtimeOnly: true });
   }
 
+  function ensureConversationRecordWorkspace(record = null, req = null) {
+    if (!record) return record;
+    if ((!record.spaceType || !record.spaceId) && record.parentMessageId) {
+      const parent = findMessage(record.parentMessageId);
+      if (parent) {
+        record.spaceType = record.spaceType || parent.spaceType;
+        record.spaceId = record.spaceId || parent.spaceId;
+        record.workspaceId = record.workspaceId || parent.workspaceId || '';
+      }
+    }
+    if (!record.workspaceId && record.spaceType && record.spaceId) {
+      record.workspaceId = workspaceIdForSpace(record.spaceType, record.spaceId, req);
+    }
+    return record;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search/messages') {
     const criteria = searchCriteriaFromUrl(url);
     const limit = paginationLimit(url.searchParams.get('limit'), 80, 200);
@@ -1777,6 +1793,7 @@ export async function handleMessageApi(req, res, url, deps) {
       message.savedBy.push(userId);
     }
     message.updatedAt = now();
+    ensureConversationRecordWorkspace(message, req);
     normalizeConversationRecord(message);
     console.info('[message] save toggled', {
       recordId: message.id,
@@ -1784,7 +1801,8 @@ export async function handleMessageApi(req, res, url, deps) {
       saved: message.savedBy.includes(userId),
     });
     await persistConversationState(message, message.spaceType, message.spaceId, req);
-    broadcastState();
+    recordConversationRealtimeChange({ message }, message);
+    broadcastConversationRealtimeOnly();
     sendJson(res, 200, { message });
     return true;
   }
@@ -1808,8 +1826,10 @@ export async function handleMessageApi(req, res, url, deps) {
       return true;
     }
     const result = toggleRecordReaction(message, option, req);
+    ensureConversationRecordWorkspace(message, req);
     await persistConversationState(message, message.spaceType, message.spaceId, req);
-    broadcastState();
+    recordConversationRealtimeChange({ message }, message);
+    broadcastConversationRealtimeOnly();
     sendJson(res, 200, { message, reaction: result.reaction, active: result.active });
     return true;
   }
@@ -1826,8 +1846,10 @@ export async function handleMessageApi(req, res, url, deps) {
       sendError(res, 404, 'Thread message not found.');
       return true;
     }
+    ensureConversationRecordWorkspace(result.root, req);
     await persistConversationState(result.root, result.root?.spaceType, result.root?.spaceId, req);
-    broadcastState();
+    recordConversationRealtimeChange({ message: result.root }, result.root);
+    broadcastConversationRealtimeOnly();
     sendJson(res, 200, { message: result.root, followed: result.active });
     return true;
   }
@@ -1843,9 +1865,11 @@ export async function handleMessageApi(req, res, url, deps) {
     normalizeConversationRecord(message);
     const task = createTaskFromMessage(message, body.title || message.body);
     message.taskId = task.id;
+    ensureConversationRecordWorkspace(message, req);
     await persistConversationState(message, message.spaceType, message.spaceId, req);
-    broadcastState();
-    sendJson(res, 201, { task });
+    recordConversationRealtimeChange({ message, task }, message);
+    broadcastConversationRealtimeOnly();
+    sendJson(res, 201, { task, message });
     return true;
   }
 

@@ -1979,11 +1979,13 @@ document.addEventListener('click', async (event) => {
     }
     if (action === 'save-message') {
       messageContextMenu = null;
-      await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
     }
     if (action === 'remove-saved-message') {
       messageContextMenu = null;
-      await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/messages/${target.dataset.id}/save`, { method: 'POST', body: '{}' });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       if (selectedSavedRecordId === target.dataset.id) {
         selectedSavedRecordId = null;
         threadMessageId = null;
@@ -1998,14 +2000,7 @@ document.addEventListener('click', async (event) => {
         method: 'POST',
         body: JSON.stringify({ key: reactionKey }),
       });
-      if (result?.message?.id) {
-        if (result.message.parentMessageId) {
-          appState.replies = upsertConversationRecord(appState.replies, result.message);
-        } else {
-          appState.messages = upsertConversationRecord(appState.messages, result.message);
-        }
-      }
-      render();
+      applySubmittedConversationResult(result);
     }
     if (action === 'toggle-thread-follow') {
       messageContextMenu = null;
@@ -2013,6 +2008,7 @@ document.addEventListener('click', async (event) => {
         method: 'POST',
         body: '{}',
       });
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
       toast(result.followed ? 'Thread followed' : 'Thread unfollowed');
     }
     if (action === 'open-saved-message') {
