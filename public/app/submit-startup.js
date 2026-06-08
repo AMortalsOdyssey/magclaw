@@ -289,7 +289,7 @@ document.addEventListener('submit', async (event) => {
       modal = null;
     }
     if (form.id === 'task-form') {
-      await api('/api/tasks', {
+      const result = await api('/api/tasks', {
         method: 'POST',
         body: JSON.stringify({
           title: data.get('title'),
@@ -298,12 +298,13 @@ document.addEventListener('submit', async (event) => {
           spaceId: selectedSpaceId,
         }),
       });
+      activeTab = 'tasks';
       if (data.get('addAnother')) {
         form.reset();
       } else {
         modal = null;
       }
-      activeTab = 'tasks';
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
     }
     if (form.id === 'agent-form') {
       if (agentCreateInFlight) {

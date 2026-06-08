@@ -28,6 +28,10 @@ test('submitted conversation writes merge the API response before the final refr
     app.indexOf("if (form.id === 'reply-form')"),
     app.indexOf("if (form.id === 'channel-form')"),
   );
+  const taskFormSource = app.slice(
+    app.indexOf("if (form.id === 'task-form')"),
+    app.indexOf("if (form.id === 'agent-form')"),
+  );
 
   assert.match(submitSource, /nextState\.messages = upsertConversationRecord\(nextState\.messages, result\.message\)/);
   assert.match(submitSource, /const replyRecords = \[[\s\S]*result\.reply,[\s\S]*result\.replies/);
@@ -37,6 +41,8 @@ test('submitted conversation writes merge the API response before the final refr
   assert.match(submitSource, /applyStateUpdate\(nextState\)/);
   assert.match(messageFormSource, /result = await api\(`\/api\/spaces\/\$\{selectedSpaceType\}\/\$\{selectedSpaceId\}\/messages`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\);[\s\S]*requestPaneBottomScroll\('main'\)/);
   assert.match(replyFormSource, /result = await api\(`\/api\/messages\/\$\{threadMessageId\}\/replies`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticReply\.id \}\);[\s\S]*requestPaneBottomScroll\('thread'\)/);
+  assert.match(taskFormSource, /const result = await api\('\/api\/tasks'/);
+  assert.match(taskFormSource, /activeTab = 'tasks'[\s\S]*if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
 });
 
 test('message and reply submits render an optimistic local record before waiting for the API response', async () => {

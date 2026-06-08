@@ -88,6 +88,20 @@ export async function handleTaskApi(req, res, url, deps) {
     };
   }
 
+  async function captureTaskThreadRepliesAsync(task = null, operation = async () => {}) {
+    const beforeReplyIds = new Set((state.replies || []).map((reply) => reply?.id).filter(Boolean));
+    const result = await operation();
+    const parentMessageId = taskThreadMessageId(task);
+    const replies = (state.replies || [])
+      .filter((item) => item?.parentMessageId === parentMessageId && !beforeReplyIds.has(item.id))
+      .sort(compareTaskRecords);
+    return {
+      result,
+      reply: replies[0] || null,
+      replies,
+    };
+  }
+
   function taskRealtimeScope(task = null, reply = null) {
     const thread = taskThreadMessage(task);
     const workspaceId = workspaceIdForRecord(reply || task || thread, thread?.workspaceId || 'local') || 'local';
@@ -100,6 +114,7 @@ export async function handleTaskApi(req, res, url, deps) {
   function recordTaskRealtimeChange(task = null, {
     reply = null,
     replies = null,
+    message = null,
     mission = null,
     run = null,
     workspaceWide = false,
@@ -108,9 +123,9 @@ export async function handleTaskApi(req, res, url, deps) {
     const replyRecords = (Array.isArray(replies) ? replies : [reply]).filter(Boolean);
     const primaryReply = reply || replyRecords[0] || null;
     const scope = taskRealtimeScope(task, primaryReply);
-    const workspaceId = workspaceIdForRecord(primaryReply || task || mission || run, scope.workspaceId || 'local') || 'local';
-    const recordId = primaryReply?.id || run?.id || mission?.id || task.id;
-    const recordKind = primaryReply ? 'reply' : run ? 'run' : mission ? 'mission' : 'task';
+    const workspaceId = workspaceIdForRecord(primaryReply || message || task || mission || run, scope.workspaceId || 'local') || 'local';
+    const recordId = primaryReply?.id || message?.id || run?.id || mission?.id || task.id;
+    const recordKind = primaryReply ? 'reply' : message ? 'message' : run ? 'run' : mission ? 'mission' : 'task';
     return recordRealtimeEvent('conversation_record_changed', {
       workspaceId,
       spaceType: scope.spaceType,
@@ -121,6 +136,7 @@ export async function handleTaskApi(req, res, url, deps) {
       task,
       ...(primaryReply ? { reply: primaryReply } : {}),
       ...(replyRecords.length ? { replies: replyRecords } : {}),
+      ...(message ? { message } : {}),
       ...(mission ? { mission } : {}),
       ...(run ? { run } : {}),
     }, {
@@ -299,10 +315,10 @@ export async function handleTaskApi(req, res, url, deps) {
       sourceReplyId: body.sourceReplyId || null,
       status: body.status || 'todo',
     });
-    await dispatchCreatedTask(task, message, assigneeIds);
+    const { replies } = await captureTaskThreadRepliesAsync(task, () => dispatchCreatedTask(task, message, assigneeIds));
     await persistTaskState(task, 'task_created');
-    broadcastState();
-    sendJson(res, 201, { message, task });
+    broadcastTaskRealtimeState(task, { message, replies });
+    sendJson(res, 201, { message, task, ...(replies.length ? { reply: replies[0], replies } : {}) });
     return true;
   }
 

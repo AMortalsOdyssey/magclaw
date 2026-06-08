@@ -226,7 +226,16 @@ test('task route group pages stable cursors when tasks share timestamps', async 
 });
 
 test('task route group creates conversation-backed tasks', async () => {
+  const broadcastOptions = [];
+  const realtimeEvents = [];
   const deps = routeDeps({
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
+    },
     readJson: async () => ({
       title: 'Write release note',
       body: 'Summarize the change',
@@ -248,6 +257,17 @@ test('task route group creates conversation-backed tasks', async () => {
   assert.deepEqual(res.data.task.assigneeIds, ['agt_one', 'agt_two']);
   assert.deepEqual(res.data.task.attachmentIds, ['10', 'att_2']);
   assert.equal(deps.state.messages[0].taskId, 'task_new');
+  assert.deepEqual(broadcastOptions, [{ realtimeOnly: true }]);
+  assert.equal(realtimeEvents[0]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[0]?.[1].message.id, 'msg_new');
+  assert.equal(realtimeEvents[0]?.[1].task.id, 'task_new');
+  assert.equal(realtimeEvents[0]?.[1].recordKind, 'message');
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'channel',
+    scopeId: 'chan_all',
+    threadMessageId: 'msg_new',
+  });
 });
 
 test('task route group starts selected agents as sequential owner and collaborators', async () => {
