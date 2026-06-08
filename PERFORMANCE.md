@@ -48,7 +48,9 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Browser bootstrap JSON is at most 220 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 220 KB and generated/serialized in at most
+  80 ms. Directory paging, directory search, and Members administration have
+  separate budgets so bootstrap timing does not hide other smoke-test work.
 - Full member directory hydration is isolated from bootstrap and paged at 250
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
@@ -67,10 +69,10 @@ membership fanout visible in the budget. It currently enforces:
   history pagination.
 - Bootstrap server-side selection avoids full history sorts on large workspaces:
   a 100000-message / 5000-reply history fixture must still return the first
-  window in at most 250 ms and 80 KB while exposing history pagination.
+  window in at most 120 ms and 80 KB while exposing history pagination.
 - Bootstrap unread hydration is bounded internally as well as externally: a
   100000-message / 5000-reply unread fixture must still hydrate only the newest
-  80 unread records with parent context in at most 250 ms and 60 KB.
+  80 unread records with parent context in at most 120 ms and 60 KB.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
@@ -98,6 +100,9 @@ membership fanout visible in the budget. It currently enforces:
 - Bootstrap only includes the Web release notes consumed by the first-paint
   settings surface. Package-specific release details stay available through the
   package update endpoints instead of riding along with every chat startup.
+- Bootstrap record ordering uses UTC ISO timestamp fast comparisons and falls
+  back to timestamp parsing only for non-standard values, avoiding repeated
+  `Date.parse` work on large message histories.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.

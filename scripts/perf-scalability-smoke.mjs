@@ -114,7 +114,7 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
 ]);
 const BUDGETS = Object.freeze({
   bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 220_000),
-  bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
+  bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 80),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
   directoryTotalBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_TOTAL_BYTES || 280_000),
@@ -138,9 +138,9 @@ const BUDGETS = Object.freeze({
   bootstrapProjectedConversationReads: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROJECTED_CONVERSATION_READS || 500),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
-  bootstrapLargeHistoryMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_MS || 250),
+  bootstrapLargeHistoryMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_MS || 120),
   bootstrapLargeHistoryBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_BYTES || 80_000),
-  bootstrapLargeUnreadMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_MS || 250),
+  bootstrapLargeUnreadMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_MS || 120),
   bootstrapLargeUnreadBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_BYTES || 60_000),
 });
 
@@ -1173,14 +1173,17 @@ function measureLargeUnreadBootstrap() {
 }
 
 async function main() {
+  const smokeStarted = performance.now();
   const state = makeSyntheticState();
   const services = makeSystemServices(state);
-  const started = performance.now();
+  const bootstrapStarted = performance.now();
   const snapshot = services.publicBootstrapState({
     url: `/api/bootstrap?${BOOTSTRAP_QUERY}`,
     headers: {},
   });
+  const bootstrapProjectedAt = performance.now();
   const body = JSON.stringify(snapshot);
+  const bootstrapSerializedAt = performance.now();
   const directory = measureDirectoryHydration(services);
   const directorySearch = measureDirectorySearch();
   const membersDirectoryPage = measureMembersDirectoryPage();
@@ -1204,7 +1207,9 @@ async function main() {
     .filter((record) => record.bodyTruncated === true)
     .map((record) => String(record.body || '').length);
   const bootstrap = {
-    ms: Math.round(performance.now() - started),
+    ms: Math.round(bootstrapSerializedAt - bootstrapStarted),
+    projectMs: Math.round(bootstrapProjectedAt - bootstrapStarted),
+    serializeMs: Math.round(bootstrapSerializedAt - bootstrapProjectedAt),
     bytes: Buffer.byteLength(body, 'utf8'),
     directoryFormat: snapshot.bootstrap?.directoryFormat || '',
     conversationFormat: snapshot.bootstrap?.conversationFormat || '',
@@ -1403,7 +1408,24 @@ async function main() {
   assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
   assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, membersDirectoryPage, membersRailWindow, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    budgets: BUDGETS,
+    bootstrap,
+    directory,
+    directorySearch,
+    membersDirectoryPage,
+    membersRailWindow,
+    heartbeat,
+    repeatedHeartbeat,
+    humanHeartbeatChurn,
+    presenceMemberDelta,
+    stateChangeFanout,
+    bootstrapProjection,
+    bootstrapLargeHistory,
+    bootstrapLargeUnread,
+    smokeMs: Math.round(performance.now() - smokeStarted),
+  }, null, 2));
 }
 
 main().catch((error) => {

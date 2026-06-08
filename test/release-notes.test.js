@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { defaultReleaseNotes, normalizeReleaseNotes } from '../server/release-notes.js';
+import {
+  defaultReleaseNotes,
+  defaultReleaseNotesForComponent,
+  normalizeReleaseNotes,
+  normalizeReleaseNotesForComponent,
+} from '../server/release-notes.js';
 
 test('release notes expose independent Web, Daemon, and Computer version catalogs', () => {
   const notes = defaultReleaseNotes({
@@ -63,6 +68,22 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.equal(notes.computer.releases[0].version, '0.1.40');
   assert.ok(notes.computer.releases.some((release) => release.version === '0.1.23'));
   assert.equal(notes.teamSharing.releases[0].version, '0.1.57');
+});
+
+test('release notes can normalize one component without loading the whole catalog', () => {
+  const root = new URL('..', import.meta.url).pathname;
+  const webDefaults = defaultReleaseNotesForComponent('web', {
+    root,
+    env: { MAGCLAW_WEB_VERSION: '0.4.1' },
+  });
+  const web = normalizeReleaseNotesForComponent('web', {
+    currentVersion: '0.2.0',
+    releases: [{ version: '0.2.0', title: 'Custom', features: ['custom'] }],
+  }, webDefaults);
+
+  assert.equal(web.currentVersion, '0.4.1');
+  assert.equal(web.packageName, '@magclaw/web');
+  assert.deepEqual(web.releases.map((release) => release.version).slice(0, 2), ['0.4.1', '0.4.0']);
 });
 
 test('release notes can render compact package update markdown', () => {

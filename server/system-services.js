@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createNpmPackageVersionResolver } from './npm-package-versions.js';
-import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
+import { defaultReleaseNotes, defaultReleaseNotesForComponent, normalizeReleaseNotes, normalizeReleaseNotesForComponent } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 import { teamSharingDisplayBodyForRecord } from './team-sharing.js';
 import { isWorkspaceAllChannel } from './workspace-defaults.js';
@@ -230,8 +230,17 @@ export function createSystemServices(deps) {
     return Math.min(max, Math.max(1, Math.floor(parsed)));
   }
 
-  function recordTime(record) {
-    const value = record?.updatedAt || record?.createdAt || '';
+  function recordTimestampValue(record) {
+    return record?.updatedAt || record?.createdAt || '';
+  }
+
+  function isoTimestampRank(value) {
+    if (typeof value !== 'string') return '';
+    const text = value.trim();
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text) ? text : '';
+  }
+
+  function recordTime(record, value = recordTimestampValue(record)) {
     if (record && typeof record === 'object') {
       const cached = recordTimeCache.get(record);
       if (cached?.value === value) return cached.time;
@@ -244,8 +253,21 @@ export function createSystemServices(deps) {
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function compareRecordTime(a, b) {
+    const leftValue = recordTimestampValue(a);
+    const rightValue = recordTimestampValue(b);
+    const leftIso = isoTimestampRank(leftValue);
+    const rightIso = isoTimestampRank(rightValue);
+    if (leftIso && rightIso) {
+      if (leftIso > rightIso) return 1;
+      if (leftIso < rightIso) return -1;
+      return 0;
+    }
+    return recordTime(a, leftValue) - recordTime(b, rightValue);
+  }
+
   function compareNewestRank(a, b) {
-    const timeDiff = recordTime(a) - recordTime(b);
+    const timeDiff = compareRecordTime(a, b);
     if (timeDiff) return timeDiff;
     return String(a?.id || '').localeCompare(String(b?.id || ''));
   }
@@ -2235,9 +2257,12 @@ export function createSystemServices(deps) {
   }
 
   function publicBootstrapReleaseNotes() {
-    const notes = publicReleaseNotes();
+    const webDefaults = defaultReleaseNotesForComponent('web', { root: ROOT });
+    const web = normalizeReleaseNotesForComponent('web', state?.releaseNotes?.web, webDefaults);
+    web.currentVersion = process.env.MAGCLAW_WEB_VERSION || localWebPackageVersion() || web.currentVersion;
+    web.latestVersion = latestWebPackageVersion(web.currentVersion);
     return {
-      web: notes.web,
+      web,
     };
   }
 

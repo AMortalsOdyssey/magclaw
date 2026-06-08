@@ -588,19 +588,28 @@ function normalizeComponent(component, defaults = {}) {
 export function defaultReleaseNotes({ root = process.cwd(), env = process.env } = {}) {
   const notes = {};
   for (const component of RELEASE_COMPONENTS) {
-    const config = RELEASE_COMPONENT_CONFIG[component];
-    const releases = mergeCatalogReleaseItems(packageMarkdownReleases(root, config.packagePath), config.fallbackReleases);
-    const firstVersion = releases[0]?.version || '';
-    const currentVersion = normalizeVersion(env[config.versionEnv] || readPackageVersion(root, config.packagePath) || firstVersion);
-    notes[component] = normalizeComponent({
-      component: config.component,
-      packageName: config.packageName,
-      currentVersion,
-      latestVersion: normalizeVersion(env[config.latestEnv] || currentVersion || firstVersion),
-      releases,
-    });
+    notes[component] = defaultReleaseNotesForComponent(component, { root, env });
   }
   return notes;
+}
+
+export function defaultReleaseNotesForComponent(component, { root = process.cwd(), env = process.env } = {}) {
+  const config = RELEASE_COMPONENT_CONFIG[component];
+  if (!config) return normalizeComponent({ component: String(component || '') });
+  const releases = mergeCatalogReleaseItems(packageMarkdownReleases(root, config.packagePath), config.fallbackReleases);
+  const firstVersion = releases[0]?.version || '';
+  const currentVersion = normalizeVersion(env[config.versionEnv] || readPackageVersion(root, config.packagePath) || firstVersion);
+  return normalizeComponent({
+    component: config.component,
+    packageName: config.packageName,
+    currentVersion,
+    latestVersion: normalizeVersion(env[config.latestEnv] || currentVersion || firstVersion),
+    releases,
+  });
+}
+
+export function normalizeReleaseNotesForComponent(component, value = {}, defaults = null) {
+  return normalizeComponent(value, defaults || defaultReleaseNotesForComponent(component));
 }
 
 export function normalizeReleaseNotes(value = {}, defaults = {}) {
