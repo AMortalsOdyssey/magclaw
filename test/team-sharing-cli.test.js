@@ -682,6 +682,55 @@ test('team sharing hook sync skips expired login without opening browser or uplo
   }
 });
 
+test('team sharing hook sync skips Claude transcript paths that are not written yet', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-missing-claude-transcript-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-missing-claude-transcript-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const transcript = path.join(cwd, 'claude-session-not-yet-written.jsonl');
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error('missing transcript hook sync should not make network requests');
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      runtime: 'claude_code',
+      hookEvent: 'SessionEnd',
+      hookPayload: {
+        hook_event_name: 'SessionEnd',
+        session_id: 'sess_missing_claude_transcript',
+        transcript_path: transcript,
+      },
+    }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const auditRecord = JSON.parse(auditText.trim());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.equal(result.reason, 'transcript_file_missing');
+    assert.equal(auditRecord.status, 'skipped');
+    assert.equal(auditRecord.phase, 'read_transcript');
+    assert.equal(auditRecord.reason, 'transcript_file_missing');
+    assert.equal(auditRecord.trigger.runtime, 'claude_code');
+    assert.equal(auditRecord.trigger.hookEvent, 'SessionEnd');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing cli sync uploads only new transcript events and saves cursor', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-sync-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-sync-home-'));

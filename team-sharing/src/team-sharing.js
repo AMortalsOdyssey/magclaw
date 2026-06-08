@@ -1691,7 +1691,21 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     });
     return { ok: true, empty: true, reason: 'runtime_hooks_disabled' };
   }
-  const content = await readFile(path.resolve(transcriptPath), 'utf8');
+  let content = '';
+  try {
+    content = await readFile(path.resolve(transcriptPath), 'utf8');
+  } catch (error) {
+    if (hookEvent && error?.code === 'ENOENT') {
+      await writeAudit({
+        ok: true,
+        status: 'skipped',
+        phase: 'read_transcript',
+        reason: 'transcript_file_missing',
+      });
+      return { ok: true, empty: true, reason: 'transcript_file_missing' };
+    }
+    throw error;
+  }
   baseAudit.transcript.charCount = auditCharCount(content);
   baseAudit.transcript.byteCount = byteLength(content);
   baseAudit.transcript.hash = stableHash(content);
