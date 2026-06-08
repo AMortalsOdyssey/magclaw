@@ -581,6 +581,95 @@ test('bootstrap state keeps object directories by default and supports tuple dir
   ]);
 });
 
+test('bootstrap visible directory scope trims startup members and directory endpoint hydrates full roster', () => {
+  const createdAt = '2026-05-18T00:00:00.000Z';
+  const services = makeServices((state) => {
+    state.agents = [
+      {
+        id: 'agt_visible',
+        workspaceId: 'local',
+        name: 'Visible Agent',
+        description: 'Author in the selected channel',
+        status: 'working',
+        runtime: 'codex',
+        model: 'gpt-test',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: 'agt_hidden',
+        workspaceId: 'local',
+        name: 'Hidden Agent',
+        status: 'idle',
+        runtime: 'codex',
+        model: 'gpt-test',
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+    state.humans = [
+      { id: 'hum_1', workspaceId: 'local', name: 'Current Human', role: 'owner', status: 'online', createdAt, updatedAt: createdAt },
+      { id: 'hum_hidden', workspaceId: 'local', name: 'Hidden Human', role: 'member', status: 'offline', createdAt, updatedAt: createdAt },
+    ];
+    state.messages[0].authorType = 'agent';
+    state.messages[0].authorId = 'agt_visible';
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        {
+          id: 'mem_1',
+          workspaceId: 'local',
+          userId: 'usr_1',
+          humanId: 'hum_1',
+          role: 'owner',
+          status: 'active',
+          createdAt,
+          updatedAt: createdAt,
+          user: { id: 'usr_1', name: 'Current Human', email: 'current@example.test' },
+        },
+        {
+          id: 'mem_hidden',
+          workspaceId: 'local',
+          userId: 'usr_hidden',
+          humanId: 'hum_hidden',
+          role: 'member',
+          status: 'active',
+          createdAt,
+          updatedAt: createdAt,
+          user: { id: 'usr_hidden', name: 'Hidden Human', email: 'hidden@example.test' },
+        },
+      ],
+    }),
+  });
+
+  const startup = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&directoryFormat=tuple-v1&directoryScope=visible',
+    headers: {},
+  });
+  assert.equal(startup.bootstrap.directory.scope, 'visible');
+  assert.equal(startup.bootstrap.directory.agents.total, 2);
+  assert.equal(startup.bootstrap.directory.humans.total, 2);
+  assert.equal(startup.bootstrap.directory.members.total, 2);
+  assert.deepEqual(startup.agents.map((agent) => agent[0]), ['agt_visible']);
+  assert.deepEqual(startup.humans.map((human) => human[0]), ['hum_1']);
+  assert.deepEqual(startup.cloud.members.map((member) => member[0]), ['mem_1']);
+
+  const directory = services.publicDirectoryState({
+    url: '/api/directory?directoryFormat=tuple-v1',
+    headers: {},
+  });
+  assert.equal(directory.bootstrap.directory.scope, 'full');
+  assert.deepEqual(directory.agents.map((agent) => agent[0]), ['agt_visible', 'agt_hidden']);
+  assert.deepEqual(directory.humans.map((human) => human[0]), ['hum_1', 'hum_hidden']);
+  assert.deepEqual(directory.cloud.members.map((member) => member[0]), ['mem_1', 'mem_hidden']);
+});
+
 test('public state exposes configured public URL for share exports', () => {
   const previous = process.env.MAGCLAW_PUBLIC_URL;
   process.env.MAGCLAW_PUBLIC_URL = 'https://magclaw.multiego.me/';

@@ -7,13 +7,82 @@ function bootstrapStatePath() {
   params.set('threadRootLimit', '160');
   params.set('taskLimit', '160');
   params.set('directoryFormat', 'tuple-v1');
+  params.set('directoryScope', 'visible');
+  if (selectedAgentId) params.set('selectedAgentId', selectedAgentId);
+  if (selectedHumanId) params.set('selectedHumanId', selectedHumanId);
   return `/api/bootstrap?${params.toString()}`;
+}
+
+function directoryStatePath() {
+  const params = new URLSearchParams();
+  params.set('directoryFormat', 'tuple-v1');
+  return `/api/directory?${params.toString()}`;
 }
 
 function normalizeIncomingStateSnapshot(nextState) {
   return typeof normalizeStateDirectorySnapshot === 'function'
     ? normalizeStateDirectorySnapshot(nextState)
     : nextState;
+}
+
+function preserveIncomingDirectorySnapshot(previousState, nextState) {
+  return typeof preserveLoadedDirectorySnapshot === 'function'
+    ? preserveLoadedDirectorySnapshot(previousState, nextState)
+    : nextState;
+}
+
+let directoryHydrationInFlight = null;
+let directoryHydrationScheduled = false;
+
+function currentDirectoryIsFull() {
+  return typeof directorySnapshotIsFull === 'function'
+    ? directorySnapshotIsFull(appState)
+    : appState?.bootstrap?.directory?.scope === 'full';
+}
+
+function resetDirectoryLookupCaches() {
+  stateEntityLookupCache = null;
+  workspaceHumansCache = null;
+  workspaceAgentsCache = null;
+}
+
+function applyDirectorySnapshot(directorySnapshot, { renderAfter = true } = {}) {
+  if (!directorySnapshot || !appState || typeof mergeStateDirectorySnapshot !== 'function') return false;
+  const nextState = mergeStateDirectorySnapshot(appState, directorySnapshot);
+  if (nextState === appState) return false;
+  appState = nextState;
+  resetDirectoryLookupCaches();
+  if (renderAfter) render();
+  return true;
+}
+
+async function ensureFullDirectory({ renderAfter = true } = {}) {
+  if (!appState || currentDirectoryIsFull()) return false;
+  if (directoryHydrationInFlight) return directoryHydrationInFlight;
+  directoryHydrationInFlight = (async () => {
+    const snapshot = await api(directoryStatePath());
+    return applyDirectorySnapshot(normalizeIncomingStateSnapshot(snapshot), { renderAfter });
+  })().catch((error) => {
+    console.warn('Failed to hydrate member directory:', error);
+    return false;
+  }).finally(() => {
+    directoryHydrationInFlight = null;
+  });
+  return directoryHydrationInFlight;
+}
+
+function scheduleFullDirectoryHydration() {
+  if (directoryHydrationScheduled || currentDirectoryIsFull()) return;
+  directoryHydrationScheduled = true;
+  const hydrate = () => {
+    directoryHydrationScheduled = false;
+    ensureFullDirectory({ renderAfter: true }).catch(() => {});
+  };
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(hydrate, { timeout: 1500 });
+  } else {
+    window.setTimeout(hydrate, 500);
+  }
 }
 
 let packageVersionRefreshInFlight = null;
@@ -108,6 +177,8 @@ async function refreshState() {
   const nextState = await api(bootstrapStatePath());
   const normalizedNextState = normalizeIncomingStateSnapshot(nextState);
   if (normalizedNextState !== nextState) Object.assign(nextState, normalizedNextState);
+  const preservedNextState = preserveIncomingDirectorySnapshot(appState, nextState);
+  if (preservedNextState !== nextState) Object.assign(nextState, preservedNextState);
   trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
   trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
   appState = nextState;
@@ -139,6 +210,7 @@ async function refreshState() {
   }
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   render();
+  scheduleFullDirectoryHydration();
   refreshPackageVersionReminders();
 }
 
@@ -1382,6 +1454,7 @@ function computerDetailRenderSignature(stateSnapshot = appState) {
 
 function applyStateUpdate(nextState) {
   nextState = normalizeIncomingStateSnapshot(nextState);
+  nextState = preserveIncomingDirectorySnapshot(appState, nextState);
   if (pendingStateUpdate && pendingStateUpdate !== nextState) clearPendingStateUpdate();
   nextState = preserveLoadedConversationHistory(appState, nextState);
   if (appState?.cloud?.unreadCounts && nextState?.cloud && !nextState.cloud.unreadCounts) {

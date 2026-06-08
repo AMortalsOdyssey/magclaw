@@ -132,6 +132,61 @@ test('state sync normalizes tuple bootstrap directories before applying', async 
   });
 });
 
+test('state sync preserves hydrated full directory across partial bootstrap refreshes', async () => {
+  const { context } = await createHarness({
+    bootstrap: {
+      directory: {
+        scope: 'full',
+        agents: { loaded: 2, total: 2, hasMore: false },
+        humans: { loaded: 2, total: 2, hasMore: false },
+        members: { loaded: 2, total: 2, hasMore: false },
+      },
+    },
+    agents: [
+      { id: 'agt_visible', name: 'Visible Agent', status: 'working' },
+      { id: 'agt_hidden', name: 'Hidden Agent', status: 'idle' },
+    ],
+    humans: [
+      { id: 'hum_1', name: 'Current Human' },
+      { id: 'hum_hidden', name: 'Hidden Human' },
+    ],
+    cloud: {
+      members: [
+        { id: 'mem_1', humanId: 'hum_1', userId: 'usr_1' },
+        { id: 'mem_hidden', humanId: 'hum_hidden', userId: 'usr_hidden' },
+      ],
+    },
+  });
+
+  const partialRefresh = context.preserveLoadedDirectorySnapshot(context.appState, {
+    bootstrap: {
+      directory: {
+        scope: 'visible',
+        agents: { loaded: 1, total: 2, hasMore: true },
+        humans: { loaded: 1, total: 2, hasMore: true },
+        members: { loaded: 1, total: 2, hasMore: true },
+      },
+    },
+    agents: [{ id: 'agt_visible', name: 'Visible Agent', status: 'idle' }],
+    humans: [{ id: 'hum_1', name: 'Current Human Updated' }],
+    cloud: { members: [{ id: 'mem_1', humanId: 'hum_1', userId: 'usr_1', role: 'owner' }] },
+  });
+
+  assert.equal(partialRefresh.bootstrap.directory.scope, 'full');
+  assert.deepEqual(JSON.parse(JSON.stringify(partialRefresh.agents.map((agent) => [agent.id, agent.status]))), [
+    ['agt_visible', 'idle'],
+    ['agt_hidden', 'idle'],
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(partialRefresh.humans.map((human) => [human.id, human.name]))), [
+    ['hum_1', 'Current Human Updated'],
+    ['hum_hidden', 'Hidden Human'],
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(partialRefresh.cloud.members.map((member) => [member.id, member.role || 'member']))), [
+    ['mem_1', 'owner'],
+    ['mem_hidden', 'member'],
+  ]);
+});
+
 test('submitted conversation merge replaces optimistic messages and replies without double counts', async () => {
   const { context, updates } = await createHarness({
     messages: [{

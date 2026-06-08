@@ -18,6 +18,7 @@ const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
 const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
+const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -691,6 +692,107 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function directoryStats(records, total) {
+    const loaded = Array.isArray(records) ? records.length : 0;
+    const normalizedTotal = Math.max(loaded, Number(total || 0) || 0);
+    return {
+      loaded,
+      total: normalizedTotal,
+      hasMore: loaded < normalizedTotal,
+    };
+  }
+
+  function addDirectoryId(target, value) {
+    const id = String(value || '').trim();
+    if (!id) return;
+    if (id.startsWith('agt_')) target.agentIds.add(id);
+    if (id.startsWith('hum_')) target.humanIds.add(id);
+  }
+
+  function addRecordDirectoryReferences(target, record = {}) {
+    addDirectoryId(target, record.authorId);
+    addDirectoryId(target, record.createdByHumanId || record.createdBy);
+    addDirectoryId(target, record.ownerHumanId || record.ownerId);
+    addDirectoryId(target, record.claimedBy);
+    addDirectoryId(target, record.assigneeId);
+    for (const id of records(record.assigneeIds)) addDirectoryId(target, id);
+    for (const id of records(record.mentionedAgentIds)) addDirectoryId(target, id);
+    for (const id of records(record.mentionedHumanIds)) addDirectoryId(target, id);
+    String(record.body || '').replace(/<@(agt_\w+|hum_\w+)>/g, (_token, id) => {
+      addDirectoryId(target, id);
+      return _token;
+    });
+  }
+
+  function addChannelDirectoryReferences(target, channel = {}) {
+    if (!channel || typeof channel !== 'object') return;
+    if (isWorkspaceAllChannel(channel)) return;
+    for (const id of records(channel.memberIds)) addDirectoryId(target, id);
+    for (const id of records(channel.humanIds)) addDirectoryId(target, id);
+    for (const id of records(channel.agentIds)) addDirectoryId(target, id);
+  }
+
+  function addDmDirectoryReferences(target, dm = {}) {
+    for (const id of records(dm?.participantIds)) addDirectoryId(target, id);
+  }
+
+  function collectVisibleDirectoryIds({
+    currentHumanId = '',
+    cloud = null,
+    selectedAgentId = '',
+    selectedHumanId = '',
+    selectedChannel = null,
+    visibleDms = [],
+    messages = [],
+    replies = [],
+    tasks = [],
+  } = {}) {
+    const target = { agentIds: new Set(), humanIds: new Set(), memberIds: new Set() };
+    addDirectoryId(target, currentHumanId);
+    addDirectoryId(target, cloud?.auth?.currentMember?.humanId);
+    addDirectoryId(target, selectedAgentId);
+    addDirectoryId(target, selectedHumanId);
+    addChannelDirectoryReferences(target, selectedChannel);
+    for (const dm of records(visibleDms)) addDmDirectoryReferences(target, dm);
+    for (const record of [...records(messages), ...records(replies), ...records(tasks)]) {
+      addRecordDirectoryReferences(target, record);
+    }
+    for (const member of records(cloud?.members)) {
+      if (
+        target.humanIds.has(String(member?.humanId || ''))
+        || target.memberIds.has(String(member?.id || ''))
+        || String(member?.id || '') === String(cloud?.auth?.currentMember?.id || '')
+      ) {
+        if (member?.id) target.memberIds.add(String(member.id));
+        if (member?.humanId) target.humanIds.add(String(member.humanId));
+      }
+    }
+    return target;
+  }
+
+  function filterDirectoryRecords({ agents = [], humans = [], cloud = null, ids = null } = {}) {
+    if (!ids) return { agents, humans, cloud };
+    const nextCloud = cloud && typeof cloud === 'object' ? { ...cloud } : cloud;
+    const filteredAgents = records(agents).filter((agent) => ids.agentIds.has(String(agent?.id || '')));
+    const filteredHumans = records(humans).filter((human) => ids.humanIds.has(String(human?.id || '')));
+    if (nextCloud && Array.isArray(nextCloud.members)) {
+      nextCloud.members = nextCloud.members.filter((member) => (
+        ids.memberIds.has(String(member?.id || ''))
+        || ids.humanIds.has(String(member?.humanId || ''))
+      ));
+    }
+    return { agents: filteredAgents, humans: filteredHumans, cloud: nextCloud };
+  }
+
+  function directoryMetadata({ scope = 'full', agents = [], humans = [], cloud = null, totals = {} } = {}) {
+    return {
+      scope,
+      agents: directoryStats(agents, totals.agents),
+      humans: directoryStats(humans, totals.humans),
+      members: directoryStats(cloud?.members || [], totals.members),
+    };
+  }
+
   function compactTuple(values = []) {
     let lastIndex = values.length - 1;
     while (lastIndex >= 0) {
@@ -767,6 +869,12 @@ export function createSystemServices(deps) {
       };
       const directoryFormat = url.searchParams.get('directoryFormat') || '';
       if (directoryFormat) options.directoryFormat = directoryFormat;
+      const directoryScope = url.searchParams.get('directoryScope') || '';
+      if (directoryScope) options.directoryScope = directoryScope;
+      const selectedAgentId = url.searchParams.get('selectedAgentId') || '';
+      if (selectedAgentId) options.selectedAgentId = selectedAgentId;
+      const selectedHumanId = url.searchParams.get('selectedHumanId') || '';
+      if (selectedHumanId) options.selectedHumanId = selectedHumanId;
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
       return options;
     } catch {
@@ -958,8 +1066,14 @@ export function createSystemServices(deps) {
     const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
     const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
     const taskLimit = clampLimit(effectiveOptions.taskLimit, 160, 500);
+    const directoryScope = effectiveOptions.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
+      ? BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
+      : 'full';
     const visibleMessages = scopedMessages.filter(conversationVisible);
     const visibleReplies = scopedReplies.filter(conversationVisible);
+    const selectedChannel = spaceType === 'channel'
+      ? scopedChannels.find((channel) => String(channel?.id || '') === spaceId)
+      : null;
 
     const selectedMessagePage = newestRecordsPage(
       visibleMessages,
@@ -1070,11 +1184,40 @@ export function createSystemServices(deps) {
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
       for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
     }
-    const visibleHumans = appendReferencedHumans(
+    const directoryHumans = appendReferencedHumans(
       scopedRecords('humans'),
       [...messageById.values(), ...replyById.values()],
       currentState,
     );
+    const publicAgents = scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
+    const publicHumans = directoryHumans.map(compactBootstrapHumanRecord);
+    const publicCloud = compactBootstrapCloudState(cloud, {
+      humansById: new Map(directoryHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+    });
+    const directoryTotals = {
+      agents: publicAgents.length,
+      humans: publicHumans.length,
+      members: publicCloud?.members?.length || 0,
+    };
+    const visibleDirectoryIds = directoryScope === BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
+      ? collectVisibleDirectoryIds({
+          currentHumanId,
+          cloud: publicCloud,
+          selectedAgentId: effectiveOptions.selectedAgentId,
+          selectedHumanId: effectiveOptions.selectedHumanId,
+          selectedChannel,
+          visibleDms,
+          messages: [...messageById.values()],
+          replies: [...replyById.values()],
+          tasks: visibleTasks,
+        })
+      : null;
+    const directory = filterDirectoryRecords({
+      agents: publicAgents,
+      humans: publicHumans,
+      cloud: publicCloud,
+      ids: visibleDirectoryIds,
+    });
 
     const snapshot = {
       ...publicStateBase(currentState),
@@ -1082,17 +1225,15 @@ export function createSystemServices(deps) {
       channels: scopedChannels.filter((channel) => !channel.archived).map(compactBootstrapChannelRecord),
       dms: visibleDms,
       tasks: visibleTasks,
-      agents: scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord),
+      agents: directory.agents,
       computers: visibleComputers,
-      humans: visibleHumans.map(compactBootstrapHumanRecord),
+      humans: directory.humans,
       reminders: scopedRecords('reminders'),
       missions: scopedRecords('missions'),
       projects: scopedRecords('projects'),
       channelMemberProposals: scopedRecords('channelMemberProposals'),
       connection: publicConnection(),
-      cloud: compactBootstrapCloudState(cloud, {
-        humansById: new Map(visibleHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
-      }),
+      cloud: directory.cloud,
       releaseNotes: publicReleaseNotes(),
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
@@ -1117,6 +1258,13 @@ export function createSystemServices(deps) {
           global: taskPageInfo(globalChannelTasks.total, globalTaskPage, taskLimit),
         },
         unreadHydration,
+        directory: directoryMetadata({
+          scope: directoryScope,
+          agents: directory.agents,
+          humans: directory.humans,
+          cloud: directory.cloud,
+          totals: directoryTotals,
+        }),
       },
       messages: [...messageById.values()]
         .sort(compareOldestRecords)
@@ -1132,6 +1280,57 @@ export function createSystemServices(deps) {
       routeEvents: newestRecords(scopedRecords('routeEvents'), 80).sort(compareOldestRecords),
       systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort(compareOldestRecords),
       attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
+    };
+    return encodeBootstrapDirectories(snapshot, effectiveOptions);
+  }
+
+  function publicDirectoryState(req = null, options = {}) {
+    const scope = publicStateScope(req);
+    const {
+      currentState,
+      cloud,
+      scopedRecords,
+      scopedAgents,
+    } = scope;
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
+      return encodeBootstrapDirectories({
+        ...publicStateBase(currentState),
+        agents: [],
+        humans: [],
+        cloud: { ...(cloud || {}), members: [] },
+        bootstrap: {
+          mode: 'directory',
+          fullState: false,
+          directory: directoryMetadata({ scope: 'full', agents: [], humans: [], cloud: { members: [] } }),
+        },
+      }, options);
+    }
+    const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
+    const publicAgents = scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
+    const publicHumans = scopedRecords('humans').map(compactBootstrapHumanRecord);
+    const publicCloud = compactBootstrapCloudState(cloud, {
+      humansById: new Map(scopedRecords('humans').map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+    });
+    const snapshot = {
+      ...publicStateBase(currentState),
+      agents: publicAgents,
+      humans: publicHumans,
+      cloud: publicCloud,
+      bootstrap: {
+        mode: 'directory',
+        fullState: false,
+        directory: directoryMetadata({
+          scope: 'full',
+          agents: publicAgents,
+          humans: publicHumans,
+          cloud: publicCloud,
+          totals: {
+            agents: publicAgents.length,
+            humans: publicHumans.length,
+            members: publicCloud?.members?.length || 0,
+          },
+        }),
+      },
     };
     return encodeBootstrapDirectories(snapshot, effectiveOptions);
   }
@@ -1991,6 +2190,7 @@ export function createSystemServices(deps) {
     publicConnection,
     publicSettings,
     publicBootstrapState,
+    publicDirectoryState,
     publicState,
     runtimeSnapshot,
     startPackageVersionPolling,

@@ -1060,6 +1060,7 @@ document.addEventListener('click', async (event) => {
         const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
         localStorage.setItem('railTab', railTab);
         render();
+        if (typeof ensureFullDirectory === 'function') ensureFullDirectory({ renderAfter: true }).catch((error) => console.warn('Failed to hydrate member directory:', error));
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
         return;
       }
@@ -1113,6 +1114,7 @@ document.addEventListener('click', async (event) => {
         workspaceActivityDrawerOpen = false;
       } else if (nav === 'members') {
         const agentId = openMembersNav({ preserveSpace: activeView === 'space' });
+        if (typeof ensureFullDirectory === 'function') ensureFullDirectory({ renderAfter: true }).catch((error) => console.warn('Failed to hydrate member directory:', error));
         if (agentId) loadAgentSkills(agentId).catch((error) => toast(error.message));
       } else if (nav === 'desktop') {
         railTab = 'computers';
@@ -1166,6 +1168,7 @@ document.addEventListener('click', async (event) => {
       }
       modal = null;
       render();
+      if (typeof ensureFullDirectory === 'function') ensureFullDirectory({ renderAfter: true }).catch((error) => console.warn('Failed to hydrate member directory:', error));
       syncBrowserRouteForActiveView();
       loadAgentSkills(selectedAgentId).catch((error) => toast(error.message));
     }
@@ -1189,6 +1192,7 @@ document.addEventListener('click', async (event) => {
         railTab = 'members';
       }
       render();
+      if (typeof ensureFullDirectory === 'function') ensureFullDirectory({ renderAfter: true }).catch((error) => console.warn('Failed to hydrate member directory:', error));
       if (activeView === 'members') syncBrowserRouteForActiveView();
     }
     if (action === 'select-human') {
@@ -1209,6 +1213,7 @@ document.addEventListener('click', async (event) => {
       modal = null;
       rememberMembersLayoutFromCurrent();
       render();
+      if (typeof ensureFullDirectory === 'function') ensureFullDirectory({ renderAfter: true }).catch((error) => console.warn('Failed to hydrate member directory:', error));
       syncBrowserRouteForActiveView();
     }
     if (action === 'select-computer') {

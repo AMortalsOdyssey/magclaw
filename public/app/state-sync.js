@@ -99,6 +99,81 @@ function normalizeStateDirectorySnapshot(stateSnapshot = {}) {
   return next;
 }
 
+function directorySnapshotIsFull(stateSnapshot = {}) {
+  const directory = stateSnapshot?.bootstrap?.directory;
+  if (directory?.scope === 'full') return true;
+  const agents = directory?.agents;
+  const humans = directory?.humans;
+  const members = directory?.members;
+  return Boolean(
+    agents && humans && members
+    && Number(agents.loaded || 0) >= Number(agents.total || 0)
+    && Number(humans.loaded || 0) >= Number(humans.total || 0)
+    && Number(members.loaded || 0) >= Number(members.total || 0)
+  );
+}
+
+function directorySnapshotIsPartial(stateSnapshot = {}) {
+  return stateSnapshot?.bootstrap?.directory?.scope === 'visible'
+    || stateSnapshot?.bootstrap?.directory?.agents?.hasMore
+    || stateSnapshot?.bootstrap?.directory?.humans?.hasMore
+    || stateSnapshot?.bootstrap?.directory?.members?.hasMore;
+}
+
+function mergeDirectoryRecords(existingRecords = [], incomingRecords = [], { replace = false } = {}) {
+  if (!Array.isArray(incomingRecords)) return Array.isArray(existingRecords) ? existingRecords : [];
+  if (replace) return incomingRecords;
+  const merged = new Map();
+  for (const record of Array.isArray(existingRecords) ? existingRecords : []) {
+    if (record?.id) merged.set(String(record.id), record);
+  }
+  for (const record of incomingRecords) {
+    if (record?.id) merged.set(String(record.id), { ...(merged.get(String(record.id)) || {}), ...record });
+  }
+  return [...merged.values()];
+}
+
+function mergeStateDirectorySnapshot(baseState = {}, directorySnapshot = {}) {
+  if (!baseState || typeof baseState !== 'object') return directorySnapshot;
+  directorySnapshot = normalizeStateDirectorySnapshot(directorySnapshot);
+  const replace = directorySnapshotIsFull(directorySnapshot);
+  const next = { ...baseState };
+  if (Array.isArray(directorySnapshot.agents)) {
+    next.agents = mergeDirectoryRecords(baseState.agents, directorySnapshot.agents, { replace });
+  }
+  if (Array.isArray(directorySnapshot.humans)) {
+    next.humans = mergeDirectoryRecords(baseState.humans, directorySnapshot.humans, { replace });
+  }
+  if (directorySnapshot.cloud && typeof directorySnapshot.cloud === 'object') {
+    next.cloud = { ...(baseState.cloud || {}), ...directorySnapshot.cloud };
+    if (Array.isArray(directorySnapshot.cloud.members)) {
+      next.cloud.members = mergeDirectoryRecords(baseState.cloud?.members, directorySnapshot.cloud.members, { replace });
+    }
+  }
+  if (directorySnapshot.bootstrap?.directory) {
+    next.bootstrap = {
+      ...(baseState.bootstrap || {}),
+      directory: directorySnapshot.bootstrap.directory,
+    };
+  }
+  return next;
+}
+
+function preserveLoadedDirectorySnapshot(previousState = {}, nextState = {}) {
+  if (!previousState || !nextState) return nextState;
+  if (!directorySnapshotIsFull(previousState) || !directorySnapshotIsPartial(nextState)) return nextState;
+  const preserved = { ...nextState };
+  preserved.agents = mergeDirectoryRecords(previousState.agents, nextState.agents);
+  preserved.humans = mergeDirectoryRecords(previousState.humans, nextState.humans);
+  preserved.cloud = { ...(nextState.cloud || {}) };
+  preserved.cloud.members = mergeDirectoryRecords(previousState.cloud?.members, nextState.cloud?.members);
+  preserved.bootstrap = {
+    ...(nextState.bootstrap || {}),
+    directory: previousState.bootstrap?.directory || nextState.bootstrap?.directory,
+  };
+  return preserved;
+}
+
 function pendingStateUpdateBase() {
   return pendingStateUpdate || appState;
 }

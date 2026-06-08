@@ -146,6 +146,7 @@ export async function handleSystemApi(req, res, url, deps) {
     packageUpdateSnapshot,
     packageVersionSnapshot,
     publicBootstrapState,
+    publicDirectoryState,
     publicState,
     readJson,
     sendError,
@@ -274,12 +275,26 @@ export async function handleSystemApi(req, res, url, deps) {
     };
     const directoryFormat = url.searchParams.get('directoryFormat') || '';
     if (directoryFormat) options.directoryFormat = directoryFormat;
+    const directoryScope = url.searchParams.get('directoryScope') || '';
+    if (directoryScope) options.directoryScope = directoryScope;
+    const selectedAgentId = url.searchParams.get('selectedAgentId') || '';
+    if (selectedAgentId) options.selectedAgentId = selectedAgentId;
+    const selectedHumanId = url.searchParams.get('selectedHumanId') || '';
+    if (selectedHumanId) options.selectedHumanId = selectedHumanId;
     const hydration = typeof hydrateBootstrapWindow === 'function'
       ? await hydrateBootstrapWindow(req, options)
       : null;
     if (hydration) req.magclawBootstrapHydration = hydration;
     const bootstrapOptions = hydration ? { ...options, hydration } : options;
     sendJson(res, 200, (publicBootstrapState || publicState)(req, bootstrapOptions));
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/directory') {
+    const options = {};
+    const directoryFormat = url.searchParams.get('directoryFormat') || '';
+    if (directoryFormat) options.directoryFormat = directoryFormat;
+    sendJson(res, 200, (publicDirectoryState || publicState)(req, options));
     return true;
   }
 

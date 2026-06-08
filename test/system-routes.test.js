@@ -59,6 +59,7 @@ function routeDeps(overrides = {}) {
     persistState: async () => {},
     presenceHeartbeat: () => ({ agents: [] }),
     publicBootstrapState: (_req, options) => ({ bootstrap: { options }, router: state.router }),
+    publicDirectoryState: (_req, options) => ({ bootstrap: { mode: 'directory', options }, agents: [] }),
     publicState: () => ({ settings: state.settings, router: state.router }),
     readJson: async () => ({}),
     sendError: (res, statusCode, message) => {
@@ -107,6 +108,22 @@ test('share image save route writes PNG files to the configured local directory'
   assert.equal(res.data.path, path.join(downloadDir, 'magclaw-share-test.png'));
   const saved = await readFile(res.data.path);
   assert.equal(saved.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+});
+
+test('directory route forwards compact directory options', async () => {
+  const deps = routeDeps();
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+    res,
+    new URL('http://local/api/directory?directoryFormat=tuple-v1'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.bootstrap.mode, 'directory');
+  assert.deepEqual(res.data.bootstrap.options, { directoryFormat: 'tuple-v1' });
 });
 
 test('share image save route rejects non-loopback callers', async () => {

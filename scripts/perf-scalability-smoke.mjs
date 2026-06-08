@@ -6,7 +6,8 @@ import { createSystemServices } from '../server/system-services.js';
 
 const NOW = '2026-06-08T00:00:00.000Z';
 const BOOTSTRAP_DIRECTORY_FORMAT = 'tuple-v1';
-const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1';
+const BOOTSTRAP_DIRECTORY_SCOPE = 'visible';
+const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1&directoryScope=visible';
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -61,8 +62,10 @@ const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
   'role',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 650_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 500_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
+  directoryBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_BYTES || 450_000),
+  directoryMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
@@ -870,6 +873,12 @@ async function main() {
     headers: {},
   });
   const body = JSON.stringify(snapshot);
+  const directoryStarted = performance.now();
+  const directorySnapshot = services.publicDirectoryState({
+    url: '/api/directory?directoryFormat=tuple-v1',
+    headers: {},
+  });
+  const directoryBody = JSON.stringify(directorySnapshot);
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -877,10 +886,15 @@ async function main() {
   const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
   const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
   const decodedCloudMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+  const decodedDirectoryAgents = decodeTupleRecords(directorySnapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+  const decodedDirectoryHumans = decodeTupleRecords(directorySnapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+  const decodedDirectoryCloudMembers = decodeTupleRecords(directorySnapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
     directoryFormat: snapshot.bootstrap?.directoryFormat || '',
+    directoryScope: snapshot.bootstrap?.directory?.scope || '',
+    directory: snapshot.bootstrap?.directory || null,
     hasBootstrapDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
       && (snapshot.humans || []).some(Array.isArray)
       && (snapshot.cloud?.members || []).some(Array.isArray),
@@ -925,6 +939,32 @@ async function main() {
       || body.includes('runtimeSession')
       || body.includes('sourceAnchor'),
   };
+  const directory = {
+    ms: Math.round(performance.now() - directoryStarted),
+    bytes: Buffer.byteLength(directoryBody, 'utf8'),
+    directoryFormat: directorySnapshot.bootstrap?.directoryFormat || '',
+    directoryScope: directorySnapshot.bootstrap?.directory?.scope || '',
+    agents: directorySnapshot.agents.length,
+    humans: directorySnapshot.humans.length,
+    cloudMembers: directorySnapshot.cloud?.members?.length || 0,
+    hasDirectoryTuples: (directorySnapshot.agents || []).some(Array.isArray)
+      && (directorySnapshot.humans || []).some(Array.isArray)
+      && (directorySnapshot.cloud?.members || []).some(Array.isArray),
+    hasCloudMemberDuplication: decodedDirectoryCloudMembers.some((member) => (
+      member.human
+      || member.workspaceId
+      || member.updatedAt
+      || member.createdAt
+      || member.status === 'active'
+      || member.role === 'member'
+      || member.user?.id
+      || member.user?.name
+    )),
+    hasMemberChurnFields: decodedDirectoryAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
+      || decodedDirectoryHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
+    hasInternalFields: directoryBody.includes('promptCache')
+      || directoryBody.includes('runtimeSession'),
+  };
   const heartbeat = await measureHeartbeat(state);
   const repeatedHeartbeat = await measureRepeatedHeartbeatFanout(state);
   const humanHeartbeatChurn = await measureHumanHeartbeatChurnFanout(state);
@@ -937,13 +977,19 @@ async function main() {
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
+  assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
   assertBudget(bootstrap.hasBootstrapDirectoryTuples, 'bootstrap did not compact member directories into tuple rows');
+  assertBudget(bootstrap.agents < state.agents.length, 'bootstrap still loaded the full Agent directory');
+  assertBudget(bootstrap.humans < state.humans.length, 'bootstrap still loaded the full Human directory');
+  assertBudget(bootstrap.cloudMembers < state.humans.length, 'bootstrap still loaded the full cloud member directory');
+  assertBudget(bootstrap.directory?.agents?.total === state.agents.length, 'bootstrap directory metadata lost Agent total');
+  assertBudget(bootstrap.directory?.humans?.total === state.humans.length, 'bootstrap directory metadata lost Human total');
+  assertBudget(bootstrap.directory?.members?.total === state.humans.length, 'bootstrap directory metadata lost member total');
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
   assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
   assertBudget(!bootstrap.hasBootstrapConversationChurnFields, 'bootstrap leaked conversation churn fields');
   assertBudget(!bootstrap.hasBootstrapEmptyAgentWorkItems, 'bootstrap leaked empty agent work item arrays');
   assertBudget(!bootstrap.hasBootstrapDuplicateAgentRuntimeState, 'bootstrap leaked duplicate agent runtime/status fields');
-  assertBudget(bootstrap.cloudMembers === state.humans.length, `bootstrap cloud member fixture expected ${state.humans.length} members but got ${bootstrap.cloudMembers}`);
   assertBudget(!bootstrap.hasBootstrapCloudMemberDuplication, 'bootstrap leaked duplicate cloud member human payloads');
   assertBudget(bootstrap.allChannelMembershipMode === 'all', 'bootstrap did not compact all-channel membership mode');
   assertBudget(bootstrap.allChannelMemberCount === state.humans.length + state.agents.length, `bootstrap all-channel member count expected ${state.humans.length + state.agents.length} but got ${bootstrap.allChannelMemberCount}`);
@@ -952,6 +998,17 @@ async function main() {
   assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
   assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');
   assertBudget(bootstrap.unreadHydration?.included <= BUDGETS.unreadHydrationRecords, 'bootstrap unread hydration is unbounded');
+  assertBudget(directory.ms <= BUDGETS.directoryMs, `directory ${directory.ms}ms exceeds ${BUDGETS.directoryMs}ms`);
+  assertBudget(directory.bytes <= BUDGETS.directoryBytes, `directory ${directory.bytes} bytes exceeds ${BUDGETS.directoryBytes}`);
+  assertBudget(directory.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${directory.directoryFormat || '[none]'}`);
+  assertBudget(directory.directoryScope === 'full', `directory scope expected full but got ${directory.directoryScope || '[none]'}`);
+  assertBudget(directory.hasDirectoryTuples, 'directory did not compact member directories into tuple rows');
+  assertBudget(directory.agents === state.agents.length, `directory expected ${state.agents.length} agents but got ${directory.agents}`);
+  assertBudget(directory.humans === state.humans.length, `directory expected ${state.humans.length} humans but got ${directory.humans}`);
+  assertBudget(directory.cloudMembers === state.humans.length, `directory expected ${state.humans.length} members but got ${directory.cloudMembers}`);
+  assertBudget(!directory.hasCloudMemberDuplication, 'directory leaked duplicate cloud member human payloads');
+  assertBudget(!directory.hasMemberChurnFields, 'directory leaked member churn fields');
+  assertBudget(!directory.hasInternalFields, 'directory leaked internal payload fields');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
@@ -987,7 +1044,7 @@ async function main() {
   assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
   assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
 }
 
 main().catch((error) => {
