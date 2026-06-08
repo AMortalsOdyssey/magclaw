@@ -428,19 +428,6 @@ function addAgentRuntimeActivityEvent(agent, proc, type, activity, detail, extra
     ...extra,
   });
   if (options.broadcast) {
-    if (typeof recordRealtimeEvent === 'function' && agent?.id) {
-      recordRealtimeEvent('agent_status_changed', {
-        agent: {
-          id: agent.id,
-          status: agent.status || 'offline',
-          previousStatus: agent.previousStatus || null,
-          statusUpdatedAt: agent.statusUpdatedAt || null,
-          heartbeatAt: agent.heartbeatAt || null,
-          runtimeActivity: agent.runtimeActivity || null,
-          activeWorkItemIds: agent.activeWorkItemIds || [],
-        },
-      }, { scopeType: 'agent', scopeId: agent.id });
-    }
     if (typeof recordAgentActivityChanged === 'function' && agent?.id) {
       recordAgentActivityChanged(agent, {
         type,
@@ -456,6 +443,18 @@ function addAgentRuntimeActivityEvent(agent, proc, type, activity, detail, extra
           },
         }],
       });
+    } else if (typeof recordRealtimeEvent === 'function' && agent?.id) {
+      recordRealtimeEvent('agent_status_changed', {
+        agent: {
+          id: agent.id,
+          status: agent.status || 'offline',
+          previousStatus: agent.previousStatus || null,
+          statusUpdatedAt: agent.statusUpdatedAt || null,
+          heartbeatAt: agent.heartbeatAt || null,
+          runtimeActivity: agent.runtimeActivity || null,
+          activeWorkItemIds: agent.activeWorkItemIds || [],
+        },
+      }, { scopeType: 'agent', scopeId: agent.id });
     }
     persistState().then(() => broadcastState({ realtimeOnly: true })).catch(() => {});
   }

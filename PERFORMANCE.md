@@ -58,8 +58,8 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
   100 SSE clients each stay under 10 KB and send no `event: heartbeat`
   payloads.
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
-  under 1.4 MB total, sends at most 2000 realtime events, and sends no
-  heartbeat payloads or resync events.
+  under 700 KB total, sends at most 1000 realtime events, and sends no heartbeat
+  payloads or resync events.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

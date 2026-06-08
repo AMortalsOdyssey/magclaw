@@ -788,19 +788,6 @@ export function createDaemonRelay(deps) {
 
   function recordAgentRealtimeSnapshot(agent, options = {}) {
     if (!agent?.id) return;
-    if (typeof recordRealtimeEvent === 'function') {
-      recordRealtimeEvent('agent_status_changed', {
-        agent: {
-          id: agent.id,
-          status: agent.status || 'offline',
-          previousStatus: agent.previousStatus || null,
-          statusUpdatedAt: agent.statusUpdatedAt || null,
-          heartbeatAt: agent.heartbeatAt || null,
-          runtimeActivity: agent.runtimeActivity || null,
-          activeWorkItemIds: agent.activeWorkItemIds || [],
-        },
-      }, { scopeType: 'agent', scopeId: agent.id });
-    }
     if (typeof recordAgentActivityChanged === 'function') {
       recordAgentActivityChanged(agent, {
         workspaceId: workspaceIdForAgent(agent),
@@ -812,6 +799,18 @@ export function createDaemonRelay(deps) {
           detail: options.detail || activityText(agent.runtimeActivity || {}) || '',
         }],
       });
+    } else if (typeof recordRealtimeEvent === 'function') {
+      recordRealtimeEvent('agent_status_changed', {
+        agent: {
+          id: agent.id,
+          status: agent.status || 'offline',
+          previousStatus: agent.previousStatus || null,
+          statusUpdatedAt: agent.statusUpdatedAt || null,
+          heartbeatAt: agent.heartbeatAt || null,
+          runtimeActivity: agent.runtimeActivity || null,
+          activeWorkItemIds: agent.activeWorkItemIds || [],
+        },
+      }, { scopeType: 'agent', scopeId: agent.id });
     }
   }
 

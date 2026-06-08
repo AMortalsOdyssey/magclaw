@@ -1436,16 +1436,17 @@ export function createStateCore(deps) {
       || fallback.detail
       || ''
     ).trim();
-    return {
-      id: source.id || '',
-      type: source.type || source.eventType || source.kind || fallback.type || 'agent_activity_changed',
-      agentId: source.agentId || fallback.agentId || '',
-      activity,
-      detail,
-      message: source.message || detail,
-      createdAt: source.createdAt || source.at || fallback.activityAt || now(),
-      raw: source.raw || null,
-    };
+    const agentId = source.agentId || fallback.agentId || '';
+    const type = source.type || source.eventType || source.kind || fallback.type || 'agent_activity_changed';
+    const normalized = { type };
+    if (source.id) normalized.id = source.id;
+    if (agentId && agentId !== fallback.agentId) normalized.agentId = agentId;
+    if (activity) normalized.activity = activity;
+    if (detail) normalized.detail = detail;
+    if (source.message && source.message !== detail) normalized.message = source.message;
+    if (source.createdAt || source.at) normalized.createdAt = source.createdAt || source.at;
+    if (source.raw) normalized.raw = source.raw;
+    return normalized;
   }
 
   function recordAgentActivityChanged(agent, options = {}) {
@@ -1467,28 +1468,30 @@ export function createStateCore(deps) {
     };
     const entries = (Array.isArray(options.entries) ? options.entries : [])
       .map((entry) => normalizeAgentActivityRealtimeEntry(entry, fallback))
-      .filter((entry) => entry.agentId);
-    return recordRealtimeEvent('agent_activity_changed', {
+      .filter((entry) => entry.agentId || fallback.agentId);
+    const status = agent.status || 'offline';
+    const includeRuntimeActivity = Boolean(activity) || !agentStatusIsBusy(status) || options.includeRuntimeActivity === true;
+    const activeWorkItemIds = Array.isArray(agent.activeWorkItemIds) ? agent.activeWorkItemIds : [];
+    const agentPatch = {
+      id: agent.id,
+      status,
+    };
+    const previousStatus = options.previousStatus || agent.previousStatus || null;
+    if (previousStatus) agentPatch.previousStatus = previousStatus;
+    if (agent.statusUpdatedAt) agentPatch.statusUpdatedAt = agent.statusUpdatedAt;
+    if (agent.heartbeatAt) agentPatch.heartbeatAt = agent.heartbeatAt;
+    if (includeRuntimeActivity) agentPatch.runtimeActivity = activity;
+    if (activeWorkItemIds.length || !agentStatusIsBusy(status)) agentPatch.activeWorkItemIds = activeWorkItemIds;
+    const payload = {
       agentId: agent.id,
-      status: agent.status || 'offline',
-      runtimeActivity: activity,
-      detail,
       activitySeq,
       activityAt,
       entries,
-      agent: {
-        id: agent.id,
-        name: agent.name || '',
-        status: agent.status || 'offline',
-        previousStatus: agent.previousStatus || null,
-        statusUpdatedAt: agent.statusUpdatedAt || null,
-        heartbeatAt: agent.heartbeatAt || null,
-        runtimeActivity: activity,
-        activeWorkItemIds: agent.activeWorkItemIds || [],
-        activitySeq,
-        activityAt,
-      },
-    }, {
+      agent: agentPatch,
+    };
+    if (detail) payload.detail = detail;
+    if (includeRuntimeActivity) payload.runtimeActivity = activity;
+    return recordRealtimeEvent('agent_activity_changed', payload, {
       workspaceId: options.workspaceId || agent.workspaceId || '',
       scopeType: 'agent',
       scopeId: agent.id,
@@ -1532,21 +1535,11 @@ export function createStateCore(deps) {
         reason,
         ...(extra.event || {}),
       }, { skipRealtime: true });
-      recordRealtimeEvent('agent_status_changed', {
-        agent: {
-          id: agent.id,
-          status: nextStatus,
-          previousStatus,
-          statusUpdatedAt: agent.statusUpdatedAt,
-          heartbeatAt: agent.heartbeatAt || null,
-          runtimeActivity: agent.runtimeActivity || null,
-          activeWorkItemIds: agent.activeWorkItemIds || [],
-        },
-      }, { scopeType: 'agent', scopeId: agent.id });
     }
     if (shouldRecordActivity) {
       recordAgentActivityChanged(agent, {
         type: 'agent_status_changed',
+        previousStatus,
         detail: agentActivityDetail(agent.runtimeActivity) || `${agent.name} is ${nextStatus}.`,
         entries: [{
           type: 'agent_status_changed',

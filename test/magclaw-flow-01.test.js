@@ -373,7 +373,7 @@ test('stale runtime statuses reset to idle when the local server restarts', asyn
   }
 });
 
-test('status changes publish an immediate realtime event without waiting for the heartbeat interval', async () => {
+test('status changes publish an immediate agent activity event without waiting for the heartbeat interval', async () => {
   const server = await startIsolatedServer({ MAGCLAW_STATE_HEARTBEAT_MS: '10000' });
   const controller = new AbortController();
   const response = await fetch(`${server.baseUrl}/api/events`, { signal: controller.signal });
@@ -386,10 +386,11 @@ test('status changes publish an immediate realtime event without waiting for the
       method: 'PATCH',
       body: JSON.stringify({ status: 'working' }),
     });
-    const realtime = await readRealtimeEventTypeFromReader(reader, decoder, 'agent_status_changed', 600);
-    assert.equal(realtime.eventType, 'agent_status_changed');
+    const realtime = await readRealtimeEventTypeFromReader(reader, decoder, 'agent_activity_changed', 600);
+    assert.equal(realtime.eventType, 'agent_activity_changed');
     assert.equal(realtime.payload?.agent?.id, 'agt_codex');
     assert.equal(realtime.payload?.agent?.status, 'working');
+    assert.equal(realtime.payload?.entries?.[0]?.type, 'agent_status_changed');
   } finally {
     controller.abort();
     await reader.cancel().catch(() => {});

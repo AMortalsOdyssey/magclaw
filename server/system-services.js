@@ -374,7 +374,7 @@ export function createSystemServices(deps) {
   }
 
   function publicAgentRecord(agent = {}) {
-    return pickPublicFields(agent, [
+    const record = pickPublicFields(agent, [
       'id',
       'workspaceId',
       'name',
@@ -413,6 +413,9 @@ export function createSystemServices(deps) {
       'createdAt',
       'updatedAt',
     ]) || { id: agent?.id || '' };
+    if (Array.isArray(agent.activeWorkItemIds)) record.activeWorkItemIds = agent.activeWorkItemIds;
+    if (Object.hasOwn(agent, 'runtimeActivity') && agent.runtimeActivity === null) record.runtimeActivity = null;
+    return record;
   }
 
   function bootstrapOptionsFromRequest(req) {

@@ -286,7 +286,7 @@ test('state core coalesces burst state broadcasts into lightweight resync signal
   }
 });
 
-test('state core broadcasts agent realtime events without forcing state patches', async () => {
+test('state core broadcasts agent activity realtime events without forcing state patches', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-realtime-'));
   const activityDir = path.join(tmp, 'activity-logs');
   await mkdir(activityDir, { recursive: true });
@@ -314,10 +314,10 @@ test('state core broadcasts agent realtime events without forcing state patches'
 
     const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
     const otherEvents = sseEnvelopes(otherChannelClient, 'realtime-event');
-    assert.ok(channelEvents.some((event) => event.eventType === 'agent_status_changed'));
     assert.ok(channelEvents.some((event) => event.eventType === 'agent_activity_changed'));
-    assert.ok(otherEvents.some((event) => event.eventType === 'agent_status_changed'));
     assert.ok(otherEvents.some((event) => event.eventType === 'agent_activity_changed'));
+    assert.equal(channelEvents.some((event) => event.eventType === 'agent_status_changed'), false);
+    assert.equal(otherEvents.some((event) => event.eventType === 'agent_status_changed'), false);
     assert.equal(channelEvents.some((event) => event.payload?.event?.type === 'agent_status_changed'), false);
     assert.ok(channelEvents.some((event) => event.payload?.event?.type === 'message_sent'));
     assert.equal(otherEvents.some((event) => event.payload?.event?.type === 'message_sent'), false);
@@ -457,7 +457,7 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
 
     assert.equal(publicStateCalls, 0);
     assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
-    assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length >= 10), true);
+    assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length === 10), true);
     assert.equal(clients.every((client) => ssePackets(client, 'heartbeat').length === 0), true);
     const averagePacketBytes = clients
       .flatMap((client) => client.writes)
@@ -561,8 +561,8 @@ test('state core records scoped realtime journal events for SSE replay', async (
     core.setAgentStatus(core.state.agents[0], 'working', 'test', { forceEvent: true });
 
     const snapshot = core.stateFullSnapshot();
-    assert.equal(snapshot.cloud.realtimeEvents.length, 3);
-    assert.deepEqual(snapshot.cloud.realtimeEvents.map((item) => item.seq), [1, 2, 3]);
+    assert.equal(snapshot.cloud.realtimeEvents.length, 2);
+    assert.deepEqual(snapshot.cloud.realtimeEvents.map((item) => item.seq), [1, 2]);
     assert.equal(snapshot.cloud.realtimeEvents[0].payload.event.id, event.id);
     const activityEvent = snapshot.cloud.realtimeEvents.find((item) => item.eventType === 'agent_activity_changed');
     assert.equal(activityEvent.payload.agentId, core.state.agents[0].id);
@@ -574,8 +574,8 @@ test('state core records scoped realtime journal events for SSE replay', async (
       url: '/api/events?spaceType=channel&spaceId=chan_all',
     }, 0);
     assert.equal(replay.gap, false);
-    assert.equal(replay.currentSeq, 3);
-    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'agent_status_changed', 'agent_activity_changed']);
+    assert.equal(replay.currentSeq, 2);
+    assert.deepEqual(replay.events.map((item) => item.eventType), ['system_event', 'agent_activity_changed']);
     await core.flushActivityLog();
   } finally {
     await rm(tmp, { recursive: true, force: true });
