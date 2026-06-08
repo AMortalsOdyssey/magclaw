@@ -569,6 +569,62 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
   }
 });
 
+test('state core does not serialize full presence payloads for deferred unchanged heartbeats', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-heartbeat-lazy-'));
+  const sseClients = new Set();
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    WRITE_STATE_JSON: false,
+    sseClients,
+  });
+  const originalStringify = JSON.stringify;
+  let fullPresenceSerializations = 0;
+  try {
+    await core.ensureStorage();
+    core.state.connection.workspaceId = 'local';
+    core.state.agents = Array.from({ length: 50 }, (_value, index) => ({
+      id: `agt_${index}`,
+      workspaceId: 'local',
+      status: index % 5 === 0 ? 'working' : 'idle',
+      runtimeActivity: index % 5 === 0 ? { detail: `working ${index}` } : null,
+      activitySeq: index % 5 === 0 ? index + 1 : 0,
+      activityAt: '2026-05-12T00:00:00.000Z',
+    }));
+    core.state.humans = Array.from({ length: 50 }, (_value, index) => ({
+      id: `hum_${index}`,
+      workspaceId: 'local',
+      status: index % 3 === 0 ? 'online' : 'offline',
+      lastSeenAt: new Date().toISOString(),
+    }));
+    const client = fakeSseClient({ magclawPresenceWorkspaceId: 'local' });
+    sseClients.add(client);
+    JSON.stringify = function patchedStringify(value, ...args) {
+      if (
+        value
+        && typeof value === 'object'
+        && Array.isArray(value.agents)
+        && value.agents.length >= 50
+        && Array.isArray(value.humans)
+        && value.humans.length >= 50
+      ) {
+        fullPresenceSerializations += 1;
+      }
+      return originalStringify.call(this, value, ...args);
+    };
+
+    core.writePresenceHeartbeat(client, client.magclawRequest, { seedOnly: true });
+    core.broadcastHeartbeat();
+    core.broadcastHeartbeat();
+
+    assert.equal(fullPresenceSerializations, 0);
+    assert.equal(ssePackets(client, 'heartbeat').length, 0);
+    assert.equal(client.writes.every((packet) => packet.startsWith(': heartbeat-unchanged')), true);
+  } finally {
+    JSON.stringify = originalStringify;
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core records scoped realtime journal events for SSE replay', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-journal-'));
   const activityDir = path.join(tmp, 'activity-logs');

@@ -50,6 +50,8 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
   IDs, heartbeat timestamps, and per-record update timestamps.
+- Deferred and unchanged heartbeat fanout must not serialize full member
+  presence payloads before falling back to keepalive comments or deltas.
 - Off-space unread hydration remains bounded to 80 records.
 - Task hydration remains windowed to at most 200 records in the synthetic smoke,
   with selected-space and global task pagination cursors exposed for older

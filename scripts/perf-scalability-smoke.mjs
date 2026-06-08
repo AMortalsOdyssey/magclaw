@@ -11,6 +11,7 @@ const BUDGETS = Object.freeze({
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
+  deferredHeartbeatFullSerializations: Number(process.env.MAGCLAW_PERF_DEFERRED_HEARTBEAT_FULL_SERIALIZATIONS || 0),
   repeatedHeartbeatBytes: Number(process.env.MAGCLAW_PERF_REPEATED_HEARTBEAT_BYTES || 10_000),
   humanHeartbeatChurnBytes: Number(process.env.MAGCLAW_PERF_HUMAN_HEARTBEAT_CHURN_BYTES || 10_000),
   presenceMemberDeltaBytes: Number(process.env.MAGCLAW_PERF_PRESENCE_MEMBER_DELTA_BYTES || 50_000),
@@ -240,7 +241,22 @@ async function measureHeartbeat(state) {
 async function measureRepeatedHeartbeatFanout(state) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-perf-scalability-heartbeat-'));
   const sseClients = new Set();
+  const originalStringify = JSON.stringify;
+  let fullPresenceSerializations = 0;
   try {
+    JSON.stringify = function patchedStringify(value, ...args) {
+      if (
+        value
+        && typeof value === 'object'
+        && Array.isArray(value.agents)
+        && value.agents.length >= 100
+        && Array.isArray(value.humans)
+        && value.humans.length >= 100
+      ) {
+        fullPresenceSerializations += 1;
+      }
+      return originalStringify.call(this, value, ...args);
+    };
     const core = createStateCore({
       addSystemEvent: () => {},
       broadcastState: () => {},
@@ -292,8 +308,10 @@ async function measureRepeatedHeartbeatFanout(state) {
       repeatedBytes: repeatedWrites.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
       repeatedHeartbeatEvents: repeatedWrites.filter((packet) => packet.startsWith('event: heartbeat\n')).length,
       repeatedKeepalives: repeatedWrites.filter((packet) => packet.startsWith(': heartbeat-unchanged\n\n')).length,
+      fullPresenceSerializations,
     };
   } finally {
+    JSON.stringify = originalStringify;
     await rm(tmp, { recursive: true, force: true });
   }
 }
@@ -559,6 +577,7 @@ async function main() {
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
   assertBudget(repeatedHeartbeat.deferredOpenBytes <= BUDGETS.deferredOpenBytes, `deferred SSE open ${repeatedHeartbeat.deferredOpenBytes} bytes exceeds ${BUDGETS.deferredOpenBytes}`);
+  assertBudget(repeatedHeartbeat.fullPresenceSerializations <= BUDGETS.deferredHeartbeatFullSerializations, `deferred unchanged heartbeat serialized ${repeatedHeartbeat.fullPresenceSerializations} full presence payloads`);
   assertBudget(repeatedHeartbeat.deferredOpenHeartbeatEvents === 0, 'deferred SSE open sent heartbeat payload events');
   assertBudget(repeatedHeartbeat.repeatedBytes <= BUDGETS.repeatedHeartbeatBytes, `repeated heartbeat fanout ${repeatedHeartbeat.repeatedBytes} bytes exceeds ${BUDGETS.repeatedHeartbeatBytes}`);
   assertBudget(repeatedHeartbeat.repeatedHeartbeatEvents === 0, 'unchanged repeated heartbeat sent payload events');

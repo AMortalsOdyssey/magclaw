@@ -1433,15 +1433,37 @@ export function createStateCore(deps) {
   }
 
   function presenceHeartbeatSignature(heartbeat = {}) {
-    return JSON.stringify({
-      agents: heartbeat.agents || [],
-      humans: (heartbeat.humans || []).map((human) => ({
-        id: human.id,
-        // Browser pings refresh lastSeenAt frequently; only visible status changes
-        // should fan out a full heartbeat payload to every SSE client.
-        status: human.status || 'offline',
-      })),
-    });
+    const signatureValue = (value) => {
+      if (value === undefined || value === null || value === '') return '';
+      if (typeof value !== 'object') return String(value);
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    };
+    const agentSignature = (agent) => [
+      agent?.id || '',
+      agent?.status || 'offline',
+      agent?.runtimeLastStartedAt || '',
+      agent?.runtimeLastTurnAt || '',
+      agent?.runtimeWarmAt || '',
+      signatureValue(agent?.runtimeActivity),
+      agent?.activitySeq || '',
+      agent?.activityAt || '',
+    ].join('\u001f');
+    const humanSignature = (human) => [
+      human?.id || '',
+      // Browser pings refresh lastSeenAt frequently; only visible status changes
+      // should fan out a full heartbeat payload to every SSE client.
+      human?.status || 'offline',
+    ].join('\u001f');
+    return [
+      'agents',
+      ...(heartbeat.agents || []).map(agentSignature),
+      'humans',
+      ...(heartbeat.humans || []).map(humanSignature),
+    ].join('\u001e');
   }
 
   function presenceEntryMap(entries = []) {
@@ -1524,6 +1546,7 @@ export function createStateCore(deps) {
       writeSsePacket(res, ssePacket('heartbeat', delta), { coalesceKey: 'heartbeat' });
       return true;
     }
+    if (!entry.packet) entry.packet = ssePacket('heartbeat', entry.body);
     writeSsePacket(res, entry.packet, { coalesceKey: 'heartbeat' });
     return true;
   }
@@ -1533,7 +1556,7 @@ export function createStateCore(deps) {
     return {
       body,
       signature: presenceHeartbeatSignature(body),
-      packet: ssePacket('heartbeat', body),
+      packet: null,
       keepalivePacket: sseComment('heartbeat-unchanged'),
     };
   }
