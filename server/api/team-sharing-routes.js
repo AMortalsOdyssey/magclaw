@@ -5921,6 +5921,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
           keywordCandidates: asArray(keyword.candidates),
           limit: candidateK,
         });
+    const filteredCandidates = uploaderIds.length
+      ? candidates.filter((candidate) => uploaderMatchesFilter(candidate, uploaderIds))
+      : candidates;
     const rerankQuery = uniqueSearchList([
       intent.query,
       intent.semanticQuery,
@@ -5929,15 +5932,15 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const rerankResults = memberOnly
       ? []
       : rerank
-      ? await rerank({ query: rerankQuery, candidates, limit: candidateK })
-      : localRerank({ query: rerankQuery, candidates });
+      ? await rerank({ query: rerankQuery, candidates: filteredCandidates, limit: candidateK })
+      : localRerank({ query: rerankQuery, candidates: filteredCandidates });
     const ranked = rankTeamSharingCandidates({
       query: intent.query,
       semanticQuery: intent.semanticQuery,
       keywords: intent.keywords,
       topics: intent.topics,
       intent,
-      candidates,
+      candidates: filteredCandidates,
       teamSharingState,
       rerankResults,
       keywordCandidates: keyword.candidates || [],
@@ -5964,7 +5967,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       workspaceId: effectiveWorkspaceId,
       queryId: ranked.queryId,
       resultCount: ranked.results.length,
-      candidateCount: candidates.length,
+      candidateCount: filteredCandidates.length,
       searchMode,
       modeBias: intent.modeBias,
       sortBy,
@@ -6021,7 +6024,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         };
       }),
       rerankUsed: Boolean(rerankResults?.length),
-      candidateCount: candidates.length,
+      candidateCount: filteredCandidates.length,
       semanticCandidateCount: asArray(semantic?.candidates).length,
       keywordCandidateCount: asArray(keyword?.candidates).length,
       searchMode,

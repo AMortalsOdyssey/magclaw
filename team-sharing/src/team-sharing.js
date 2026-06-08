@@ -941,7 +941,7 @@ export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(
     profile: cleanProfile,
     sharingHome,
     profileConfig: path.join(sharingHome, 'profiles', cleanProfile, 'config.yaml'),
-    sessionOverrides: path.join(sharingHome, 'profiles', cleanProfile, 'session-overrides.json'),
+    sessionOverrides: path.join(sharingHome, 'session-overrides.json'),
     projectsConfig: path.join(sharingHome, 'projects.yaml'),
     versionCache: path.join(sharingHome, 'version-cache.json'),
     projectConfig: path.join(projectDir, '.magclaw', 'team-sharing.yaml'),
@@ -1863,6 +1863,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     matched: Boolean(reporting.matched),
     reason: reporting.reason || '',
     expiresAt: reporting.expiresAt || '',
+    sessionOverrides: reporting.sessionOverrides || '',
     persisted: reporting.ok !== false,
     ...patch,
   });

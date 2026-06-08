@@ -1240,20 +1240,44 @@ test('team sharing route passes resolved uploader filters into remote hybrid sea
       ...deps,
       vectorSearch: async ({ teamSharingState, uploaderIds }) => {
         seen.semanticUploaderIds = uploaderIds;
+        const matching = teamSharingState.vectorDocuments
+          .filter((doc) => doc.sessionId === 'sess_remote_jhb')
+          .map((doc) => ({ ...doc, vectorScore: 0.8, keywordScore: 0.2, freshnessScore: 0.5 }));
         return {
           ok: true,
-          candidates: teamSharingState.vectorDocuments
-            .filter((doc) => doc.sessionId === 'sess_remote_jhb')
-            .map((doc) => ({ ...doc, vectorScore: 0.8, keywordScore: 0.2, freshnessScore: 0.5 })),
+          candidates: [
+            {
+              ...matching[0],
+              vectorDocumentId: 'legacy_no_uploader:L0',
+              sessionId: 'legacy_no_uploader',
+              uploaderId: '',
+              uploaderName: '',
+              title: 'Legacy no uploader',
+              vectorScore: 0.99,
+            },
+            ...matching,
+          ],
         };
       },
       keywordSearch: async ({ teamSharingState, uploaderIds }) => {
         seen.keywordUploaderIds = uploaderIds;
+        const matching = teamSharingState.vectorDocuments
+          .filter((doc) => doc.sessionId === 'sess_remote_jhb')
+          .map((doc) => ({ ...doc, vectorScore: 0.05, keywordScore: 0.8, freshnessScore: 0.5 }));
         return {
           ok: true,
-          candidates: teamSharingState.vectorDocuments
-            .filter((doc) => doc.sessionId === 'sess_remote_jhb')
-            .map((doc) => ({ ...doc, vectorScore: 0.05, keywordScore: 0.8, freshnessScore: 0.5 })),
+          candidates: [
+            {
+              ...matching[0],
+              vectorDocumentId: 'legacy_no_uploader:L1',
+              sessionId: 'legacy_no_uploader',
+              uploaderId: '',
+              uploaderName: '',
+              title: 'Legacy no uploader',
+              keywordScore: 1,
+            },
+            ...matching,
+          ],
         };
       },
       keywordSearchReady: () => true,
@@ -1270,6 +1294,7 @@ test('team sharing route passes resolved uploader filters into remote hybrid sea
   assert.deepEqual(seen.semanticUploaderIds, ['hum_jhb']);
   assert.deepEqual(seen.keywordUploaderIds, ['hum_jhb']);
   assert.equal(searchRes.data.results[0].uploader.name, '蒋海波');
+  assert.ok(!searchRes.data.results.some((item) => item.title === 'Legacy no uploader'));
 });
 
 test('team sharing route records feedback and serves context windows', async () => {
