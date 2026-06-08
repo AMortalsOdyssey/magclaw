@@ -2827,6 +2827,7 @@ function sendContextHtml(res, {
           }
           if (presentation.mode === 'goal') {
             const goal = presentation.goal || {};
+            if (goal.reply) return '<div class="context-main context-goal-main">' + renderContextMarkdown(text) + '</div>';
             const objective = goal.objective || text;
             return '<div class="context-main context-goal-main">' + renderContextMarkdown(objective) + '</div>';
           }

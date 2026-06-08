@@ -475,6 +475,7 @@ function normalizeTeamSharingPresentation(value = null, fallbackRuntime = '') {
       ...(status ? { status } : {}),
       source: goalSource,
       objectiveMatchesUser: Boolean(goal.objectiveMatchesUser || raw.objectiveMatchesUser),
+      ...(goal.reply || raw.reply || raw.goalReply ? { reply: true } : {}),
     };
   }
   if (mode === 'interaction') {

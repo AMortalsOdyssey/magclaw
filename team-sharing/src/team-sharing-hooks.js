@@ -170,6 +170,32 @@ function codexVisibleUserRequestText(value = '') {
     .trim();
 }
 
+function claudeSkillArgumentsText(value = '') {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!text.startsWith('Base directory for this skill:')) return '';
+  const match = text.match(/(?:^|\n)\s*ARGUMENTS:\s*([\s\S]*)$/i);
+  return match ? compactPresentationText(match[1], 8000) : '';
+}
+
+function claudeVisibleUserText(value = '') {
+  const skillArguments = claudeSkillArgumentsText(value);
+  return skillArguments || String(value || '').trim();
+}
+
+function claudeSessionTitleFromEvents(events = []) {
+  const userEvent = events.find((event) => event?.role === 'user' && event.text);
+  const title = compactPresentationText(userEvent?.text || '', 96)
+    .replace(/\s+/g, ' ')
+    .replace(/^#+\s*/, '')
+    .trim();
+  return title;
+}
+
+function rememberClaudeContext(raw = {}, item = {}, context = {}) {
+  context.sessionId = context.sessionId || raw.session_id || raw.sessionId || item.sessionId || '';
+  context.projectPath = context.projectPath || raw.cwd || item.cwd || '';
+}
+
 function isCodexImplementationPlanPrompt(value = '') {
   return /^\s*PLEASE IMPLEMENT THIS PLAN\s*:/i.test(codexVisibleUserRequestText(value));
 }
@@ -351,6 +377,22 @@ function buildGoalPresentation({ objective = '', status = '', source = 'agent', 
   };
 }
 
+function buildGoalReplyPresentation({ objective = '', runtime = 'codex' } = {}) {
+  const presentation = buildGoalPresentation({
+    objective,
+    source: 'agent',
+    objectiveMatchesUser: false,
+    runtime,
+  });
+  if (!presentation) return null;
+  presentation.goal.reply = true;
+  return presentation;
+}
+
+function activeGoalObjective(goalEventRef = {}) {
+  return compactPresentationText(goalEventRef.current?.presentation?.goal?.objective || '', 8000);
+}
+
 function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
@@ -381,16 +423,16 @@ function codexTextEvent(item, context) {
 
 function claudeTextEvent(item, context) {
   const raw = item?.payload && typeof item.payload === 'object' ? item.payload : item;
+  rememberClaudeContext(raw, item, context);
   if (raw?.type === 'system' && raw.subtype === 'init') {
-    context.sessionId = context.sessionId || raw.session_id || raw.sessionId || '';
-    context.projectPath = context.projectPath || raw.cwd || '';
     return null;
   }
   if (raw?.type === 'assistant' || raw?.type === 'user') {
     const textBlocks = asArray(raw.message?.content)
       .map((block) => (block?.type === 'text' ? block.text : ''))
       .filter(Boolean);
-    const text = redactTeamSharingText(textBlocks.join('\n\n'));
+    const rawText = textBlocks.join('\n\n');
+    const text = redactTeamSharingText(raw.type === 'user' ? claudeVisibleUserText(rawText) : rawText);
     if (!text) return null;
     return {
       role: raw.type === 'assistant' ? 'assistant' : 'user',
@@ -408,8 +450,12 @@ function claudeTextEvent(item, context) {
 }
 
 function assignTranscriptEvent(events, sourceOrdinalRef, event = {}) {
-  sourceOrdinalRef.value += 1;
-  event.sourceOrdinal = sourceOrdinalRef.value;
+  if (Number(event.sourceOrdinal || 0) > 0) {
+    sourceOrdinalRef.value = Math.max(sourceOrdinalRef.value, Number(event.sourceOrdinal || 0));
+  } else {
+    sourceOrdinalRef.value += 1;
+    event.sourceOrdinal = sourceOrdinalRef.value;
+  }
   events.push(event);
   return event;
 }
@@ -436,6 +482,7 @@ function emitCodexGoalEvent({
   objective = '',
   status = '',
   createdAt = '',
+  sourceOrdinal = 0,
 } = {}) {
   const previousUser = latestUserTranscriptEvent(events);
   const matchesUser = previousUser && goalObjectiveMatchesUser(objective, previousUser.text);
@@ -459,6 +506,7 @@ function emitCodexGoalEvent({
   });
   if (!presentation) return null;
   const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+    sourceOrdinal,
     role: 'assistant',
     text: presentation.goal.objective,
     createdAt,
@@ -481,6 +529,8 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       continue;
     }
     if (item?.type !== 'response_item') continue;
+    sourceOrdinalRef.value += 1;
+    const sourceOrdinal = sourceOrdinalRef.value;
     const payload = item.payload || {};
     const createdAt = iso(item.timestamp);
     if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
@@ -505,6 +555,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
         });
         if (presentation) {
           assignTranscriptEvent(events, sourceOrdinalRef, {
+            sourceOrdinal,
             role: 'assistant',
             text: interactionTextFromPresentation(presentation),
             createdAt,
@@ -514,7 +565,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       } else if (pending?.name === 'create_goal') {
         const objective = goalObjectiveFromPayload(output) || goalObjectiveFromPayload(pending.args);
         const status = goalStatusFromPayload(output) || goalStatusFromPayload(pending.args);
-        const event = emitCodexGoalEvent({
+        emitCodexGoalEvent({
           events,
           sourceOrdinalRef,
           goalEventRef,
@@ -522,6 +573,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
           objective,
           status,
           createdAt,
+          sourceOrdinal,
         });
       } else if (pending?.name === 'update_goal') {
         const status = goalStatusFromPayload(output) || goalStatusFromPayload(pending.args);
@@ -540,6 +592,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       const goalContext = extractCodexGoalInternalContext(text);
       if (goalContext) {
         const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+          sourceOrdinal,
           role,
           text: goalContext.objective,
           createdAt,
@@ -556,18 +609,31 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
         continue;
       }
       const goalCommand = stripGoalCommandPrefix(text);
-      assignTranscriptEvent(events, sourceOrdinalRef, {
+      const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+        sourceOrdinal,
         role,
         text: goalCommand.text,
         createdAt,
         toolCalls: [],
         isGoalRequest: goalCommand.isGoalRequest,
       });
+      if (goalCommand.isGoalRequest && goalCommand.text) {
+        event.presentation = buildGoalPresentation({
+          objective: goalCommand.text,
+          source: 'user',
+          objectiveMatchesUser: true,
+          runtime: 'codex',
+        });
+        goalEventRef.current = event;
+      } else {
+        goalEventRef.current = null;
+      }
       continue;
     }
     const proposedPlan = extractProposedPlanText(text);
     if (proposedPlan) {
       assignTranscriptEvent(events, sourceOrdinalRef, {
+        sourceOrdinal,
         role: 'assistant',
         text: proposedPlan,
         createdAt,
@@ -580,12 +646,18 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       });
       continue;
     }
+    const goalReplyPresentation = buildGoalReplyPresentation({
+      objective: activeGoalObjective(goalEventRef),
+      runtime: 'codex',
+    });
     assignTranscriptEvent(events, sourceOrdinalRef, {
+      sourceOrdinal,
       role,
       text,
       createdAt,
       keepAssistant: false,
       toolCalls: context.toolNames.length ? context.toolNames.map((name) => ({ name })) : [],
+      ...(goalReplyPresentation ? { presentation: goalReplyPresentation } : {}),
     });
   }
   return events;
@@ -656,9 +728,8 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
   for (const item of parsed) {
     const raw = item?.payload && typeof item.payload === 'object' ? item.payload : item;
     const createdAt = iso(item.timestamp || raw.timestamp);
+    rememberClaudeContext(raw, item, context);
     if (raw?.type === 'system' && raw.subtype === 'init') {
-      context.sessionId = context.sessionId || raw.session_id || raw.sessionId || '';
-      context.projectPath = context.projectPath || raw.cwd || '';
       continue;
     }
     if (raw?.type === 'assistant') {
@@ -711,7 +782,7 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
         });
         if (pending) pendingToolUses.delete(toolUseId);
       }
-      const text = redactTeamSharingText(textBlocks.join('\n\n'));
+      const text = redactTeamSharingText(claudeVisibleUserText(textBlocks.join('\n\n')));
       if (!text) continue;
       const goalCommand = stripGoalCommandPrefix(text);
       const event = assignTranscriptEvent(events, sourceOrdinalRef, {
@@ -788,6 +859,9 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
     : extractCodexTranscriptEvents(parsed, context);
   const visibleTranscript = visibleTeamSharingTranscriptEvents(extractedEvents);
   const visibleEvents = visibleTranscript.events;
+  if (!context.title && runtime === 'claude_code') {
+    context.title = claudeSessionTitleFromEvents(visibleEvents);
+  }
   const sessionSeed = context.sessionId || options.sessionId || 'session';
   const events = visibleEvents.map((event, index) => {
     const ordinal = Number(event.sourceOrdinal || 0) || index + 1;

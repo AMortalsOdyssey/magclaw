@@ -2665,6 +2665,26 @@ test('team sharing context page renders plan goal and interaction presentation p
   assert.match(goalHtml, /把 Goal 模式接入 Team Sharing/);
   assert.doesNotMatch(goalHtml, /codex_internal_context|objectiveMatchesUser|Continuation behavior/);
 
+  const goalReplyHtml = context.eventHtml({
+    eventId: 'evt_goal_reply',
+    role: 'assistant',
+    text: '阶段结果：SSE 首包只保留 heartbeat。',
+    createdAt: '2026-06-01T10:03:08.000Z',
+    presentation: {
+      mode: 'goal',
+      source: 'codex',
+      goal: {
+        objective: '持续优化正式环境响应速度',
+        source: 'agent',
+        reply: true,
+      },
+    },
+  });
+  assert.match(goalReplyHtml, /context-goal-badge/);
+  assert.match(goalReplyHtml, /context-avatar-codex/);
+  assert.match(goalReplyHtml, /阶段结果：SSE 首包只保留 heartbeat。/);
+  assert.doesNotMatch(goalReplyHtml, /持续优化正式环境响应速度/);
+
   const legacyGoalHtml = context.eventHtml({
     eventId: 'evt_legacy_goal',
     role: 'user',

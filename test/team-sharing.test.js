@@ -233,7 +233,7 @@ test('team sharing context summary hint prefers uploaded activity summary', asyn
 test('team sharing sync preserves presentation metadata on events, replies, and context windows', async () => {
   const state = baseState();
   const result = await syncTeamSharingBatch(sampleSyncPackage({
-    idempotencyKey: 'codex:magclaw:sess_presentation:1:3:presentation',
+    idempotencyKey: 'codex:magclaw:sess_presentation:1:4:presentation',
     sessionId: 'sess_presentation',
     title: 'Plan Goal presentation metadata',
     events: [
@@ -267,8 +267,24 @@ test('team sharing sync preserves presentation metadata on events, replies, and 
         },
       },
       {
-        eventId: 'evt_interaction',
+        eventId: 'evt_goal_reply',
         ordinal: 3,
+        role: 'assistant',
+        text: '阶段结果：Goal 回复正文应该保留。',
+        createdAt: '2026-06-01T08:01:30.000Z',
+        presentation: {
+          mode: 'goal',
+          source: 'codex',
+          goal: {
+            objective: '把 Goal 模式接入 Team Sharing',
+            source: 'agent',
+            reply: true,
+          },
+        },
+      },
+      {
+        eventId: 'evt_interaction',
+        ordinal: 4,
         role: 'assistant',
         text: 'Agent 提问：要先做哪一层？\n用户回答：Full stack',
         createdAt: '2026-06-01T08:02:00.000Z',
@@ -291,24 +307,28 @@ test('team sharing sync preserves presentation metadata on events, replies, and 
   assert.equal(result.ok, true);
   assert.equal(state.teamSharing.events.sess_presentation[0].presentation.mode, 'plan');
   assert.equal(state.teamSharing.events.sess_presentation[1].presentation.goal.source, 'user');
-  assert.deepEqual(state.teamSharing.events.sess_presentation[2].presentation.interaction.answers[0].values, ['Full stack']);
+  assert.equal(state.teamSharing.events.sess_presentation[2].presentation.goal.reply, true);
+  assert.deepEqual(state.teamSharing.events.sess_presentation[3].presentation.interaction.answers[0].values, ['Full stack']);
   assert.equal(state.replies[0].metadata.teamSharing.presentation.mode, 'plan');
   assert.equal(state.replies[1].metadata.teamSharing.presentation.goal.objectiveMatchesUser, true);
-  assert.equal(state.replies[2].metadata.teamSharing.presentation.interaction.questions[0].question, '要先做哪一层？');
-  assert.match(state.replies[2].body, /\*\*Agent 提问：范围\*\*：要先做哪一层？/);
-  assert.match(state.replies[2].body, /\*\*用户回答：\*\* Full stack `（连云端展示一起做。）`/);
-  assert.doesNotMatch(state.replies[2].body, /^Agent 提问：/m);
+  assert.equal(state.replies[2].metadata.teamSharing.presentation.goal.reply, true);
+  assert.equal(state.replies[3].metadata.teamSharing.presentation.interaction.questions[0].question, '要先做哪一层？');
+  assert.match(state.replies[3].body, /\*\*Agent 提问：范围\*\*：要先做哪一层？/);
+  assert.match(state.replies[3].body, /\*\*用户回答：\*\* Full stack `（连云端展示一起做。）`/);
+  assert.doesNotMatch(state.replies[3].body, /^Agent 提问：/m);
   const l0Document = state.teamSharing.vectorDocuments.find((doc) => doc.sessionId === 'sess_presentation' && doc.layer === 'L0');
   assert.deepEqual(l0Document.presentationModes, ['plan', 'goal', 'interaction']);
   assert.equal(l0Document.presentations[1].goal.objective, '把 Goal 模式接入 Team Sharing');
+  assert.equal(l0Document.presentations[2].goal.reply, true);
 
   const context = contextWindowForTeamSharingSession(state.teamSharing, 'sess_presentation', {
     anchorEventId: 'evt_goal',
     direction: 'around',
-    limit: 3,
+    limit: 4,
   });
   assert.equal(context.ok, true);
-  assert.deepEqual(context.events.map((event) => event.presentation?.mode), ['plan', 'goal', 'interaction']);
+  assert.deepEqual(context.events.map((event) => event.presentation?.mode), ['plan', 'goal', 'goal', 'interaction']);
+  assert.equal(context.events[2].presentation.goal.reply, true);
 });
 
 test('team sharing sync records whitelisted local hook package metadata', async () => {
