@@ -352,7 +352,9 @@ function agentIsStandby(agent) {
 function agentDisplayStatus(agent, stateSnapshot = appState) {
   if (!agent) return 'offline';
   if (agent.deletedAt || agent.archivedAt) return 'deleted';
-  const computer = agent.computerId ? byId(stateSnapshot?.computers, agent.computerId) : null;
+  const computer = agent.computerId
+    ? (typeof computerById === 'function' ? computerById(agent.computerId, stateSnapshot) : byId(stateSnapshot?.computers, agent.computerId))
+    : null;
   if (computer && typeof computerIsDisabled === 'function' && computerIsDisabled(computer)) return 'disabled';
   if (computer?.deletedAt || computer?.archivedAt) return 'deleted';
   if (agentIsWarming(agent)) return 'warming';
@@ -367,7 +369,7 @@ function agentDisplayStatus(agent, stateSnapshot = appState) {
 
 function actorStatusRenderKey(authorId, authorType, stateSnapshot = appState) {
   if (authorType !== 'agent') return '';
-  const agent = byId(stateSnapshot?.agents, authorId);
+  const agent = typeof agentById === 'function' ? agentById(authorId, stateSnapshot) : byId(stateSnapshot?.agents, authorId);
   return agent ? agentDisplayStatus(agent, stateSnapshot) : 'offline';
 }
 
@@ -398,7 +400,7 @@ function avatarStatusDot(status, label = 'Status') {
 
 function agentStatusDot(authorId, authorType) {
   if (authorType !== 'agent') return '';
-  const agent = byId(appState?.agents, authorId);
+  const agent = typeof agentById === 'function' ? agentById(authorId) : byId(appState?.agents, authorId);
   return avatarStatusDot(agent ? agentDisplayStatus(agent) : 'offline', 'Agent status');
 }
 

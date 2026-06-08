@@ -700,11 +700,15 @@ test('workspace people directories cache normalization without losing roles or a
   const syncSource = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
   const directorySource = [
     'function byId(list, id) { return (list || []).find((item) => item?.id === id) || null; }',
+    'let stateEntityLookupCache = null;',
     'let workspaceHumansCache = null;',
     'let workspaceAgentsCache = null;',
     source.slice(source.indexOf('function serverOwnerUserId'), source.indexOf('function currentAccountHuman')),
     'globalThis.workspaceHumans = workspaceHumans;',
     'globalThis.workspaceAgents = workspaceAgents;',
+    'globalThis.humanByIdAny = humanByIdAny;',
+    'globalThis.agentById = agentById;',
+    'globalThis.taskById = taskById;',
   ].join('\n');
   const members = Array.from({ length: 1000 }, (_item, index) => {
     const suffix = String(index).padStart(4, '0');
@@ -734,6 +738,10 @@ test('workspace people directories cache normalization without losing roles or a
       cloud: { workspace: { id: 'local', ownerUserId: 'usr_0000' }, members },
       agents,
       computers: [],
+      tasks: Array.from({ length: 1000 }, (_item, index) => ({
+        id: `task_${String(index).padStart(4, '0')}`,
+        title: `Task ${index}`,
+      })),
       humans: members.map((member, index) => ({
         id: member.humanId,
         name: `Human ${index}`,
@@ -752,6 +760,10 @@ test('workspace people directories cache normalization without losing roles or a
   assert.equal(first.find((human) => human.id === 'hum_0000')?.role, 'owner');
   assert.equal(first.find((human) => human.id === 'hum_0001')?.role, 'admin');
   assert.equal(first.find((human) => human.id === 'hum_0002')?.role, 'member');
+  assert.equal(context.humanByIdAny('mem_0002')?.id, 'hum_0002');
+  assert.equal(context.humanByIdAny('usr_0002')?.id, 'hum_0002');
+  assert.equal(context.agentById('agt_0002')?.name, 'Agent 2');
+  assert.equal(context.taskById('task_0999')?.title, 'Task 999');
 
   const firstAgents = context.workspaceAgents();
   const checksAfterFirstAgents = activeAgentChecks;
@@ -772,6 +784,11 @@ test('workspace people directories cache normalization without losing roles or a
 
   assert.notEqual(third, first);
   assert.notEqual(thirdAgents, firstAgents);
+  assert.match(source, /function stateEntityLookup\(stateSnapshot = appState\)/);
+  assert.match(source, /humanIdentityById/);
+  assert.match(source, /function agentById\(id, stateSnapshot = appState\)/);
+  assert.match(source, /function taskById\(id, stateSnapshot = appState\)/);
+  assert.match(syncSource, /stateEntityLookupCache = null/);
   assert.match(syncSource, /workspaceHumansCache = null/);
   assert.match(syncSource, /workspaceAgentsCache = null/);
 });

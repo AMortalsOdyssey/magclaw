@@ -52,7 +52,7 @@ function displayName(id) {
   if (runtimeActor) return runtimeActor.label;
   const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
   if (human) return human.name;
-  const agent = byId(appState?.agents, id);
+  const agent = typeof agentById === 'function' ? agentById(id) : byId(appState?.agents, id);
   if (agent) return agent.name;
   return id === 'system' ? 'Magclaw' : 'Unknown';
 }
@@ -195,14 +195,14 @@ function getAvatarHtml(id, type, cssClass = '') {
   }
   const runtimeActor = teamSharingRuntimeActorInfo(id);
   if (runtimeActor) return teamSharingRuntimeAvatarHtml(runtimeActor, cssClass);
-    const agent = byId(appState?.agents, id);
-    if (agent?.avatar) {
-      return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
-    }
-    const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
-    if (human?.avatar) {
-      return `<img src="${escapeHtml(human.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(human.name || 'Human')}" />`;
-    }
+  const agent = typeof agentById === 'function' ? agentById(id) : byId(appState?.agents, id);
+  if (agent?.avatar) {
+    return `<img src="${escapeHtml(agent.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(agent.name)}" />`;
+  }
+  const human = typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id);
+  if (human?.avatar) {
+    return `<img src="${escapeHtml(human.avatar)}" class="${cssClass} avatar-img" alt="${escapeHtml(human.name || 'Human')}" />`;
+  }
   const initials = displayAvatar(id, type);
   return `<span class="${cssClass}">${escapeHtml(initials)}</span>`;
 }
@@ -267,7 +267,7 @@ function renderAgentHoverCard(agent) {
 }
 
 function renderAgentIdentityButton(agentId, className = '') {
-  const agent = byId(appState?.agents, agentId);
+  const agent = typeof agentById === 'function' ? agentById(agentId) : byId(appState?.agents, agentId);
   if (!agent) return '';
   return `
     <button class="agent-identity-button ${className}" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}" aria-label="View ${escapeHtml(agent.name)}">
@@ -476,7 +476,7 @@ function renderActorName(authorId, authorType, record = {}) {
   if (authorType !== 'agent') return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   const runtimeActor = teamSharingRuntimeInfoForRecord(record) || teamSharingRuntimeActorInfo(authorId);
   if (runtimeActor) return `<strong class="team-sharing-runtime-name">${escapeHtml(runtimeActor.label)}</strong>`;
-  const agent = byId(appState?.agents, authorId);
+  const agent = typeof agentById === 'function' ? agentById(authorId) : byId(appState?.agents, authorId);
   if (!agent) return `<strong>${escapeHtml(displayName(authorId))}</strong>`;
   return `
     <button class="agent-author-name" type="button" data-action="select-agent" data-id="${escapeHtml(agent.id)}">
@@ -492,7 +492,7 @@ function parseMentions(text) {
   let result = escapeHtml(text);
   // Replace agent mentions: <@agt_xxx> -> styled span
   result = result.replace(/&lt;@(agt_\w+)&gt;/g, (match, id) => {
-    const agent = byId(appState?.agents, id);
+    const agent = typeof agentById === 'function' ? agentById(id) : byId(appState?.agents, id);
     const name = agent?.name || (id === 'agt_codex' ? displayName(id) : '');
     return name
       ? `<button class="mention-tag mention-identity mention-agent" type="button" data-action="select-agent" data-id="${escapeHtml(id)}" data-mention-id="${escapeHtml(id)}">@${escapeHtml(name)}${agent ? renderAgentHoverCard(agent) : ''}</button>`
@@ -541,9 +541,9 @@ function plainActorText(text) {
 
 function displayNameFromState(stateSnapshot, id) {
   if (id === 'agt_codex') return 'Codex';
-  const human = byId(stateSnapshot?.humans, id);
+  const human = typeof humanById === 'function' ? humanById(id, stateSnapshot) : byId(stateSnapshot?.humans, id);
   if (human) return human.name;
-  const agent = byId(stateSnapshot?.agents, id);
+  const agent = typeof agentById === 'function' ? agentById(id, stateSnapshot) : byId(stateSnapshot?.agents, id);
   if (agent) return agent.name;
   return id === 'system' ? 'Magclaw' : 'Unknown';
 }
@@ -600,7 +600,8 @@ function searchRecordBody(record) {
 
 function searchRecordText(record) {
   const parent = record?.parentMessageId ? byId(appState?.messages, record.parentMessageId) : null;
-  const task = byId(appState?.tasks, record?.taskId || parent?.taskId);
+  const taskId = record?.taskId || parent?.taskId;
+  const task = typeof taskById === 'function' ? taskById(taskId) : byId(appState?.tasks, taskId);
   return [
     searchRecordBody(record),
     displayName(record?.authorId),

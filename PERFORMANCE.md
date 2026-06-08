@@ -94,6 +94,10 @@ membership fanout visible in the budget. It currently enforces:
 - Browser channel, mention, and create-channel surfaces cache the active
   workspace Agent directory for a stable state snapshot, so repeated renders do
   not re-filter the full 1000-Agent list until Agent or Computer state changes.
+- Browser message, thread, mention, and receipt rendering uses cached identity
+  and task lookup maps for the current state snapshot, so large workspaces do
+  not repeatedly scan Agent, Human, Task, or Computer arrays for each visible
+  record.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

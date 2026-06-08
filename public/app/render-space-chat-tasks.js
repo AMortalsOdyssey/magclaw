@@ -345,7 +345,7 @@ function actorSubtitle(authorId, authorType, message) {
     : '';
   if (teamSharingSource) return teamSharingSource;
   if (authorType === 'agent') {
-    const agent = byId(appState.agents, authorId);
+    const agent = typeof agentById === 'function' ? agentById(authorId) : byId(appState.agents, authorId);
     return agentSubtitle(agent);
   }
   if (authorType === 'human') {
@@ -365,7 +365,8 @@ function renderMentionChips(record) {
   return `
     <div class="mention-chip-row">
       ${ids.map((id) => {
-        const item = byId(appState.agents, id) || byId(appState.humans, id);
+        const item = (typeof agentById === 'function' ? agentById(id) : byId(appState.agents, id))
+          || (typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState.humans, id));
         return item ? `<span class="mention-chip">@${escapeHtml(item.name)}</span>` : '';
       }).join('')}
     </div>
@@ -406,7 +407,7 @@ function deliveryReceiptItemsForRecord(record) {
   (appState?.workItems || [])
     .filter((item) => item?.sourceMessageId === record.id && item.agentId)
     .forEach((item, index) => {
-      const agent = byId(appState?.agents, item.agentId);
+      const agent = typeof agentById === 'function' ? agentById(item.agentId) : byId(appState?.agents, item.agentId);
       if (!agent) return;
       if (!firstOrder.has(item.agentId)) firstOrder.set(item.agentId, index);
       const status = agentReceiptStatus(item);
@@ -1498,7 +1499,9 @@ function loadCanvasImage(src) {
 function shareActorProfile(record) {
   const id = record?.authorId || 'system';
   const type = record?.authorType || 'unknown';
-  const agent = type === 'agent' ? byId(appState?.agents, id) : null;
+  const agent = type === 'agent'
+    ? (typeof agentById === 'function' ? agentById(id) : byId(appState?.agents, id))
+    : null;
   const human = type === 'human'
     ? (typeof humanByIdAny === 'function' ? humanByIdAny(id) : byId(appState?.humans, id))
     : null;
@@ -1516,7 +1519,9 @@ function shareActorProfile(record) {
 }
 
 function shareTaskLabel(record) {
-  const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
+  const task = record?.taskId
+    ? (typeof taskById === 'function' ? taskById(record.taskId) : byId(appState?.tasks, record.taskId))
+    : null;
   if (!task) return '';
   return `#${task.number || shortId(task.id)}`;
 }
@@ -1852,7 +1857,9 @@ async function saveShareImage() {
 }
 
 function renderRecordKey(record) {
-  const task = record?.taskId ? byId(appState?.tasks, record.taskId) : null;
+  const task = record?.taskId
+    ? (typeof taskById === 'function' ? taskById(record.taskId) : byId(appState?.tasks, record.taskId))
+    : null;
   return JSON.stringify({
     id: record?.id || '',
     authorId: record?.authorId || '',
@@ -2306,7 +2313,9 @@ function renderMessageFooter({ replyCountChip = '', receiptTray = '' } = {}) {
 function renderMessage(message, options = {}) {
   if (message.authorType === 'system' && message.eventType) return renderSystemEvent(message);
   if (message.metadata?.systemKind === 'external_import') return renderExternalImportMessage(message);
-  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+  const task = message.taskId
+    ? (typeof taskById === 'function' ? taskById(message.taskId) : byId(appState.tasks, message.taskId))
+    : null;
   const replyCount = Number(message.replyCount || 0);
   const highlighted = threadMessageId === message.id || selectedSavedRecordId === message.id ? ' highlighted' : '';
   const compact = options.compact ? ' compact' : '';
@@ -2642,7 +2651,9 @@ function renderThreads() {
         const lastReply = replies.at(-1);
         const previewRecord = threadPreviewRecord(message);
         const author = displayName(message.authorId);
-        const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+        const task = message.taskId
+          ? (typeof taskById === 'function' ? taskById(message.taskId) : byId(appState.tasks, message.taskId))
+          : null;
         const active = threadMessageId === message.id ? ' active' : '';
         const composerId = `thread:${message.id}`;
         return `
@@ -2695,7 +2706,8 @@ function renderSaved() {
 function renderSavedRecord(record) {
   const root = savedRecordThreadRoot(record);
   const isThreadRecord = Boolean(root);
-  const task = (root?.taskId ? byId(appState.tasks, root.taskId) : null) || (record?.taskId ? byId(appState.tasks, record.taskId) : null);
+  const task = (root?.taskId ? (typeof taskById === 'function' ? taskById(root.taskId) : byId(appState.tasks, root.taskId)) : null)
+    || (record?.taskId ? (typeof taskById === 'function' ? taskById(record.taskId) : byId(appState.tasks, record.taskId)) : null);
   const active = selectedSavedRecordId === record.id ? ' active' : '';
   return `
     <div class="saved-row${active}" data-context-scope="saved" data-message-id="${escapeHtml(record.id)}">

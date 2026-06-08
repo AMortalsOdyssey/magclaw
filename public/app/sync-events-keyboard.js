@@ -1396,6 +1396,7 @@ function applyStateUpdate(nextState) {
   const computerDetailBefore = computerDetailRenderSignature(appState);
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
+  stateEntityLookupCache = null;
   workspaceHumansCache = null;
   workspaceAgentsCache = null;
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());

@@ -56,6 +56,7 @@ canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
 let appState = null;
+let stateEntityLookupCache = null;
 let workspaceHumansCache = null;
 let workspaceAgentsCache = null;
 const initialRouteSpace = initialRouteState.space || initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
@@ -749,6 +750,78 @@ function serverOwnerUserId(workspace = appState?.cloud?.workspace || {}) {
   return activeAdmins[0]?.userId || '';
 }
 
+function addLookupKey(map, key, value) {
+  const normalized = String(key || '');
+  if (!normalized || map.has(normalized)) return;
+  map.set(normalized, value);
+}
+
+function mapEntitiesById(items = []) {
+  const map = new Map();
+  for (const item of items || []) {
+    if (!item) continue;
+    addLookupKey(map, item.id, item);
+  }
+  return map;
+}
+
+function stateEntityLookup(stateSnapshot = appState) {
+  const stateAgents = stateSnapshot?.agents || [];
+  const stateHumans = stateSnapshot?.humans || [];
+  const stateTasks = stateSnapshot?.tasks || [];
+  const stateComputers = stateSnapshot?.computers || [];
+  if (
+    stateEntityLookupCache
+    && stateEntityLookupCache.stateSnapshot === stateSnapshot
+    && stateEntityLookupCache.stateAgents === stateAgents
+    && stateEntityLookupCache.stateHumans === stateHumans
+    && stateEntityLookupCache.stateTasks === stateTasks
+    && stateEntityLookupCache.stateComputers === stateComputers
+    && stateEntityLookupCache.agentCount === stateAgents.length
+    && stateEntityLookupCache.humanCount === stateHumans.length
+    && stateEntityLookupCache.taskCount === stateTasks.length
+    && stateEntityLookupCache.computerCount === stateComputers.length
+  ) {
+    return stateEntityLookupCache;
+  }
+  stateEntityLookupCache = {
+    stateSnapshot,
+    stateAgents,
+    stateHumans,
+    stateTasks,
+    stateComputers,
+    agentCount: stateAgents.length,
+    humanCount: stateHumans.length,
+    taskCount: stateTasks.length,
+    computerCount: stateComputers.length,
+    agentsById: mapEntitiesById(stateAgents),
+    humansById: mapEntitiesById(stateHumans),
+    tasksById: mapEntitiesById(stateTasks),
+    computersById: mapEntitiesById(stateComputers),
+  };
+  return stateEntityLookupCache;
+}
+
+function agentById(id, stateSnapshot = appState) {
+  const target = String(id || '');
+  return target ? stateEntityLookup(stateSnapshot).agentsById.get(target) || null : null;
+}
+
+function humanById(id, stateSnapshot = appState) {
+  const target = String(id || '');
+  return target ? stateEntityLookup(stateSnapshot).humansById.get(target) || null : null;
+}
+
+function taskById(id, stateSnapshot = appState) {
+  const target = String(id || '');
+  return target ? stateEntityLookup(stateSnapshot).tasksById.get(target) || null : null;
+}
+
+function computerById(id, stateSnapshot = appState) {
+  const target = String(id || '');
+  return target ? stateEntityLookup(stateSnapshot).computersById.get(target) || null : null;
+}
+
 function cloudMemberDisplayRole(member = {}, options = {}) {
   if (member?.role === 'owner') return 'owner';
   const ownerUserId = Object.hasOwn(options, 'ownerUserId')
@@ -825,7 +898,7 @@ function humanSecondaryIdentityText(human = {}) {
 }
 
 function humanFromCloudMember(member = {}, options = {}) {
-  const human = member.human || byId(appState?.humans, member.humanId) || {};
+  const human = member.human || humanById(member.humanId) || {};
   const user = member.user || {};
   const thirdPartyName = human.thirdPartyName || thirdPartyNameForUser(user) || thirdPartyNameFromMetadata(human.metadata);
   const thirdPartyProvider = human.thirdPartyProvider || thirdPartyProviderForUser(user) || thirdPartyProviderFromMetadata(human.metadata);
@@ -861,12 +934,21 @@ function workspaceHumans() {
     return workspaceHumansCache.value;
   }
   const setWorkspaceHumansCache = (value) => {
+    const humanIdentityById = new Map();
+    for (const human of value || []) {
+      if (!human) continue;
+      addLookupKey(humanIdentityById, human.id, human);
+      addLookupKey(humanIdentityById, human.cloudMemberId, human);
+      addLookupKey(humanIdentityById, human.authUserId, human);
+    }
     workspaceHumansCache = {
       cloudMembers,
       stateHumans,
       workspaceId,
       cloudMemberCount: cloudMembers.length,
       humanCount: stateHumans.length,
+      humanIdentityById,
+      stateHumansById: mapEntitiesById(stateHumans),
       value,
     };
     return value;
@@ -924,22 +1006,19 @@ function workspaceAgents() {
 
 function humanByIdAny(id) {
   const target = String(id || '');
-  const cloudHuman = workspaceHumans().find((human) => (
-    human.id === target
-    || human.cloudMemberId === target
-    || human.authUserId === target
-  ));
+  workspaceHumans();
+  const cloudHuman = workspaceHumansCache?.humanIdentityById?.get(target) || null;
   if (cloudHuman && target !== 'hum_local') return cloudHuman;
   if (target === 'hum_local' && appState?.cloud?.auth?.currentUser) {
     const current = currentAccountHuman();
-    const visibleCurrent = workspaceHumans().find((human) => (
-      human.id === current.id
-      || human.authUserId === current.authUserId
-      || (human.email && current.email && human.email.toLowerCase() === current.email.toLowerCase())
-    ));
+    const visibleCurrent = workspaceHumansCache?.humanIdentityById?.get(current.id)
+      || workspaceHumansCache?.humanIdentityById?.get(current.authUserId)
+      || workspaceHumans().find((human) => (
+        human.email && current.email && human.email.toLowerCase() === current.email.toLowerCase()
+      ));
     if (visibleCurrent) return visibleCurrent;
   }
-  return byId(appState?.humans, target) || cloudHuman || null;
+  return workspaceHumansCache?.stateHumansById?.get(target) || humanById(target) || cloudHuman || null;
 }
 
 function currentAccountHuman() {
@@ -959,7 +1038,7 @@ function currentAccountHuman() {
       ...currentMember,
       ...enrichedMember,
       user: enrichedMember.user || currentMember.user || currentUser || {},
-      human: enrichedMember.human || currentMember.human || byId(appState?.humans, currentMember.humanId) || {},
+      human: enrichedMember.human || currentMember.human || humanById(currentMember.humanId) || {},
     });
   }
   if (currentUser) {
