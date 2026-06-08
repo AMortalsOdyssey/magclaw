@@ -435,6 +435,87 @@ test('bootstrap state can compact conversation records into tuple rows', () => {
   assert.equal(decode(compact.tasks.find((task) => task[0] === 'task_channel'), compact.bootstrap.conversationFields.tasks).status, 'todo');
 });
 
+test('bootstrap state truncates only background conversation preview bodies', () => {
+  const base = Date.parse('2026-05-18T00:00:00.000Z');
+  const longRootBody = `thread root ${'r'.repeat(600)}`;
+  const longReplyBody = `thread reply ${'p'.repeat(600)}`;
+  const services = makeServices((state) => {
+    state.messages = [
+      {
+        id: 'msg_current',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_1',
+        body: `current page ${'c'.repeat(600)}`,
+        readBy: ['hum_1'],
+        createdAt: new Date(base + 5 * 60_000).toISOString(),
+        updatedAt: new Date(base + 5 * 60_000).toISOString(),
+      },
+      {
+        id: 'msg_thread',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_1',
+        body: longRootBody,
+        readBy: ['hum_1'],
+        replyCount: 1,
+        createdAt: new Date(base + 4 * 60_000).toISOString(),
+        updatedAt: new Date(base + 4 * 60_000).toISOString(),
+      },
+      {
+        id: 'msg_old',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_1',
+        body: 'old',
+        readBy: ['hum_1'],
+        createdAt: new Date(base + 1 * 60_000).toISOString(),
+        updatedAt: new Date(base + 1 * 60_000).toISOString(),
+      },
+    ];
+    state.replies = [{
+      id: 'rep_thread',
+      workspaceId: 'local',
+      parentMessageId: 'msg_thread',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_1',
+      body: longReplyBody,
+      readBy: ['hum_1'],
+      createdAt: new Date(base + 6 * 60_000).toISOString(),
+      updatedAt: new Date(base + 6 * 60_000).toISOString(),
+    }];
+  });
+
+  const preview = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=1&threadRootLimit=20',
+    headers: {},
+  });
+  const previewRoot = preview.messages.find((message) => message.id === 'msg_thread');
+  const previewReply = preview.replies.find((reply) => reply.id === 'rep_thread');
+  assert.equal(preview.messages.find((message) => message.id === 'msg_current').bodyTruncated, undefined);
+  assert.equal(previewRoot.bodyTruncated, true);
+  assert.equal(previewRoot.body.length, 180);
+  assert.equal(previewReply.bodyTruncated, true);
+  assert.equal(previewReply.body.length, 180);
+
+  const opened = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&threadMessageId=msg_thread&messageLimit=1&threadRootLimit=20',
+    headers: {},
+  });
+  assert.equal(opened.messages.find((message) => message.id === 'msg_thread').body, longRootBody);
+  assert.equal(opened.messages.find((message) => message.id === 'msg_thread').bodyTruncated, undefined);
+  assert.equal(opened.replies.find((reply) => reply.id === 'rep_thread').body, longReplyBody);
+  assert.equal(opened.replies.find((reply) => reply.id === 'rep_thread').bodyTruncated, undefined);
+});
+
 test('bootstrap state windows task hydration and keeps referenced task records', () => {
   const baseTime = Date.parse('2026-05-18T00:00:00.000Z');
   const services = makeServices((state) => {

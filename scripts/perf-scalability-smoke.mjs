@@ -111,7 +111,7 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'metadata',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 370_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 260_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -1193,6 +1193,11 @@ async function main() {
   const decodedMessages = decodeTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
   const decodedReplies = decodeTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS);
   const decodedTasks = decodeTupleRecords(snapshot.tasks, BOOTSTRAP_TASK_TUPLE_FIELDS);
+  const selectedMessagePageStart = state.messages.length - 80;
+  const syntheticMessageIndex = (message) => {
+    const match = String(message?.id || '').match(/^msg_(\d+)$/);
+    return match ? Number(match[1]) : -1;
+  };
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
@@ -1219,6 +1224,12 @@ async function main() {
       Array.isArray(bootstrapAllChannel?.[key])
     )),
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
+    previewTruncatedMessages: decodedMessages.filter((message) => message.bodyTruncated === true).length,
+    previewTruncatedReplies: decodedReplies.filter((reply) => reply.bodyTruncated === true).length,
+    selectedPageTruncatedMessages: decodedMessages.filter((message) => (
+      message.bodyTruncated === true
+      && syntheticMessageIndex(message) >= selectedMessagePageStart
+    )).length,
     hasBootstrapMemberChurnFields: decodedAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || decodedHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
     hasBootstrapConversationChurnFields: [...decodedMessages, ...decodedReplies].some((record) => (
@@ -1272,6 +1283,9 @@ async function main() {
   assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
   assertBudget(bootstrap.hasBootstrapDirectoryTuples, 'bootstrap did not compact member directories into tuple rows');
   assertBudget(bootstrap.hasBootstrapConversationTuples, 'bootstrap did not compact conversation records into tuple rows');
+  assertBudget(bootstrap.previewTruncatedMessages > 0, 'bootstrap did not truncate background message preview bodies');
+  assertBudget(bootstrap.previewTruncatedReplies > 0, 'bootstrap did not truncate background reply preview bodies');
+  assertBudget(bootstrap.selectedPageTruncatedMessages === 0, 'bootstrap truncated active conversation page message bodies');
   assertBudget(bootstrap.agents < state.agents.length, 'bootstrap still loaded the full Agent directory');
   assertBudget(bootstrap.humans < state.humans.length, 'bootstrap still loaded the full Human directory');
   assertBudget(bootstrap.cloudMembers < state.humans.length, 'bootstrap still loaded the full cloud member directory');

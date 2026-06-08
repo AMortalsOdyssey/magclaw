@@ -48,7 +48,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Browser bootstrap JSON is at most 370 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 260 KB and generated in at most 250 ms.
 - Full member directory hydration is isolated from bootstrap and paged at 250
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
@@ -85,6 +85,10 @@ membership fanout visible in the budget. It currently enforces:
   rows for Messages, Replies, and Tasks, then normalize them back to objects at
   the frontend state boundary. This preserves the first-paint message/thread/task
   window while avoiding repeated JSON field names on every record.
+- Bootstrap keeps full message/reply bodies for the active conversation window
+  and active thread, but sends preview-only bodies for background thread and
+  unread records. Opening a preview thread triggers a scoped refresh that
+  hydrates the full thread root and replies.
 - Browser bootstrap requests also use `directoryScope=visible`, keeping only
   current-view identities in the first paint. Deeper people lookup is now
   server-backed: mention search uses `/api/directory/search`, while Settings /
@@ -95,7 +99,9 @@ membership fanout visible in the budget. It currently enforces:
   count, instead of duplicating every human and agent ID in channel membership
   arrays.
 - Bootstrap conversation rows omit request-scoped workspace IDs and redundant
-  update timestamps when the update time equals creation time.
+  update timestamps when the update time equals creation time, and mark
+  background preview rows with `bodyTruncated` so full bodies can replace them
+  when the user opens that conversation.
 - Bootstrap task rows omit request-scoped workspace IDs, redundant update
   timestamps, and empty array fields while preserving task status, ownership,
   attachments, mentions, and history when those fields contain data.

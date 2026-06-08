@@ -17,6 +17,7 @@ const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
 const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
+const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 180;
 const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
 const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
@@ -615,11 +616,19 @@ export function createSystemServices(deps) {
     return next;
   }
 
-  function compactBootstrapConversationRecord(record = {}) {
+  function compactBootstrapConversationRecord(record = {}, options = {}) {
     if (!record || typeof record !== 'object') return record;
     const next = { ...record };
     if (Object.hasOwn(next, 'workspaceId')) delete next.workspaceId;
     if (next.updatedAt && next.createdAt && next.updatedAt === next.createdAt) delete next.updatedAt;
+    if (
+      options.previewOnly
+      && typeof next.body === 'string'
+      && next.body.length > BOOTSTRAP_CONVERSATION_PREVIEW_CHARS
+    ) {
+      next.body = next.body.slice(0, BOOTSTRAP_CONVERSATION_PREVIEW_CHARS);
+      next.bodyTruncated = true;
+    }
     return next;
   }
 
@@ -1601,6 +1610,7 @@ export function createSystemServices(deps) {
       (message) => message.spaceType === spaceType && String(message.spaceId) === spaceId,
     );
     const selectedMessages = selectedMessagePage.records.slice().sort(compareOldestRecords);
+    const fullMessageIds = new Set(selectedMessages.map((message) => String(message?.id || '')).filter(Boolean));
     const selectedMessageCursor = selectedMessages[0] || null;
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
     const threadRoots = newestRecordsPage(
@@ -1619,6 +1629,7 @@ export function createSystemServices(deps) {
       const threadRoot = records(visibleMessages).find((message) => String(message.id || '') === threadMessageId);
       if (threadRoot) messageById.set(threadRoot.id, threadRoot);
     }
+    if (threadMessageId) fullMessageIds.add(threadMessageId);
 
     const latestReplyByParent = new Map();
     for (const reply of records(visibleReplies)) {
@@ -1636,6 +1647,7 @@ export function createSystemServices(deps) {
         )
       : { records: [], total: 0, hasMore: false };
     const selectedThreadReplies = selectedThreadReplyPage.records.slice().sort(compareOldestRecords);
+    const fullReplyIds = new Set(selectedThreadReplies.map((reply) => String(reply?.id || '')).filter(Boolean));
     const selectedThreadReplyCursor = selectedThreadReplies[0] || null;
     const threadRepliesPagination = effectiveOptions.hydration?.replies?.pagination
       || (threadMessageId
@@ -1790,11 +1802,15 @@ export function createSystemServices(deps) {
       messages: [...messageById.values()]
         .sort(compareOldestRecords)
         .map(publicConversationRecord)
-        .map(compactBootstrapConversationRecord),
+        .map((message) => compactBootstrapConversationRecord(message, {
+          previewOnly: !fullMessageIds.has(String(message?.id || '')),
+        })),
       replies: [...replyById.values()]
         .sort(compareOldestRecords)
         .map(publicConversationRecord)
-        .map(compactBootstrapConversationRecord),
+        .map((reply) => compactBootstrapConversationRecord(reply, {
+          previewOnly: !fullReplyIds.has(String(reply?.id || '')),
+        })),
       runs: newestRecords(scopedRecords('runs'), 80).sort(compareOldestRecords),
       workItems: newestRecords(scopedRecords('workItems'), 200).sort(compareOldestRecords),
       events: newestRecords(scopedRecords('events'), eventLimit).sort(compareOldestRecords),

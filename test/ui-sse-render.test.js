@@ -121,7 +121,7 @@ test('bootstrap request and normalizer support compact conversation tuples', asy
 
   const normalized = context.normalizeIncomingStateSnapshot({
     bootstrap: { conversationFormat: 'tuple-v1' },
-    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', ['hum_1'], 2, '2026-06-08T00:00:00.000Z']],
+    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', ['hum_1'], 2, '2026-06-08T00:00:00.000Z', null, null, null, null, null, { bodyTruncated: true }]],
     replies: [['rep_1', 'msg_1', 'channel', 'chan_all', 'human', 'hum_1', 'reply', [], '2026-06-08T00:00:01.000Z']],
     tasks: [['task_1', 'channel', 'chan_all', 'Follow up', 'todo', '2026-06-08T00:00:02.000Z']],
     agents: [],
@@ -131,11 +131,26 @@ test('bootstrap request and normalizer support compact conversation tuples', asy
 
   assert.equal(normalized.messages[0].id, 'msg_1');
   assert.equal(normalized.messages[0].body, 'hello');
+  assert.equal(normalized.messages[0].bodyTruncated, true);
   assert.equal(normalized.messages[0].replyCount, 2);
   assert.equal(normalized.replies[0].parentMessageId, 'msg_1');
   assert.equal(normalized.replies[0].body, 'reply');
   assert.equal(normalized.tasks[0].title, 'Follow up');
   assert.equal(normalized.tasks[0].status, 'todo');
+
+  const mergedFull = context.mergeConversationRecordKeepingFreshest(
+    { id: 'msg_1', body: 'short preview', bodyTruncated: true, createdAt: '2026-06-08T00:00:00.000Z' },
+    { id: 'msg_1', body: 'full body', createdAt: '2026-06-08T00:00:00.000Z' },
+  );
+  assert.equal(mergedFull.body, 'full body');
+  assert.equal(mergedFull.bodyTruncated, undefined);
+
+  const mergedPreview = context.mergeConversationRecordKeepingFreshest(
+    { id: 'msg_1', body: 'full body', createdAt: '2026-06-08T00:00:00.000Z' },
+    { id: 'msg_1', body: 'short preview', bodyTruncated: true, createdAt: '2026-06-08T00:00:00.000Z' },
+  );
+  assert.equal(mergedPreview.body, 'full body');
+  assert.equal(mergedPreview.bodyTruncated, undefined);
 });
 
 test('browser performance marks cover startup, SSE, resync, and scoped patches', async () => {
@@ -147,6 +162,10 @@ test('browser performance marks cover startup, SSE, resync, and scoped patches',
   );
   const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
   const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const threadSelectionSource = app.slice(
+    app.indexOf('function refreshThreadSelection'),
+    app.indexOf('function preserveLoadedConversationHistory'),
+  );
   const sseSource = app.slice(app.indexOf('async function refreshRealtimeBusinessObject'), app.indexOf('function disconnectEvents'));
   const patchSource = app.slice(app.indexOf('function trackSurfacePatch'), app.indexOf('function stateSpaceMessages'));
   const searchPatchSource = app.slice(app.indexOf('function patchSearchSurface'), app.indexOf('async function openSearchChannelPath'));
@@ -166,6 +185,8 @@ test('browser performance marks cover startup, SSE, resync, and scoped patches',
   assert.match(renderSource, /magclaw:render:first:since-navigation/);
   assert.match(refreshSource, /magclaw:bootstrap:refresh/);
   assert.match(refreshSource, /magclaw:bootstrap:fetch/);
+  assert.match(threadSelectionSource, /root\?\.bodyTruncated === true/);
+  assert.match(threadSelectionSource, /refreshState\(\)\.catch/);
   assert.match(sseSource, /magclaw:sse:open/);
   assert.match(sseSource, /magclaw:sse:resync-fetch/);
   assert.match(sseSource, /magclaw:sse:error/);

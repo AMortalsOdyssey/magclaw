@@ -126,6 +126,7 @@ export function buildBootstrapPath(options = {}) {
   params.set('messageLimit', String(options.messageLimit || DEFAULTS.messageLimit));
   params.set('threadRootLimit', String(options.threadRootLimit || DEFAULTS.threadRootLimit));
   params.set('directoryFormat', 'tuple-v1');
+  params.set('conversationFormat', 'tuple-v1');
   params.set('directoryScope', 'visible');
   if (options.threadMessageId) params.set('threadMessageId', options.threadMessageId);
   return `/api/bootstrap?${params.toString()}`;
@@ -137,6 +138,9 @@ export function buildEventsPath(options = {}) {
   params.set('spaceId', options.spaceId || DEFAULTS.spaceId);
   params.set('messageLimit', String(options.messageLimit || DEFAULTS.messageLimit));
   params.set('threadRootLimit', String(options.threadRootLimit || DEFAULTS.threadRootLimit));
+  params.set('directoryFormat', 'tuple-v1');
+  params.set('conversationFormat', 'tuple-v1');
+  params.set('directoryScope', 'visible');
   params.set('presence', 'defer');
   if (options.threadMessageId) params.set('threadMessageId', options.threadMessageId);
   return `/api/events?${params.toString()}`;

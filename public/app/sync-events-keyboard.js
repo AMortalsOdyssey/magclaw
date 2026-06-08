@@ -1067,6 +1067,15 @@ function mergeConversationRecordKeepingFreshest(existing = null, incoming = null
   const merged = existingIsFreshest
     ? { ...incoming, ...existing }
     : { ...existing, ...incoming };
+  const existingIsFullBody = existing.body !== undefined && existing.bodyTruncated !== true;
+  const incomingIsFullBody = incoming.body !== undefined && incoming.bodyTruncated !== true;
+  if (existingIsFullBody && incoming.bodyTruncated === true) {
+    merged.body = existing.body;
+    delete merged.bodyTruncated;
+  } else if (incomingIsFullBody && existing.bodyTruncated === true) {
+    merged.body = incoming.body;
+    delete merged.bodyTruncated;
+  }
   if (existing.replyCount !== undefined || incoming.replyCount !== undefined) {
     merged.replyCount = Math.max(Number(existing.replyCount || 0), Number(incoming.replyCount || 0));
   }
@@ -1181,6 +1190,12 @@ async function refreshActiveSpaceMessages(spaceType = selectedSpaceType, spaceId
 function refreshThreadSelection(messageId = threadMessageId, { loadReplies = true } = {}) {
   if (typeof connectEvents === 'function') connectEvents();
   if (!loadReplies || !messageId) return;
+  const root = byId(appState?.messages, messageId);
+  if (root?.bodyTruncated === true) {
+    refreshState().catch((error) => {
+      console.warn('Failed to load thread root:', error);
+    });
+  }
   refreshOpenThreadReplies(messageId).catch((error) => {
     console.warn('Failed to load thread replies:', error);
   });
