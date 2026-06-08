@@ -453,6 +453,7 @@ export function createZillizTeamSharingClient(options = {}) {
       'hotness',
     ];
   }
+  const collectionMissingPattern = /not found|not exist|collection.*not|can'?t find collection|can not find collection|cannot find collection/;
   function ignorableZillizError(error, pattern) {
     const message = String(error?.message || error || '').toLowerCase();
     return pattern.test(message);
@@ -523,7 +524,7 @@ export function createZillizTeamSharingClient(options = {}) {
     try {
       await zillizRequest('/v2/vectordb/collections/drop', commonBody());
     } catch (error) {
-      if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
+      if (!ignorableZillizError(error, collectionMissingPattern)) throw error;
     }
   }
   async function createCollection(collectionDimension) {
@@ -693,7 +694,7 @@ export function createZillizTeamSharingClient(options = {}) {
       try {
         description = await describeCollection();
       } catch (error) {
-        if (!ignorableZillizError(error, /not found|not exist|collection.*not/)) throw error;
+        if (!ignorableZillizError(error, collectionMissingPattern)) throw error;
         existed = false;
         await createCollection(collectionDimension);
         bm25Status = { ok: true, configured: true, createdWithBm25: true };

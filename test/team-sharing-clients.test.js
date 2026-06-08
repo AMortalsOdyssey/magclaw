@@ -387,6 +387,32 @@ test('zilliz client creates BM25 schema and sparse index for new collections by 
   assert.equal(sparseIndex.body.indexParams[0].metricType, 'BM25');
 });
 
+test('zilliz client recreates when cloud reports cannot find collection', async () => {
+  const calls = [];
+  const client = createZillizTeamSharingClient({
+    endpoint: 'https://zilliz.example',
+    token: 'zilliz-secret',
+    database: 'ai_social_memory',
+    collection: 'magclaw_team_sharing_v1',
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      if (String(url).endsWith('/collections/describe')) {
+        return jsonResponse({
+          code: 100,
+          message: "can't find collection[database=ai_social_memory][collection=magclaw_team_sharing_v1]",
+        });
+      }
+      return jsonResponse({ code: 0, data: {} });
+    },
+  });
+
+  const result = await client.ensureCollection({ dimension: 4 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.existed, false);
+  assert.ok(calls.some((call) => String(call.url).endsWith('/collections/create')));
+});
+
 test('zilliz client rejects existing BM25-incompatible collection unless recreate is enabled', async () => {
   const client = createZillizTeamSharingClient({
     endpoint: 'https://zilliz.example',
