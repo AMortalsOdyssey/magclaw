@@ -21,6 +21,8 @@ const BUDGETS = Object.freeze({
   bootstrapProjectedConversationReads: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROJECTED_CONVERSATION_READS || 500),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
+  bootstrapLargeHistoryMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_MS || 250),
+  bootstrapLargeHistoryBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_BYTES || 150_000),
 });
 
 function assertBudget(condition, message) {
@@ -593,6 +595,96 @@ function measureBootstrapProjectionWindow() {
   };
 }
 
+function makeLargeHistoryState({ messages = 100_000, replies = 5_000 } = {}) {
+  const state = {
+    version: 1,
+    connection: { workspaceId: 'local' },
+    settings: {},
+    channels: [{
+      id: 'chan_all',
+      workspaceId: 'local',
+      name: 'all',
+      locked: true,
+      defaultChannel: true,
+      memberIds: ['hum_0000', 'agt_0000'],
+      humanIds: ['hum_0000'],
+      agentIds: ['agt_0000'],
+      createdAt: NOW,
+      updatedAt: NOW,
+    }],
+    dms: [],
+    messages: [],
+    replies: [],
+    tasks: [],
+    runs: [],
+    workItems: [],
+    events: [],
+    routeEvents: [],
+    systemNotifications: [],
+    attachments: [],
+    agents: [{ id: 'agt_0000', workspaceId: 'local', name: 'Agent 0', status: 'idle', createdAt: NOW, updatedAt: NOW }],
+    humans: [{ id: 'hum_0000', workspaceId: 'local', name: 'Human 0', status: 'online', createdAt: NOW, updatedAt: NOW }],
+    computers: [],
+    reminders: [],
+    missions: [],
+    projects: [],
+    channelMemberProposals: [],
+  };
+  for (let index = 0; index < messages; index += 1) {
+    const createdAt = timestamp(index * 1000);
+    state.messages.push({
+      id: `msg_${String(index).padStart(6, '0')}`,
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: index % 2 ? 'human' : 'agent',
+      authorId: index % 2 ? 'hum_0000' : 'agt_0000',
+      body: `message ${index}`,
+      readBy: ['hum_0000'],
+      replyCount: index % 1000 === 0 ? 1 : 0,
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  for (let index = 0; index < replies; index += 1) {
+    const createdAt = timestamp((messages + index) * 1000);
+    state.replies.push({
+      id: `rep_${String(index).padStart(5, '0')}`,
+      workspaceId: 'local',
+      parentMessageId: `msg_${String(index * 20).padStart(6, '0')}`,
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_0000',
+      body: `reply ${index}`,
+      readBy: ['hum_0000'],
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  return state;
+}
+
+function measureLargeBootstrapHistory() {
+  const state = makeLargeHistoryState();
+  const services = makeSystemServices(state);
+  const started = performance.now();
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  return {
+    sourceMessages: state.messages.length,
+    sourceReplies: state.replies.length,
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    messages: snapshot.messages.length,
+    replies: snapshot.replies.length,
+    hasMoreMessages: Boolean(snapshot.bootstrap?.hasMoreMessages),
+  };
+}
+
 async function main() {
   const state = makeSyntheticState();
   const services = makeSystemServices(state);
@@ -652,6 +744,7 @@ async function main() {
   const presenceMemberDelta = await measurePresenceMemberDeltaFanout(state);
   const stateChangeFanout = await measureStateChangeFanout(state);
   const bootstrapProjection = measureBootstrapProjectionWindow();
+  const bootstrapLargeHistory = measureLargeBootstrapHistory();
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
@@ -695,8 +788,11 @@ async function main() {
   assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');
   assertBudget(bootstrapProjection.hasMoreMessages === true, 'bootstrap projection smoke did not expose history pagination');
   assertBudget(bootstrapProjection.projectedMetadataReads <= BUDGETS.bootstrapProjectedConversationReads, `bootstrap projected ${bootstrapProjection.projectedMetadataReads} conversation metadata reads from ${bootstrapProjection.sourceMessages} source messages`);
+  assertBudget(bootstrapLargeHistory.hasMoreMessages === true, 'large-history bootstrap did not expose history pagination');
+  assertBudget(bootstrapLargeHistory.ms <= BUDGETS.bootstrapLargeHistoryMs, `large-history bootstrap ${bootstrapLargeHistory.ms}ms exceeds ${BUDGETS.bootstrapLargeHistoryMs}ms`);
+  assertBudget(bootstrapLargeHistory.bytes <= BUDGETS.bootstrapLargeHistoryBytes, `large-history bootstrap ${bootstrapLargeHistory.bytes} bytes exceeds ${BUDGETS.bootstrapLargeHistoryBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory }, null, 2));
 }
 
 main().catch((error) => {

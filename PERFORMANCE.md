@@ -51,6 +51,9 @@ membership fanout visible in the budget. It currently enforces:
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
+- Bootstrap server-side selection avoids full history sorts on large workspaces:
+  a 100000-message / 5000-reply history fixture must still return the first
+  window in at most 250 ms and 150 KB while exposing history pagination.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace

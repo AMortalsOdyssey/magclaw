@@ -56,6 +56,7 @@ export function createSystemServices(deps) {
   let packageVersionPollingTimer = null;
   let packageVersionSnapshotCache = null;
   let packageVersionSnapshotInflight = null;
+  const recordTimeCache = new WeakMap();
   const packageVersionSnapshotTtlMs = Math.max(1000, Number(packageVersionCacheTtlMs) || DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS);
   const packageVersionPollingIntervalMs = Math.max(1000, Number(packageVersionPollIntervalMs) || packageVersionSnapshotTtlMs);
 
@@ -118,8 +119,124 @@ export function createSystemServices(deps) {
   }
 
   function recordTime(record) {
-    const parsed = Date.parse(record?.updatedAt || record?.createdAt || '');
+    const value = record?.updatedAt || record?.createdAt || '';
+    if (record && typeof record === 'object') {
+      const cached = recordTimeCache.get(record);
+      if (cached?.value === value) return cached.time;
+      const parsed = Date.parse(value);
+      const time = Number.isFinite(parsed) ? parsed : 0;
+      recordTimeCache.set(record, { value, time });
+      return time;
+    }
+    const parsed = Date.parse(value);
     return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function compareNewestRank(a, b) {
+    const timeDiff = recordTime(a) - recordTime(b);
+    if (timeDiff) return timeDiff;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  }
+
+  function compareNewestRecords(a, b) {
+    return -compareNewestRank(a, b);
+  }
+
+  function compareOldestRecords(a, b) {
+    return compareNewestRank(a, b);
+  }
+
+  function newestHeapSwap(heap, left, right) {
+    const current = heap[left];
+    heap[left] = heap[right];
+    heap[right] = current;
+  }
+
+  function newestHeapSiftUp(heap, index) {
+    let child = index;
+    while (child > 0) {
+      const parent = Math.floor((child - 1) / 2);
+      if (compareNewestRank(heap[child], heap[parent]) >= 0) break;
+      newestHeapSwap(heap, child, parent);
+      child = parent;
+    }
+  }
+
+  function newestHeapSiftDown(heap, index) {
+    let parent = index;
+    while (true) {
+      const left = parent * 2 + 1;
+      const right = left + 1;
+      let worst = parent;
+      if (left < heap.length && compareNewestRank(heap[left], heap[worst]) < 0) worst = left;
+      if (right < heap.length && compareNewestRank(heap[right], heap[worst]) < 0) worst = right;
+      if (worst === parent) break;
+      newestHeapSwap(heap, parent, worst);
+      parent = worst;
+    }
+  }
+
+  function addBoundedNewestRecord(heap, record, limit) {
+    if (!record || !Number.isFinite(limit) || limit <= 0) return;
+    if (heap.length < limit) {
+      heap.push(record);
+      newestHeapSiftUp(heap, heap.length - 1);
+      return;
+    }
+    if (compareNewestRank(record, heap[0]) > 0) {
+      heap[0] = record;
+      newestHeapSiftDown(heap, 0);
+    }
+  }
+
+  function newestRecordsPage(items, limit, predicate = null) {
+    const normalizedLimit = Math.floor(Number(limit) || 0);
+    if (normalizedLimit <= 0) return { records: [], total: 0, hasMore: false };
+    const source = Array.isArray(items) ? items : [];
+    let monotonicTotal = 0;
+    let previous = null;
+    let monotonicOldestFirst = true;
+    const monotonicRecords = [];
+    let monotonicWriteIndex = 0;
+    for (const item of source) {
+      if (!item) continue;
+      if (predicate && !predicate(item)) continue;
+      if (previous && compareOldestRecords(previous, item) > 0) {
+        monotonicOldestFirst = false;
+        break;
+      }
+      monotonicTotal += 1;
+      if (monotonicRecords.length < normalizedLimit) {
+        monotonicRecords.push(item);
+      } else {
+        monotonicRecords[monotonicWriteIndex] = item;
+        monotonicWriteIndex = (monotonicWriteIndex + 1) % normalizedLimit;
+      }
+      previous = item;
+    }
+    if (monotonicOldestFirst) {
+      monotonicRecords.sort(compareNewestRecords);
+      return {
+        records: monotonicRecords,
+        total: monotonicTotal,
+        hasMore: monotonicTotal > monotonicRecords.length,
+      };
+    }
+
+    const heap = [];
+    let total = 0;
+    for (const item of source) {
+      if (!item) continue;
+      if (predicate && !predicate(item)) continue;
+      total += 1;
+      addBoundedNewestRecord(heap, item, normalizedLimit);
+    }
+    heap.sort(compareNewestRecords);
+    return {
+      records: heap,
+      total,
+      hasMore: total > heap.length,
+    };
   }
 
   function conversationRecordUnreadForHuman(record, humanId) {
@@ -178,25 +295,21 @@ export function createSystemServices(deps) {
   }
 
   function newestRecords(items, limit) {
-    return records(items)
-      .slice()
-      .sort((a, b) => recordTime(b) - recordTime(a))
-      .slice(0, limit);
+    return newestRecordsPage(items, limit).records;
   }
 
   function compareTaskRecords(a, b) {
-    const timeDiff = recordTime(b) - recordTime(a);
-    if (timeDiff) return timeDiff;
-    return String(b?.id || '').localeCompare(String(a?.id || ''));
+    return compareNewestRecords(a, b);
   }
 
   function taskPageInfo(candidates = [], page = [], limit = 0) {
+    const total = Array.isArray(candidates) ? candidates.length : Math.max(0, Number(candidates) || 0);
     const cursor = page.length ? page[page.length - 1] : null;
     return {
       limit,
       loaded: page.length,
-      total: candidates.length,
-      hasMore: candidates.length > page.length,
+      total,
+      hasMore: total > page.length,
       nextBefore: cursor?.updatedAt || cursor?.createdAt || '',
       nextBeforeId: cursor?.id || '',
     };
@@ -704,25 +817,24 @@ export function createSystemServices(deps) {
     const visibleMessages = scopedMessages.filter(conversationVisible);
     const visibleReplies = scopedReplies.filter(conversationVisible);
 
-    const selectedMessageCandidates = records(visibleMessages)
-      .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId)
-      .slice()
-      .sort((a, b) => recordTime(b) - recordTime(a));
-    const selectedMessages = selectedMessageCandidates
-      .slice()
-      .slice(0, messageLimit)
-      .sort((a, b) => recordTime(a) - recordTime(b));
+    const selectedMessagePage = newestRecordsPage(
+      visibleMessages,
+      messageLimit,
+      (message) => message.spaceType === spaceType && String(message.spaceId) === spaceId,
+    );
+    const selectedMessages = selectedMessagePage.records.slice().sort(compareOldestRecords);
     const selectedMessageCursor = selectedMessages[0] || null;
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
-    const threadRoots = newestRecords(
-      records(visibleMessages).filter((message) => (
+    const threadRoots = newestRecordsPage(
+      visibleMessages,
+      threadRootLimit,
+      (message) => (
         Number(message.replyCount || 0) > 0
         || message.taskId
         || records(message.savedBy).length
         || String(message.id || '') === threadMessageId
-      )),
-      threadRootLimit,
-    );
+      ),
+    ).records;
     const messageById = new Map();
     for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
     if (threadMessageId && !messageById.has(threadMessageId)) {
@@ -731,22 +843,27 @@ export function createSystemServices(deps) {
     }
 
     const latestReplyByParent = new Map();
-    const allSelectedThreadReplies = [];
-    for (const reply of records(visibleReplies).slice().sort((a, b) => recordTime(a) - recordTime(b))) {
-      if (messageById.has(reply.parentMessageId)) latestReplyByParent.set(reply.parentMessageId, reply);
-      if (threadMessageId && String(reply.parentMessageId || '') === threadMessageId) allSelectedThreadReplies.push(reply);
+    for (const reply of records(visibleReplies)) {
+      const parentMessageId = reply.parentMessageId;
+      if (messageById.has(parentMessageId)) {
+        const previous = latestReplyByParent.get(parentMessageId);
+        if (!previous || compareNewestRecords(reply, previous) < 0) latestReplyByParent.set(parentMessageId, reply);
+      }
     }
-    const selectedThreadReplies = allSelectedThreadReplies
-      .slice()
-      .sort((a, b) => recordTime(b) - recordTime(a))
-      .slice(0, threadReplyLimit)
-      .sort((a, b) => recordTime(a) - recordTime(b));
+    const selectedThreadReplyPage = threadMessageId
+      ? newestRecordsPage(
+          visibleReplies,
+          threadReplyLimit,
+          (reply) => String(reply?.parentMessageId || '') === threadMessageId,
+        )
+      : { records: [], total: 0, hasMore: false };
+    const selectedThreadReplies = selectedThreadReplyPage.records.slice().sort(compareOldestRecords);
     const selectedThreadReplyCursor = selectedThreadReplies[0] || null;
     const threadRepliesPagination = effectiveOptions.hydration?.replies?.pagination
       || (threadMessageId
         ? {
             limit: threadReplyLimit,
-            hasMore: allSelectedThreadReplies.length > selectedThreadReplies.length,
+            hasMore: selectedThreadReplyPage.hasMore,
             nextBefore: selectedThreadReplyCursor?.createdAt || '',
             nextBeforeId: selectedThreadReplyCursor?.id || '',
           }
@@ -765,7 +882,7 @@ export function createSystemServices(deps) {
     for (const message of messageById.values()) {
       if (message.taskId) taskIds.add(message.taskId);
     }
-    const taskRecords = scopedRecords('tasks').slice().sort(compareTaskRecords);
+    const taskRecords = scopedRecords('tasks');
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
     const memberChannelIds = new Set(records(scopedChannels)
       .filter((channel) => (
@@ -774,22 +891,32 @@ export function createSystemServices(deps) {
         || records(channel.humanIds).includes(currentHumanId)
       ))
       .map((channel) => channel.id));
-    const selectedSpaceTasks = taskRecords.filter((task) => (
-      task.spaceType === spaceType && String(task.spaceId) === spaceId
-    ));
-    const globalChannelTasks = taskRecords.filter((task) => (
-      task.spaceType === 'channel'
-      && (!currentHumanId || memberChannelIds.has(task.spaceId))
-    ));
-    const openTaskCount = taskRecords.filter((task) => openStatuses.has(String(task.status || 'todo'))).length;
-    const selectedSpaceTaskPage = selectedSpaceTasks.slice(0, taskLimit);
-    const globalTaskPage = globalChannelTasks.slice(0, taskLimit);
+    const selectedSpaceTaskPage = [];
+    const globalTaskPage = [];
+    const referencedTaskById = new Map();
+    let openTaskCount = 0;
+    for (const task of taskRecords) {
+      if (openStatuses.has(String(task.status || 'todo'))) openTaskCount += 1;
+      if (taskIds.has(task.id)) referencedTaskById.set(task.id, task);
+    }
+    const selectedSpaceTasks = newestRecordsPage(
+      taskRecords,
+      taskLimit,
+      (task) => task.spaceType === spaceType && String(task.spaceId) === spaceId,
+    );
+    selectedSpaceTaskPage.push(...selectedSpaceTasks.records);
+    const globalChannelTasks = newestRecordsPage(
+      taskRecords,
+      taskLimit,
+      (task) => task.spaceType === 'channel' && (!currentHumanId || memberChannelIds.has(task.spaceId)),
+    );
+    globalTaskPage.push(...globalChannelTasks.records);
     const visibleTaskById = new Map();
     for (const task of [...selectedSpaceTaskPage, ...globalTaskPage]) {
       if (task?.id) visibleTaskById.set(task.id, task);
     }
-    for (const task of taskRecords) {
-      if (taskIds.has(task.id)) visibleTaskById.set(task.id, task);
+    for (const task of referencedTaskById.values()) {
+      visibleTaskById.set(task.id, task);
     }
     const visibleTasks = [...visibleTaskById.values()]
       .sort(compareTaskRecords)
@@ -832,7 +959,7 @@ export function createSystemServices(deps) {
         threadRootLimit,
         hasMoreMessages: hydratedMessagePagination
           ? Boolean(hydratedMessagePagination.hasMore)
-          : selectedMessageCandidates.length > selectedMessages.length,
+          : selectedMessagePage.hasMore,
         nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
         nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
         threadReplies: threadRepliesPagination,
@@ -840,24 +967,24 @@ export function createSystemServices(deps) {
           limit: taskLimit,
           loaded: visibleTasks.length,
           openCount: openTaskCount,
-          space: taskPageInfo(selectedSpaceTasks, selectedSpaceTaskPage, taskLimit),
-          global: taskPageInfo(globalChannelTasks, globalTaskPage, taskLimit),
+          space: taskPageInfo(selectedSpaceTasks.total, selectedSpaceTaskPage, taskLimit),
+          global: taskPageInfo(globalChannelTasks.total, globalTaskPage, taskLimit),
         },
         unreadHydration,
       },
       messages: [...messageById.values()]
-        .sort((a, b) => recordTime(a) - recordTime(b))
+        .sort(compareOldestRecords)
         .map(publicConversationRecord)
         .map(compactBootstrapConversationRecord),
       replies: [...replyById.values()]
-        .sort((a, b) => recordTime(a) - recordTime(b))
+        .sort(compareOldestRecords)
         .map(publicConversationRecord)
         .map(compactBootstrapConversationRecord),
-      runs: newestRecords(scopedRecords('runs'), 80).sort((a, b) => recordTime(a) - recordTime(b)),
-      workItems: newestRecords(scopedRecords('workItems'), 200).sort((a, b) => recordTime(a) - recordTime(b)),
-      events: newestRecords(scopedRecords('events'), eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),
-      routeEvents: newestRecords(scopedRecords('routeEvents'), 80).sort((a, b) => recordTime(a) - recordTime(b)),
-      systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort((a, b) => recordTime(a) - recordTime(b)),
+      runs: newestRecords(scopedRecords('runs'), 80).sort(compareOldestRecords),
+      workItems: newestRecords(scopedRecords('workItems'), 200).sort(compareOldestRecords),
+      events: newestRecords(scopedRecords('events'), eventLimit).sort(compareOldestRecords),
+      routeEvents: newestRecords(scopedRecords('routeEvents'), 80).sort(compareOldestRecords),
+      systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort(compareOldestRecords),
       attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
     };
   }

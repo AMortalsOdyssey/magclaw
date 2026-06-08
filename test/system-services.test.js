@@ -258,6 +258,58 @@ test('bootstrap state projects only the visible conversation window', () => {
   assert.ok(metadataReads < 80, `metadata reads should stay windowed, got ${metadataReads}`);
 });
 
+test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
+  const services = makeServices((state) => {
+    state.messages = [
+      {
+        id: 'msg_oldest',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'oldest',
+        createdAt: '2026-05-18T00:00:00.000Z',
+        updatedAt: '2026-05-18T00:00:00.000Z',
+      },
+      {
+        id: 'msg_newest',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'newest',
+        createdAt: '2026-05-18T00:03:00.000Z',
+        updatedAt: '2026-05-18T00:03:00.000Z',
+      },
+      {
+        id: 'msg_middle',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'middle',
+        createdAt: '2026-05-18T00:02:00.000Z',
+        updatedAt: '2026-05-18T00:02:00.000Z',
+      },
+      {
+        id: 'msg_older',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        body: 'older',
+        createdAt: '2026-05-18T00:01:00.000Z',
+        updatedAt: '2026-05-18T00:01:00.000Z',
+      },
+    ];
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=2&threadRootLimit=1',
+    headers: {},
+  });
+
+  assert.deepEqual(snapshot.messages.map((message) => message.id), ['msg_middle', 'msg_newest']);
+  assert.equal(snapshot.bootstrap.hasMoreMessages, true);
+  assert.equal(snapshot.bootstrap.nextBeforeId, 'msg_middle');
+});
+
 test('bootstrap state windows task hydration and keeps referenced task records', () => {
   const baseTime = Date.parse('2026-05-18T00:00:00.000Z');
   const services = makeServices((state) => {
