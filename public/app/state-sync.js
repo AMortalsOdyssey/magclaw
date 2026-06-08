@@ -36,6 +36,19 @@ function queueStateUpdate(nextState, { immediate = false } = {}) {
   return true;
 }
 
+function stateRecordArray(records) {
+  return Array.isArray(records) ? records : [];
+}
+
+function normalizeConversationStateSnapshot(stateSnapshot = {}) {
+  return {
+    ...stateSnapshot,
+    messages: [...stateRecordArray(stateSnapshot?.messages)],
+    replies: [...stateRecordArray(stateSnapshot?.replies)],
+    tasks: [...stateRecordArray(stateSnapshot?.tasks)],
+  };
+}
+
 function sortConversationRecords(records = []) {
   return [...records].sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
 }
@@ -99,14 +112,9 @@ function applySubmittedConversationResult(result = {}) {
   const options = arguments[1] || {};
   const removeOptimisticId = String(options.removeOptimisticId || '');
   let changed = Boolean(removeOptimisticId);
-  let nextState = {
-    ...appState,
-    messages: [...(appState.messages || [])],
-    replies: [...(appState.replies || [])],
-    tasks: [...(appState.tasks || [])],
-  };
+  let nextState = normalizeConversationStateSnapshot(appState);
   if (removeOptimisticId) {
-    nextState = dropOptimisticConversationRecord(nextState, removeOptimisticId);
+    nextState = normalizeConversationStateSnapshot(dropOptimisticConversationRecord(nextState, removeOptimisticId));
   }
   const taskRecords = [
     result.task,
@@ -135,8 +143,9 @@ function applySubmittedConversationResult(result = {}) {
     changed = true;
   }
   if (result.reply) {
-    const replyWasPresent = nextState.replies.some((item) => item?.id === result.reply.id);
-    nextState.replies = upsertConversationRecord(nextState.replies, result.reply);
+    const replies = stateRecordArray(nextState.replies);
+    const replyWasPresent = replies.some((item) => item?.id === result.reply.id);
+    nextState.replies = upsertConversationRecord(replies, result.reply);
     nextState.messages = mergeSubmittedReplyParent(nextState.messages, result.reply, replyWasPresent);
     changed = true;
   }

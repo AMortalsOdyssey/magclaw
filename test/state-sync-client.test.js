@@ -112,6 +112,32 @@ test('submitted conversation merge replaces optimistic messages and replies with
   assert.equal(context.appState.replies.some((reply) => reply.optimistic), false);
 });
 
+test('submitted reply merge normalizes malformed conversation arrays', async () => {
+  const { context } = await createHarness({
+    messages: [{
+      id: 'msg_parent',
+      createdAt: '2026-05-22T09:00:00.000Z',
+      replyCount: 0,
+      updatedAt: '2026-05-22T09:00:00.000Z',
+    }],
+    replies: { stale: true },
+    tasks: null,
+  });
+
+  assert.equal(context.applySubmittedConversationResult({
+    reply: {
+      id: 'rep_server_1',
+      parentMessageId: 'msg_parent',
+      body: 'server',
+      createdAt: '2026-05-22T09:02:00.000Z',
+    },
+  }), true);
+
+  assert.deepEqual([...context.appState.replies.map((reply) => reply.id)], ['rep_server_1']);
+  assert.deepEqual([...context.appState.tasks], []);
+  assert.equal(context.appState.messages[0].replyCount, 1);
+});
+
 test('submitted task merge updates task state and links the backing message', async () => {
   const { context } = await createHarness({
     messages: [{

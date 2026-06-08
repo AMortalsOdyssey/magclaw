@@ -30,7 +30,8 @@ test('submitted conversation writes merge the API response before the final refr
   );
 
   assert.match(submitSource, /nextState\.messages = upsertConversationRecord\(nextState\.messages, result\.message\)/);
-  assert.match(submitSource, /nextState\.replies = upsertConversationRecord\(nextState\.replies, result\.reply\)/);
+  assert.match(submitSource, /const replies = stateRecordArray\(nextState\.replies\)/);
+  assert.match(submitSource, /nextState\.replies = upsertConversationRecord\(replies, result\.reply\)/);
   assert.match(submitSource, /nextState\.messages = mergeSubmittedReplyParent\(nextState\.messages, result\.reply, replyWasPresent\)/);
   assert.match(submitSource, /applyStateUpdate\(nextState\)/);
   assert.match(messageFormSource, /result = await api\(`\/api\/spaces\/\$\{selectedSpaceType\}\/\$\{selectedSpaceId\}\/messages`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\);[\s\S]*requestPaneBottomScroll\('main'\)/);
@@ -62,7 +63,7 @@ test('message and reply submits render an optimistic local record before waiting
   assert.match(optimisticSource, /optimistic: true/);
   assert.match(mergeSource, /function dropOptimisticConversationRecord\(/);
   assert.match(mergeSource, /record\.optimistic === true/);
-  assert.match(mergeSource, /nextState = dropOptimisticConversationRecord\(nextState, removeOptimisticId\)/);
+  assert.match(mergeSource, /nextState = normalizeConversationStateSnapshot\(dropOptimisticConversationRecord\(nextState, removeOptimisticId\)\)/);
   assert.match(messageFormSource, /const optimisticMessage = optimisticConversationRecord\(\{[\s\S]*kind: 'message'[\s\S]*applySubmittedConversationResult\(\{ message: optimisticMessage \}\)/);
   assert.match(messageFormSource, /const references = typeof outgoingComposerReferences === 'function' \? outgoingComposerReferences\(composerId\) : \[\]/);
   assert.match(messageFormSource, /body: JSON\.stringify\(\{[\s\S]*attachmentIds,[\s\S]*references,/);
