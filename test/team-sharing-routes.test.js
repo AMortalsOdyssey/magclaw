@@ -2261,6 +2261,21 @@ test('team sharing link inspection reports server access actions and token user 
   assert.equal(noAuthInspect.data.action.type, 'login');
   assert.match(noAuthInspect.data.action.command, /team-sharing login --server-url https:\/\/magclaw\.example/);
 
+  const noAuthContextInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    noAuthContextInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fother-server%2Fteam-sharing%2Fcontext%2Fsess_other%3FanchorEventId%3Devt_1'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(noAuthContextInspect.statusCode, 200);
+  assert.equal(noAuthContextInspect.data.ok, false);
+  assert.equal(noAuthContextInspect.data.kind, 'context');
+  assert.equal(noAuthContextInspect.data.reason, 'login_required');
+  assert.equal(noAuthContextInspect.data.target.sessionId, 'sess_other');
+  assert.equal(noAuthContextInspect.data.target.serverSlug, 'other-server');
+  assert.equal(noAuthContextInspect.data.action.type, 'login');
+
   const shareInspect = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: authHeaders },
