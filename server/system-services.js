@@ -78,6 +78,53 @@ const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
   'user',
   'role',
 ]);
+const BOOTSTRAP_CONVERSATION_FORMAT_TUPLE = 'tuple-v1';
+const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'replyCount',
+  'createdAt',
+  'updatedAt',
+  'taskId',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'parentMessageId',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'createdAt',
+  'updatedAt',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'title',
+  'status',
+  'createdAt',
+  'updatedAt',
+  'messageId',
+  'claimedBy',
+  'assigneeId',
+  'assigneeIds',
+  'createdBy',
+  'metadata',
+]);
 const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
   '@magclaw/web': 'web',
   '@magclaw/daemon': 'daemon',
@@ -1269,6 +1316,32 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function encodeBootstrapConversationRecords(snapshot = {}, options = {}) {
+    if (options.conversationFormat !== BOOTSTRAP_CONVERSATION_FORMAT_TUPLE) return snapshot;
+    const next = {
+      ...snapshot,
+      bootstrap: {
+        ...(snapshot.bootstrap || {}),
+        conversationFormat: BOOTSTRAP_CONVERSATION_FORMAT_TUPLE,
+        conversationFields: {
+          messages: BOOTSTRAP_MESSAGE_TUPLE_FIELDS,
+          replies: BOOTSTRAP_REPLY_TUPLE_FIELDS,
+          tasks: BOOTSTRAP_TASK_TUPLE_FIELDS,
+        },
+      },
+    };
+    if (Array.isArray(snapshot.messages)) {
+      next.messages = snapshot.messages.map((message) => bootstrapTupleRecord(message, BOOTSTRAP_MESSAGE_TUPLE_FIELDS));
+    }
+    if (Array.isArray(snapshot.replies)) {
+      next.replies = snapshot.replies.map((reply) => bootstrapTupleRecord(reply, BOOTSTRAP_REPLY_TUPLE_FIELDS));
+    }
+    if (Array.isArray(snapshot.tasks)) {
+      next.tasks = snapshot.tasks.map((task) => bootstrapTupleRecord(task, BOOTSTRAP_TASK_TUPLE_FIELDS));
+    }
+    return next;
+  }
+
   function compactBootstrapChannelRecord(channel = {}) {
     if (!channel || typeof channel !== 'object') return channel;
     const record = { ...channel };
@@ -1300,6 +1373,8 @@ export function createSystemServices(deps) {
       };
       const directoryFormat = url.searchParams.get('directoryFormat') || '';
       if (directoryFormat) options.directoryFormat = directoryFormat;
+      const conversationFormat = url.searchParams.get('conversationFormat') || '';
+      if (conversationFormat) options.conversationFormat = conversationFormat;
       const directoryScope = url.searchParams.get('directoryScope') || '';
       if (directoryScope) options.directoryScope = directoryScope;
       const selectedAgentId = url.searchParams.get('selectedAgentId') || '';
@@ -1727,7 +1802,7 @@ export function createSystemServices(deps) {
       systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort(compareOldestRecords),
       attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
     };
-    return encodeBootstrapDirectories(snapshot, effectiveOptions);
+    return encodeBootstrapDirectories(encodeBootstrapConversationRecords(snapshot, effectiveOptions), effectiveOptions);
   }
 
   function publicDirectoryState(req = null, options = {}) {

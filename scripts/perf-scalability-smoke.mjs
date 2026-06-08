@@ -7,8 +7,9 @@ import { createSystemServices } from '../server/system-services.js';
 
 const NOW = '2026-06-08T00:00:00.000Z';
 const BOOTSTRAP_DIRECTORY_FORMAT = 'tuple-v1';
+const BOOTSTRAP_CONVERSATION_FORMAT = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE = 'visible';
-const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1&directoryScope=visible';
+const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1&conversationFormat=tuple-v1&directoryScope=visible';
 const DIRECTORY_PAGE_LIMIT = 250;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -63,8 +64,54 @@ const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
   'user',
   'role',
 ]);
+const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'replyCount',
+  'createdAt',
+  'updatedAt',
+  'taskId',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'parentMessageId',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'createdAt',
+  'updatedAt',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'title',
+  'status',
+  'createdAt',
+  'updatedAt',
+  'messageId',
+  'claimedBy',
+  'assigneeId',
+  'assigneeIds',
+  'createdBy',
+  'metadata',
+]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 420_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 370_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -90,9 +137,9 @@ const BUDGETS = Object.freeze({
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
   bootstrapLargeHistoryMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_MS || 250),
-  bootstrapLargeHistoryBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_BYTES || 150_000),
+  bootstrapLargeHistoryBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_BYTES || 80_000),
   bootstrapLargeUnreadMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_MS || 250),
-  bootstrapLargeUnreadBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_BYTES || 150_000),
+  bootstrapLargeUnreadBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_BYTES || 60_000),
 });
 
 function assertBudget(condition, message) {
@@ -1138,15 +1185,22 @@ async function main() {
   const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
   const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
   const decodedCloudMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+  const decodedMessages = decodeTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
+  const decodedReplies = decodeTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS);
+  const decodedTasks = decodeTupleRecords(snapshot.tasks, BOOTSTRAP_TASK_TUPLE_FIELDS);
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
     directoryFormat: snapshot.bootstrap?.directoryFormat || '',
+    conversationFormat: snapshot.bootstrap?.conversationFormat || '',
     directoryScope: snapshot.bootstrap?.directory?.scope || '',
     directory: snapshot.bootstrap?.directory || null,
     hasBootstrapDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
       && (snapshot.humans || []).some(Array.isArray)
       && (snapshot.cloud?.members || []).some(Array.isArray),
+    hasBootstrapConversationTuples: (snapshot.messages || []).some(Array.isArray)
+      && (snapshot.replies || []).some(Array.isArray)
+      && (snapshot.tasks || []).some(Array.isArray),
     messages: snapshot.messages.length,
     replies: snapshot.replies.length,
     tasks: snapshot.tasks.length,
@@ -1162,10 +1216,10 @@ async function main() {
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
     hasBootstrapMemberChurnFields: decodedAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || decodedHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
-    hasBootstrapConversationChurnFields: [...snapshot.messages, ...snapshot.replies].some((record) => (
+    hasBootstrapConversationChurnFields: [...decodedMessages, ...decodedReplies].some((record) => (
       record.workspaceId || (record.updatedAt && record.createdAt && record.updatedAt === record.createdAt)
     )),
-    hasBootstrapTaskChurnFields: snapshot.tasks.some((task) => (
+    hasBootstrapTaskChurnFields: decodedTasks.some((task) => (
       task.workspaceId
       || (task.updatedAt && task.createdAt && task.updatedAt === task.createdAt)
       || (Array.isArray(task.assigneeIds) && task.assigneeIds.length === 0)
@@ -1209,8 +1263,10 @@ async function main() {
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
+  assertBudget(bootstrap.conversationFormat === BOOTSTRAP_CONVERSATION_FORMAT, `bootstrap conversation format expected ${BOOTSTRAP_CONVERSATION_FORMAT} but got ${bootstrap.conversationFormat || '[none]'}`);
   assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
   assertBudget(bootstrap.hasBootstrapDirectoryTuples, 'bootstrap did not compact member directories into tuple rows');
+  assertBudget(bootstrap.hasBootstrapConversationTuples, 'bootstrap did not compact conversation records into tuple rows');
   assertBudget(bootstrap.agents < state.agents.length, 'bootstrap still loaded the full Agent directory');
   assertBudget(bootstrap.humans < state.humans.length, 'bootstrap still loaded the full Human directory');
   assertBudget(bootstrap.cloudMembers < state.humans.length, 'bootstrap still loaded the full cloud member directory');

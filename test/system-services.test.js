@@ -375,6 +375,66 @@ test('bootstrap state selects newest conversation window from unsorted state arr
   assert.equal(snapshot.bootstrap.nextBeforeId, 'msg_middle');
 });
 
+test('bootstrap state can compact conversation records into tuple rows', () => {
+  const createdAt = '2026-05-18T00:10:00.000Z';
+  const services = makeServices((state) => {
+    state.messages[0].replyCount = 1;
+    state.replies.push({
+      id: 'rep_channel',
+      workspaceId: 'local',
+      parentMessageId: 'msg_channel',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'agent',
+      authorId: 'agt_1',
+      body: 'reply body',
+      readBy: [],
+      createdAt,
+      updatedAt: createdAt,
+    });
+    state.tasks.push({
+      id: 'task_channel',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      title: 'Channel task',
+      status: 'todo',
+      createdAt,
+      updatedAt: createdAt,
+    });
+  });
+
+  const plain = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
+    headers: {},
+  });
+  const compact = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&conversationFormat=tuple-v1',
+    headers: {},
+  });
+  const decode = (entry, fields = []) => {
+    const record = {};
+    fields.forEach((field, index) => {
+      if (entry[index] !== undefined && entry[index] !== null) record[field] = entry[index];
+    });
+    const extra = entry[fields.length];
+    if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(record, extra);
+    return record;
+  };
+
+  assert.equal(Array.isArray(plain.messages[0]), false);
+  assert.equal(compact.bootstrap.conversationFormat, 'tuple-v1');
+  assert.equal(Array.isArray(compact.messages[0]), true);
+  assert.equal(Array.isArray(compact.replies[0]), true);
+  assert.equal(Array.isArray(compact.tasks[0]), true);
+  assert.equal(decode(compact.messages[0], compact.bootstrap.conversationFields.messages).body, 'channel hello');
+  assert.equal(decode(compact.messages[0], compact.bootstrap.conversationFields.messages).replyCount, 1);
+  assert.equal(decode(compact.replies[0], compact.bootstrap.conversationFields.replies).parentMessageId, 'msg_channel');
+  assert.equal(decode(compact.replies[0], compact.bootstrap.conversationFields.replies).body, 'reply body');
+  assert.equal(decode(compact.tasks.find((task) => task[0] === 'task_channel'), compact.bootstrap.conversationFields.tasks).title, 'Channel task');
+  assert.equal(decode(compact.tasks.find((task) => task[0] === 'task_channel'), compact.bootstrap.conversationFields.tasks).status, 'todo');
+});
+
 test('bootstrap state windows task hydration and keeps referenced task records', () => {
   const baseTime = Date.parse('2026-05-18T00:00:00.000Z');
   const services = makeServices((state) => {

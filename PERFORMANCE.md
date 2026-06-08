@@ -48,7 +48,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Browser bootstrap JSON is at most 420 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 370 KB and generated in at most 250 ms.
 - Full member directory hydration is isolated from bootstrap and paged at 250
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
@@ -67,10 +67,10 @@ membership fanout visible in the budget. It currently enforces:
   history pagination.
 - Bootstrap server-side selection avoids full history sorts on large workspaces:
   a 100000-message / 5000-reply history fixture must still return the first
-  window in at most 250 ms and 150 KB while exposing history pagination.
+  window in at most 250 ms and 80 KB while exposing history pagination.
 - Bootstrap unread hydration is bounded internally as well as externally: a
   100000-message / 5000-reply unread fixture must still hydrate only the newest
-  80 unread records with parent context in at most 250 ms and 150 KB.
+  80 unread records with parent context in at most 250 ms and 60 KB.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
@@ -81,6 +81,10 @@ membership fanout visible in the budget. It currently enforces:
 - Browser bootstrap requests use opt-in compact `tuple-v1` directory rows for
   Agents, Humans, and cloud Members, then normalize them back to objects at the
   frontend state boundary so rendering code keeps the same object UX contract.
+- Browser bootstrap requests also use opt-in compact `tuple-v1` conversation
+  rows for Messages, Replies, and Tasks, then normalize them back to objects at
+  the frontend state boundary. This preserves the first-paint message/thread/task
+  window while avoiding repeated JSON field names on every record.
 - Browser bootstrap requests also use `directoryScope=visible`, keeping only
   current-view identities in the first paint. Deeper people lookup is now
   server-backed: mention search uses `/api/directory/search`, while Settings /

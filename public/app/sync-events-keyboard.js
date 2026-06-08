@@ -7,6 +7,7 @@ function bootstrapStatePath() {
   params.set('threadRootLimit', '160');
   params.set('taskLimit', '160');
   params.set('directoryFormat', 'tuple-v1');
+  params.set('conversationFormat', 'tuple-v1');
   params.set('directoryScope', 'visible');
   if (selectedAgentId) params.set('selectedAgentId', selectedAgentId);
   if (selectedHumanId) params.set('selectedHumanId', selectedHumanId);
@@ -24,10 +25,81 @@ function directoryStatePath(cursor = '') {
   return `/api/directory?${params.toString()}`;
 }
 
+const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'replyCount',
+  'createdAt',
+  'updatedAt',
+  'taskId',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'parentMessageId',
+  'spaceType',
+  'spaceId',
+  'authorType',
+  'authorId',
+  'body',
+  'readBy',
+  'createdAt',
+  'updatedAt',
+  'savedBy',
+  'metadata',
+  'eventType',
+]);
+const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
+  'id',
+  'spaceType',
+  'spaceId',
+  'title',
+  'status',
+  'createdAt',
+  'updatedAt',
+  'messageId',
+  'claimedBy',
+  'assigneeId',
+  'assigneeIds',
+  'createdBy',
+  'metadata',
+]);
+
+function tupleRecordToObject(entry, fields = []) {
+  if (!Array.isArray(entry)) return entry;
+  const record = {};
+  fields.forEach((field, index) => {
+    const value = entry[index];
+    if (value !== undefined && value !== null) record[field] = value;
+  });
+  const extra = entry[fields.length];
+  if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(record, extra);
+  return record;
+}
+
+function normalizeConversationTupleSnapshot(nextState) {
+  if (!nextState || nextState.bootstrap?.conversationFormat !== 'tuple-v1') return nextState;
+  const fields = nextState.bootstrap?.conversationFields || {};
+  return {
+    ...nextState,
+    messages: (nextState.messages || []).map((entry) => tupleRecordToObject(entry, fields.messages || BOOTSTRAP_MESSAGE_TUPLE_FIELDS)),
+    replies: (nextState.replies || []).map((entry) => tupleRecordToObject(entry, fields.replies || BOOTSTRAP_REPLY_TUPLE_FIELDS)),
+    tasks: (nextState.tasks || []).map((entry) => tupleRecordToObject(entry, fields.tasks || BOOTSTRAP_TASK_TUPLE_FIELDS)),
+  };
+}
+
 function normalizeIncomingStateSnapshot(nextState) {
+  const conversationState = normalizeConversationTupleSnapshot(nextState);
   return typeof normalizeStateDirectorySnapshot === 'function'
-    ? normalizeStateDirectorySnapshot(nextState)
-    : nextState;
+    ? normalizeStateDirectorySnapshot(conversationState)
+    : conversationState;
 }
 
 function preserveIncomingDirectorySnapshot(previousState, nextState) {

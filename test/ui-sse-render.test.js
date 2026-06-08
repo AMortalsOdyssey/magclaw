@@ -43,6 +43,8 @@ async function createRealtimeHarness() {
     clearPendingStateUpdate: noop,
     selectedSpaceType: 'channel',
     selectedSpaceId: 'chan_all',
+    selectedAgentId: null,
+    selectedHumanId: null,
     taskViewMode: 'board',
     taskColumns: [['todo', 'Todo'], ['in_progress', 'In Progress'], ['in_review', 'In Review'], ['done', 'Done'], ['closed', 'Closed']],
     collapsedTaskColumns: {},
@@ -104,6 +106,30 @@ test('state sync module loads before realtime and submit consumers', async () =>
   assert.ok(stateSyncIndex < realtimeIndex, 'state sync should load before realtime handlers');
   assert.ok(stateSyncIndex < clickIndex, 'state sync should load before click handlers');
   assert.ok(stateSyncIndex < submitIndex, 'state sync should load before submit handlers');
+});
+
+test('bootstrap request and normalizer support compact conversation tuples', async () => {
+  const context = await createRealtimeHarness();
+  const url = new URL(context.bootstrapStatePath(), 'http://magclaw.local');
+  assert.equal(url.searchParams.get('conversationFormat'), 'tuple-v1');
+
+  const normalized = context.normalizeIncomingStateSnapshot({
+    bootstrap: { conversationFormat: 'tuple-v1' },
+    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', ['hum_1'], 2, '2026-06-08T00:00:00.000Z']],
+    replies: [['rep_1', 'msg_1', 'channel', 'chan_all', 'human', 'hum_1', 'reply', [], '2026-06-08T00:00:01.000Z']],
+    tasks: [['task_1', 'channel', 'chan_all', 'Follow up', 'todo', '2026-06-08T00:00:02.000Z']],
+    agents: [],
+    humans: [],
+    cloud: { members: [] },
+  });
+
+  assert.equal(normalized.messages[0].id, 'msg_1');
+  assert.equal(normalized.messages[0].body, 'hello');
+  assert.equal(normalized.messages[0].replyCount, 2);
+  assert.equal(normalized.replies[0].parentMessageId, 'msg_1');
+  assert.equal(normalized.replies[0].body, 'reply');
+  assert.equal(normalized.tasks[0].title, 'Follow up');
+  assert.equal(normalized.tasks[0].status, 'todo');
 });
 
 test('browser performance marks cover startup, SSE, resync, and scoped patches', async () => {
@@ -1173,6 +1199,7 @@ test('task surfaces load older pages through cursor-backed task API', async () =
   );
 
   assert.match(bootstrapSource, /params\.set\('taskLimit', '160'\)/);
+  assert.match(bootstrapSource, /params\.set\('conversationFormat', 'tuple-v1'\)/);
   assert.match(taskPagingSource, /async function loadOlderTasks\(scope = ''\)/);
   assert.match(taskPagingSource, /params\.set\('before', pageInfo\.nextBefore\)/);
   assert.match(taskPagingSource, /params\.set\('beforeId', pageInfo\.nextBeforeId\)/);
