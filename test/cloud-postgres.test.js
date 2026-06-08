@@ -589,6 +589,8 @@ test('postgres store indexes markdown document operations and maintenance runs',
   assert.ok(queries.some((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_markdown_operations"')));
   assert.ok(queries.some((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_markdown_maintenance_runs"')));
   const operationQuery = queries.find((query) => query.sql.includes('cloud_markdown_operations'));
+  assert.match(operationQuery.sql, /ON CONFLICT DO NOTHING/);
+  assert.match(operationQuery.sql, /existing\.operation_id = incoming\.operation_id/);
   assert.equal(operationQuery.params[0], 'mdop_one');
   assert.equal(JSON.parse(operationQuery.params[9]).type, 'upsert_bullet');
 });

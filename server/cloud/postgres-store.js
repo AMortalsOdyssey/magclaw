@@ -3731,20 +3731,51 @@ export function createCloudPostgresStore(optionsInput = {}) {
     if (!operationId || !workspaceId || !agentId || !relPath) return;
     await withClient(async (client) => {
       await client.query(`
+        WITH incoming AS (
+          SELECT
+            $1::text AS operation_id,
+            $2::text AS workspace_id,
+            $3::text AS agent_id,
+            $4::text AS rel_path,
+            $5::bigint AS sequence,
+            $6::bigint AS revision,
+            $7::integer AS segment_index,
+            $8::text AS idempotency_key,
+            $9::text AS status,
+            $10::jsonb AS operation,
+            $11::text AS before_hash,
+            $12::text AS after_hash,
+            $13::text AS source_trigger,
+            $14::timestamptz AS created_at,
+            $15::timestamptz AS applied_at,
+            $16::text AS error,
+            $17::jsonb AS metadata
+        ),
+        inserted AS (
         INSERT INTO ${table('cloud_markdown_operations')}
           (operation_id, workspace_id, agent_id, rel_path, sequence, revision, segment_index,
            idempotency_key, status, operation, before_hash, after_hash, source_trigger,
            created_at, applied_at, error, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17::jsonb)
-        ON CONFLICT (operation_id) DO UPDATE SET
-          status = EXCLUDED.status,
-          revision = EXCLUDED.revision,
-          segment_index = EXCLUDED.segment_index,
-          before_hash = EXCLUDED.before_hash,
-          after_hash = EXCLUDED.after_hash,
-          applied_at = EXCLUDED.applied_at,
-          error = EXCLUDED.error,
-          metadata = EXCLUDED.metadata
+        SELECT operation_id, workspace_id, agent_id, rel_path, sequence, revision, segment_index,
+          idempotency_key, status, operation, before_hash, after_hash, source_trigger,
+          created_at, applied_at, error, metadata
+        FROM incoming
+        ON CONFLICT DO NOTHING
+        RETURNING operation_id
+        )
+        UPDATE ${table('cloud_markdown_operations')} existing
+        SET
+          status = incoming.status,
+          revision = incoming.revision,
+          segment_index = incoming.segment_index,
+          before_hash = incoming.before_hash,
+          after_hash = incoming.after_hash,
+          applied_at = incoming.applied_at,
+          error = incoming.error,
+          metadata = incoming.metadata
+        FROM incoming
+        WHERE NOT EXISTS (SELECT 1 FROM inserted)
+          AND existing.operation_id = incoming.operation_id
       `, [
         operationId,
         workspaceId,
