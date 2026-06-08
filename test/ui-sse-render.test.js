@@ -19,8 +19,19 @@ async function readAppSource() {
 async function createRealtimeHarness() {
   const source = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
   const noop = () => {};
+  const storage = new Map();
+  const localStorage = {
+    getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+    setItem: (key, value) => {
+      storage.set(key, String(value));
+    },
+    removeItem: (key) => {
+      storage.delete(key);
+    },
+  };
   const context = {
     console,
+    localStorage,
     URL,
     URLSearchParams,
     setTimeout,
@@ -66,6 +77,10 @@ async function createRealtimeHarness() {
       location: { pathname: '/s/test/channels/chan_all', search: '', hash: '' },
       history: { replaceState: noop, pushState: noop },
     },
+    HUMAN_PRESENCE_LEASE_KEY: 'magclaw:human-presence-lease:test',
+    HUMAN_PRESENCE_STATE_KEY: 'magclaw:human-presence-state:test',
+    HUMAN_PRESENCE_LEASE_TTL_MS: 65000,
+    humanPresenceTabId: 'tab_a',
   };
   vm.createContext(context);
   vm.runInContext(source, context);
@@ -762,6 +777,34 @@ test('state SSE updates do not send an immediate presence heartbeat on every eve
   assert.doesNotMatch(heartbeatSource.replace(/if \(!humanPresenceTimer\) \{[\s\S]*?\n  \}/, ''), /sendHumanPresenceHeartbeat\(\)/);
 });
 
+test('human presence heartbeat uses one cross-tab lease per browser user', async () => {
+  const context = await createRealtimeHarness();
+  context.appState = { cloud: { auth: { currentUser: { id: 'usr_1' } } } };
+
+  assert.equal(context.claimHumanPresenceLease(), true);
+  let lease = JSON.parse(context.localStorage.getItem(context.HUMAN_PRESENCE_LEASE_KEY));
+  assert.equal(lease.tabId, 'tab_a');
+  assert.equal(lease.userId, 'usr_1');
+
+  context.localStorage.setItem(context.HUMAN_PRESENCE_LEASE_KEY, JSON.stringify({
+    tabId: 'tab_b',
+    userId: 'usr_1',
+    expiresAt: Date.now() + 60000,
+  }));
+  assert.equal(context.claimHumanPresenceLease(), false);
+
+  context.localStorage.setItem(context.HUMAN_PRESENCE_LEASE_KEY, JSON.stringify({
+    tabId: 'tab_b',
+    userId: 'usr_1',
+    expiresAt: Date.now() - 1,
+  }));
+  assert.equal(context.claimHumanPresenceLease(), true);
+
+  context.document.visibilityState = 'hidden';
+  assert.equal(context.claimHumanPresenceLease(), false);
+  assert.equal(context.localStorage.getItem(context.HUMAN_PRESENCE_LEASE_KEY), null);
+});
+
 test('high-frequency SSE state updates are coalesced before scoped patching', async () => {
   const app = await readAppSource();
   const queueSource = app.slice(
@@ -780,6 +823,10 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
     app.indexOf('async function sendHumanPresenceHeartbeat()'),
     app.indexOf('function startHumanPresenceHeartbeat()'),
   );
+  const browserPresenceApplySource = app.slice(
+    app.indexOf('function applyHumanPresenceResult'),
+    app.indexOf('function publishHumanPresenceResult'),
+  );
 
   assert.match(app, /let pendingStateUpdate = null/);
   assert.match(app, /let pendingStateUpdateFrame = null/);
@@ -794,9 +841,13 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
   assert.match(realtimeSource, /if \(envelope\?\.type === 'state_patch' && envelope\.payload\) \{[\s\S]*queueStateUpdate\(envelope\.payload\)/);
   assert.match(realtimeSource, /function applyStateResyncRequiredEnvelope\(envelope = \{\}\)[\s\S]*applySseSeq\(envelope\?\.seq \|\| envelope\?\.currentSeq\)[\s\S]*refreshAfterSseGap\(envelope\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
-  assert.match(browserHeartbeatSource, /const stateSnapshot = pendingStateUpdateBase\(\)/);
-  assert.match(browserHeartbeatSource, /const humans = stateSnapshot\.humans\.map/);
-  assert.match(browserHeartbeatSource, /if \(changed\) queueStateUpdate\(\{ \.\.\.stateSnapshot, humans \}\)/);
+  assert.match(app, /function claimHumanPresenceLease\(\)/);
+  assert.match(browserHeartbeatSource, /if \(!claimHumanPresenceLease\(\)\) return/);
+  assert.match(browserHeartbeatSource, /publishHumanPresenceResult\(result\.human\)/);
+  assert.match(browserPresenceApplySource, /const stateSnapshot = pendingStateUpdateBase\(\)/);
+  assert.match(browserPresenceApplySource, /const humans = stateSnapshot\.humans\.map/);
+  assert.match(browserPresenceApplySource, /if \(changed\) queueStateUpdate\(\{ \.\.\.stateSnapshot, humans \}\)/);
+  assert.match(app, /window\.addEventListener\('storage'[\s\S]*HUMAN_PRESENCE_STATE_KEY[\s\S]*payload\?\.userId && userId && payload\.userId !== userId[\s\S]*applyHumanPresenceResult/);
 });
 
 test('full refresh fallback preserves chat, thread, and page scroll positions', async () => {

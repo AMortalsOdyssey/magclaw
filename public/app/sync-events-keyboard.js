@@ -1903,21 +1903,107 @@ function disconnectEvents() {
   eventSourcePath = '';
 }
 
+function currentHumanPresenceLeaseUserId() {
+  const user = appState?.cloud?.auth?.currentUser || {};
+  return String(user.id || user.email || '').trim();
+}
+
+function readHumanPresenceLease() {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(HUMAN_PRESENCE_LEASE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHumanPresenceLease(userId, nowMs = Date.now()) {
+  if (typeof localStorage === 'undefined') return false;
+  try {
+    localStorage.setItem(HUMAN_PRESENCE_LEASE_KEY, JSON.stringify({
+      tabId: humanPresenceTabId,
+      userId,
+      expiresAt: nowMs + HUMAN_PRESENCE_LEASE_TTL_MS,
+      updatedAt: nowMs,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ownsHumanPresenceLease(lease, userId = currentHumanPresenceLeaseUserId()) {
+  return Boolean(lease?.tabId === humanPresenceTabId && (!userId || lease.userId === userId));
+}
+
+function releaseHumanPresenceLease() {
+  if (typeof localStorage === 'undefined') return;
+  const lease = readHumanPresenceLease();
+  if (!ownsHumanPresenceLease(lease)) return;
+  try {
+    localStorage.removeItem(HUMAN_PRESENCE_LEASE_KEY);
+  } catch {
+    // Ignore storage failures; the lease expires quickly.
+  }
+}
+
+function claimHumanPresenceLease() {
+  const userId = currentHumanPresenceLeaseUserId();
+  if (!userId) return false;
+  if (document.visibilityState === 'hidden') {
+    releaseHumanPresenceLease();
+    return false;
+  }
+  if (typeof localStorage === 'undefined') return true;
+  const nowMs = Date.now();
+  const lease = readHumanPresenceLease();
+  const leaseUserId = String(lease?.userId || '').trim();
+  const leaseExpiresAt = Number(lease?.expiresAt || 0);
+  if (lease && leaseUserId === userId && !ownsHumanPresenceLease(lease, userId) && leaseExpiresAt > nowMs) {
+    return false;
+  }
+  if (!writeHumanPresenceLease(userId, nowMs)) return true;
+  return ownsHumanPresenceLease(readHumanPresenceLease(), userId);
+}
+
+function applyHumanPresenceResult(human = null) {
+  const stateSnapshot = pendingStateUpdateBase();
+  if (!human?.id || !stateSnapshot?.humans) return false;
+  let changed = false;
+  const humans = stateSnapshot.humans.map((item) => {
+    if (item.id !== human.id) return item;
+    changed = item.status !== human.status || item.lastSeenAt !== human.lastSeenAt || item.presenceUpdatedAt !== human.presenceUpdatedAt;
+    return { ...item, ...human };
+  });
+  if (changed) queueStateUpdate({ ...stateSnapshot, humans });
+  return changed;
+}
+
+function publishHumanPresenceResult(human = null) {
+  if (!human?.id || typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(HUMAN_PRESENCE_STATE_KEY, JSON.stringify({
+      tabId: humanPresenceTabId,
+      userId: currentHumanPresenceLeaseUserId(),
+      human,
+      updatedAt: Date.now(),
+    }));
+  } catch {
+    // Other tabs will still receive the next SSE presence snapshot.
+  }
+}
+
 async function sendHumanPresenceHeartbeat() {
   if (activeView === 'console' || (window.location.pathname || '').startsWith('/console')) return;
   if (humanPresenceInFlight || !appState?.cloud?.auth?.currentUser) return;
+  if (!claimHumanPresenceLease()) return;
   humanPresenceInFlight = true;
   try {
     const result = await api('/api/cloud/auth/heartbeat', { method: 'POST', body: '{}' });
-    const stateSnapshot = pendingStateUpdateBase();
-    if (result?.human?.id && stateSnapshot?.humans) {
-      let changed = false;
-      const humans = stateSnapshot.humans.map((human) => {
-        if (human.id !== result.human.id) return human;
-        changed = human.status !== result.human.status || human.lastSeenAt !== result.human.lastSeenAt;
-        return { ...human, ...result.human };
-      });
-      if (changed) queueStateUpdate({ ...stateSnapshot, humans });
+    if (result?.human?.id) {
+      applyHumanPresenceResult(result.human);
+      publishHumanPresenceResult(result.human);
     }
   } catch (error) {
     if (error.status === 401) stopHumanPresenceHeartbeat();
@@ -1948,6 +2034,7 @@ function stopHumanPresenceHeartbeat() {
     window.clearInterval(humanPresenceTimer);
     humanPresenceTimer = null;
   }
+  releaseHumanPresenceLease();
 }
 
 document.addEventListener('scroll', (event) => {
@@ -1983,6 +2070,24 @@ window.addEventListener('blur', () => {
 document.addEventListener('visibilitychange', () => {
   windowFocused = document.visibilityState === 'visible' && document.hasFocus();
   if (document.visibilityState === 'visible') sendHumanPresenceHeartbeat();
+  else releaseHumanPresenceLease();
+});
+
+window.addEventListener('pagehide', () => {
+  releaseHumanPresenceLease();
+});
+
+window.addEventListener('storage', (event) => {
+  if (event.key !== HUMAN_PRESENCE_STATE_KEY || !event.newValue) return;
+  try {
+    const payload = JSON.parse(event.newValue);
+    if (payload?.tabId === humanPresenceTabId) return;
+    const userId = currentHumanPresenceLeaseUserId();
+    if (payload?.userId && userId && payload.userId !== userId) return;
+    applyHumanPresenceResult(payload?.human);
+  } catch {
+    // Ignore malformed peer-tab presence payloads.
+  }
 });
 
 function spaceDragRows(kind) {

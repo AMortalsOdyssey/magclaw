@@ -60,6 +60,10 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
   under 700 KB total, sends at most 1000 realtime events, and sends no heartbeat
   payloads or resync events.
+- Browser human-presence writes are coordinated by a same-origin tab lease so
+  one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
+  while peer tabs receive the local presence result without issuing duplicate
+  POSTs.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

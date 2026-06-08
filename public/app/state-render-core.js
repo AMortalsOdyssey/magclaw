@@ -218,6 +218,9 @@ let cloudLoginDraftEmail = '';
 let selectedAuthProvider = '';
 let humanPresenceTimer = null;
 let humanPresenceInFlight = false;
+const HUMAN_PRESENCE_LEASE_KEY = 'magclaw:human-presence-lease:v1';
+const HUMAN_PRESENCE_STATE_KEY = 'magclaw:human-presence-state:v1';
+const humanPresenceTabId = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 let routeServerSwitchAttempted = false;
 
 const MAX_ATTACHMENTS_PER_COMPOSER = 20;
@@ -232,6 +235,7 @@ const AVATAR_CROP_STAGE_SIZE = 320;
 const AVATAR_CROP_VIEW_SIZE = 220;
 const AGENT_RECEIPT_VISIBLE_LIMIT = 10;
 const HUMAN_PRESENCE_HEARTBEAT_MS = 30 * 1000;
+const HUMAN_PRESENCE_LEASE_TTL_MS = Math.max(HUMAN_PRESENCE_HEARTBEAT_MS * 2 + 5000, 15000);
 
 function consoleTabFromPath(path = window.location.pathname || '') {
   if (path.startsWith('/console/invitations')) return 'invitations';
