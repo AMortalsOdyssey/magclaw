@@ -215,6 +215,49 @@ test('bootstrap state limits selected thread replies to the loaded page', () => 
   assert.equal(snapshot.replies.some((reply) => reply.id === 'rep_001'), false);
 });
 
+test('bootstrap state projects only the visible conversation window', () => {
+  let metadataReads = 0;
+  const services = makeServices((state) => {
+    state.messages = [];
+    const start = Date.parse('2026-05-18T00:00:00.000Z');
+    for (let index = 0; index < 600; index += 1) {
+      const timestamp = new Date(start + index * 1000).toISOString();
+      const message = {
+        id: `msg_window_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'human',
+        authorId: 'hum_1',
+        body: `windowed message ${index}`,
+        readBy: ['hum_1'],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      Object.defineProperty(message, 'metadata', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          metadataReads += 1;
+          return { externalImport: { rawPayload: 'server-only' } };
+        },
+      });
+      state.messages.push(message);
+    }
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
+    headers: {},
+  });
+
+  assert.equal(snapshot.messages.length, 20);
+  assert.equal(snapshot.messages[0].id, 'msg_window_580');
+  assert.equal(snapshot.messages.at(-1).id, 'msg_window_599');
+  assert.equal(snapshot.bootstrap.hasMoreMessages, true);
+  assert.ok(metadataReads < 80, `metadata reads should stay windowed, got ${metadataReads}`);
+});
+
 test('bootstrap state windows task hydration and keeps referenced task records', () => {
   const baseTime = Date.parse('2026-05-18T00:00:00.000Z');
   const services = makeServices((state) => {

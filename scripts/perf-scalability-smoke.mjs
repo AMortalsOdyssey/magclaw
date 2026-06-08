@@ -18,6 +18,7 @@ const BUDGETS = Object.freeze({
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
   stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 120_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 100),
+  bootstrapProjectedConversationReads: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROJECTED_CONVERSATION_READS || 500),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
 });
@@ -558,6 +559,40 @@ async function measureStateChangeFanout(state) {
   }
 }
 
+function measureBootstrapProjectionWindow() {
+  const state = makeSyntheticState({
+    humans: 10,
+    agents: 10,
+    messages: 10_000,
+    replies: 0,
+    tasks: 0,
+  });
+  let metadataReads = 0;
+  for (const message of state.messages) {
+    message.readBy = ['hum_0000'];
+    const metadata = message.metadata;
+    Object.defineProperty(message, 'metadata', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        metadataReads += 1;
+        return metadata;
+      },
+    });
+  }
+  const services = makeSystemServices(state);
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    headers: {},
+  });
+  return {
+    sourceMessages: state.messages.length,
+    projectedMetadataReads: metadataReads,
+    messages: snapshot.messages.length,
+    hasMoreMessages: Boolean(snapshot.bootstrap?.hasMoreMessages),
+  };
+}
+
 async function main() {
   const state = makeSyntheticState();
   const services = makeSystemServices(state);
@@ -616,6 +651,7 @@ async function main() {
   const humanHeartbeatChurn = await measureHumanHeartbeatChurnFanout(state);
   const presenceMemberDelta = await measurePresenceMemberDeltaFanout(state);
   const stateChangeFanout = await measureStateChangeFanout(state);
+  const bootstrapProjection = measureBootstrapProjectionWindow();
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
@@ -657,8 +693,10 @@ async function main() {
   assertBudget(stateChangeFanout.stateResyncEvents === 0, 'status-only state change fanout sent resync events');
   assertBudget(stateChangeFanout.heartbeatEvents === 0, 'state change fanout sent heartbeat payload events');
   assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');
+  assertBudget(bootstrapProjection.hasMoreMessages === true, 'bootstrap projection smoke did not expose history pagination');
+  assertBudget(bootstrapProjection.projectedMetadataReads <= BUDGETS.bootstrapProjectedConversationReads, `bootstrap projected ${bootstrapProjection.projectedMetadataReads} conversation metadata reads from ${bootstrapProjection.sourceMessages} source messages`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection }, null, 2));
 }
 
 main().catch((error) => {

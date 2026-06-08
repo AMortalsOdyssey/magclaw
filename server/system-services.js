@@ -348,14 +348,20 @@ export function createSystemServices(deps) {
   }
 
   function publicConversationRecord(record) {
-    const body = teamSharingDisplayBodyForRecord(record);
-    const metadata = publicConversationMetadata(record?.metadata);
+    const rawMetadata = record?.metadata;
+    const hasMetadataField = Object.hasOwn(record || {}, 'metadata');
+    const body = teamSharingDisplayBodyForRecord(record, { metadata: rawMetadata });
+    const metadata = publicConversationMetadata(rawMetadata);
     const changedBody = body && body !== record?.body;
-    if (!changedBody && metadata === record?.metadata) return record;
-    const next = { ...record };
+    const changedMetadata = metadata !== rawMetadata || (hasMetadataField && metadata === undefined);
+    if (!changedBody && !changedMetadata) return record;
+    const next = {};
+    for (const key of Object.keys(record || {})) {
+      if (key === 'metadata') continue;
+      next[key] = record[key];
+    }
     if (changedBody) next.body = body;
     if (metadata) next.metadata = metadata;
-    else if (Object.hasOwn(next, 'metadata')) delete next.metadata;
     return next;
   }
 
@@ -511,40 +517,10 @@ export function createSystemServices(deps) {
     }
   }
 
-  function publicState(req = null) {
+  function publicStateScope(req = null) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
     const currentHumanId = cloud?.auth?.currentMember?.humanId || null;
-    const publicBase = publicStateBase(currentState);
-    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
-      return {
-        ...publicBase,
-        channels: [],
-        dms: [],
-        messages: [],
-        replies: [],
-        tasks: [],
-        agents: [],
-        computers: [],
-        humans: [],
-        reminders: [],
-        missions: [],
-        runs: [],
-        attachments: [],
-        projects: [],
-        channelMemberProposals: [],
-        workItems: [],
-        events: [],
-        routeEvents: [],
-        systemNotifications: [],
-        settings: publicSettings(cloud),
-        connection: publicConnection(),
-        cloud,
-        releaseNotes: publicReleaseNotes(),
-        runtime: runtimeSnapshot(),
-        runningRunIds: [],
-      };
-    }
     const channels = records(currentState.channels);
     const dms = records(currentState.dms);
     const messages = records(currentState.messages);
@@ -579,11 +555,74 @@ export function createSystemServices(deps) {
       ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
       : scopedDms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
+    const conversationVisible = (record) => record.spaceType !== 'dm' || visibleDmIds.has(record.spaceId);
+    return {
+      currentState,
+      cloud,
+      currentHumanId,
+      scopedChannels,
+      scopedDms,
+      scopedMessages,
+      scopedReplies,
+      scopedRecords,
+      scopedAgents,
+      visibleComputers,
+      visibleDms,
+      visibleDmIds,
+      conversationVisible,
+    };
+  }
+
+  function publicState(req = null) {
+    const scope = publicStateScope(req);
+    const {
+      currentState,
+      cloud,
+      currentHumanId,
+      scopedChannels,
+      scopedMessages,
+      scopedReplies,
+      scopedRecords,
+      scopedAgents,
+      visibleComputers,
+      visibleDms,
+      conversationVisible,
+    } = scope;
+    const publicBase = publicStateBase(currentState);
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
+      return {
+        ...publicBase,
+        channels: [],
+        dms: [],
+        messages: [],
+        replies: [],
+        tasks: [],
+        agents: [],
+        computers: [],
+        humans: [],
+        reminders: [],
+        missions: [],
+        runs: [],
+        attachments: [],
+        projects: [],
+        channelMemberProposals: [],
+        workItems: [],
+        events: [],
+        routeEvents: [],
+        systemNotifications: [],
+        settings: publicSettings(cloud),
+        connection: publicConnection(),
+        cloud,
+        releaseNotes: publicReleaseNotes(),
+        runtime: runtimeSnapshot(),
+        runningRunIds: [],
+      };
+    }
     const visibleMessages = scopedMessages
-      .filter((message) => message.spaceType !== 'dm' || visibleDmIds.has(message.spaceId))
+      .filter(conversationVisible)
       .map(publicConversationRecord);
     const visibleReplies = scopedReplies
-      .filter((reply) => reply.spaceType !== 'dm' || visibleDmIds.has(reply.spaceId))
+      .filter(conversationVisible)
       .map(publicConversationRecord);
     const visibleHumans = appendReferencedHumans(scopedRecords('humans'), [...visibleMessages, ...visibleReplies], currentState);
     return {
@@ -633,14 +672,28 @@ export function createSystemServices(deps) {
   }
 
   function publicBootstrapState(req = null, options = {}) {
-    const snapshot = publicState(req);
-    if (!snapshot || !Array.isArray(snapshot.channels)) return snapshot;
+    const scope = publicStateScope(req);
+    const {
+      currentState,
+      cloud,
+      currentHumanId,
+      scopedChannels,
+      scopedMessages,
+      scopedReplies,
+      scopedRecords,
+      scopedAgents,
+      visibleComputers,
+      visibleDms,
+      conversationVisible,
+    } = scope;
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) return publicState(req);
+    if (!Array.isArray(scopedChannels)) return publicState(req);
     const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
 
     const spaceType = ['channel', 'dm'].includes(effectiveOptions.spaceType) ? effectiveOptions.spaceType : 'channel';
     const fallbackSpaceId = spaceType === 'dm'
-      ? snapshot.dms?.[0]?.id
-      : snapshot.channels?.[0]?.id;
+      ? visibleDms?.[0]?.id
+      : scopedChannels?.[0]?.id;
     const spaceId = String(effectiveOptions.spaceId || fallbackSpaceId || 'chan_all');
     const threadMessageId = String(effectiveOptions.threadMessageId || '');
     const messageLimit = clampLimit(effectiveOptions.messageLimit, 80, 200);
@@ -648,18 +701,21 @@ export function createSystemServices(deps) {
     const threadRootLimit = clampLimit(effectiveOptions.threadRootLimit, 120, 300);
     const eventLimit = clampLimit(effectiveOptions.eventLimit, 120, 300);
     const taskLimit = clampLimit(effectiveOptions.taskLimit, 160, 500);
-    const currentHumanId = snapshot.cloud?.auth?.currentMember?.humanId || null;
+    const visibleMessages = scopedMessages.filter(conversationVisible);
+    const visibleReplies = scopedReplies.filter(conversationVisible);
 
-    const selectedMessages = records(snapshot.messages)
+    const selectedMessageCandidates = records(visibleMessages)
       .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId)
       .slice()
-      .sort((a, b) => recordTime(b) - recordTime(a))
+      .sort((a, b) => recordTime(b) - recordTime(a));
+    const selectedMessages = selectedMessageCandidates
+      .slice()
       .slice(0, messageLimit)
       .sort((a, b) => recordTime(a) - recordTime(b));
     const selectedMessageCursor = selectedMessages[0] || null;
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
     const threadRoots = newestRecords(
-      records(snapshot.messages).filter((message) => (
+      records(visibleMessages).filter((message) => (
         Number(message.replyCount || 0) > 0
         || message.taskId
         || records(message.savedBy).length
@@ -670,13 +726,13 @@ export function createSystemServices(deps) {
     const messageById = new Map();
     for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
     if (threadMessageId && !messageById.has(threadMessageId)) {
-      const threadRoot = records(snapshot.messages).find((message) => String(message.id || '') === threadMessageId);
+      const threadRoot = records(visibleMessages).find((message) => String(message.id || '') === threadMessageId);
       if (threadRoot) messageById.set(threadRoot.id, threadRoot);
     }
 
     const latestReplyByParent = new Map();
     const allSelectedThreadReplies = [];
-    for (const reply of records(snapshot.replies).slice().sort((a, b) => recordTime(a) - recordTime(b))) {
+    for (const reply of records(visibleReplies).slice().sort((a, b) => recordTime(a) - recordTime(b))) {
       if (messageById.has(reply.parentMessageId)) latestReplyByParent.set(reply.parentMessageId, reply);
       if (threadMessageId && String(reply.parentMessageId || '') === threadMessageId) allSelectedThreadReplies.push(reply);
     }
@@ -699,8 +755,8 @@ export function createSystemServices(deps) {
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
     const unreadHydration = includeUnreadConversationRecords({
       currentHumanId,
-      messages: snapshot.messages,
-      replies: snapshot.replies,
+      messages: visibleMessages,
+      replies: visibleReplies,
       messageById,
       replyById,
     });
@@ -709,9 +765,9 @@ export function createSystemServices(deps) {
     for (const message of messageById.values()) {
       if (message.taskId) taskIds.add(message.taskId);
     }
-    const taskRecords = records(snapshot.tasks).slice().sort(compareTaskRecords);
+    const taskRecords = scopedRecords('tasks').slice().sort(compareTaskRecords);
     const openStatuses = new Set(['todo', 'in_progress', 'in_review']);
-    const memberChannelIds = new Set(records(snapshot.channels)
+    const memberChannelIds = new Set(records(scopedChannels)
       .filter((channel) => (
         !currentHumanId
         || records(channel.memberIds).includes(currentHumanId)
@@ -735,15 +791,38 @@ export function createSystemServices(deps) {
     for (const task of taskRecords) {
       if (taskIds.has(task.id)) visibleTaskById.set(task.id, task);
     }
-    const visibleTasks = [...visibleTaskById.values()].sort(compareTaskRecords);
+    const visibleTasks = [...visibleTaskById.values()]
+      .sort(compareTaskRecords)
+      .map(publicTaskRecord);
 
     const attachmentIds = new Set();
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
       for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
     }
+    const visibleHumans = appendReferencedHumans(
+      scopedRecords('humans'),
+      [...messageById.values(), ...replyById.values()],
+      currentState,
+    );
 
     return {
-      ...snapshot,
+      ...publicStateBase(currentState),
+      settings: publicSettings(cloud),
+      channels: scopedChannels.filter((channel) => !channel.archived).map(compactBootstrapChannelRecord),
+      dms: visibleDms,
+      tasks: visibleTasks,
+      agents: scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord),
+      computers: visibleComputers,
+      humans: visibleHumans.map(compactBootstrapHumanRecord),
+      reminders: scopedRecords('reminders'),
+      missions: scopedRecords('missions'),
+      projects: scopedRecords('projects'),
+      channelMemberProposals: scopedRecords('channelMemberProposals'),
+      connection: publicConnection(),
+      cloud: compactBootstrapCloudState(cloud),
+      releaseNotes: publicReleaseNotes(),
+      runtime: runtimeSnapshot(),
+      runningRunIds: [...runningProcesses.keys()],
       bootstrap: {
         mode: 'bootstrap',
         fullState: false,
@@ -753,8 +832,7 @@ export function createSystemServices(deps) {
         threadRootLimit,
         hasMoreMessages: hydratedMessagePagination
           ? Boolean(hydratedMessagePagination.hasMore)
-          : records(snapshot.messages)
-            .filter((message) => message.spaceType === spaceType && String(message.spaceId) === spaceId).length > selectedMessages.length,
+          : selectedMessageCandidates.length > selectedMessages.length,
         nextBefore: hydratedMessagePagination?.nextBefore || selectedMessageCursor?.createdAt || '',
         nextBeforeId: hydratedMessagePagination?.nextBeforeId || selectedMessageCursor?.id || '',
         threadReplies: threadRepliesPagination,
@@ -769,21 +847,18 @@ export function createSystemServices(deps) {
       },
       messages: [...messageById.values()]
         .sort((a, b) => recordTime(a) - recordTime(b))
+        .map(publicConversationRecord)
         .map(compactBootstrapConversationRecord),
       replies: [...replyById.values()]
         .sort((a, b) => recordTime(a) - recordTime(b))
+        .map(publicConversationRecord)
         .map(compactBootstrapConversationRecord),
-      channels: records(snapshot.channels).map(compactBootstrapChannelRecord),
-      tasks: visibleTasks,
-      agents: records(snapshot.agents).map(compactBootstrapAgentRecord),
-      humans: records(snapshot.humans).map(compactBootstrapHumanRecord),
-      runs: newestRecords(snapshot.runs, 80).sort((a, b) => recordTime(a) - recordTime(b)),
-      workItems: newestRecords(snapshot.workItems, 200).sort((a, b) => recordTime(a) - recordTime(b)),
-      events: newestRecords(snapshot.events, eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),
-      routeEvents: newestRecords(snapshot.routeEvents, 80).sort((a, b) => recordTime(a) - recordTime(b)),
-      systemNotifications: newestRecords(snapshot.systemNotifications, 120).sort((a, b) => recordTime(a) - recordTime(b)),
-      attachments: records(snapshot.attachments).filter((attachment) => attachmentIds.has(String(attachment.id))),
-      cloud: compactBootstrapCloudState(snapshot.cloud),
+      runs: newestRecords(scopedRecords('runs'), 80).sort((a, b) => recordTime(a) - recordTime(b)),
+      workItems: newestRecords(scopedRecords('workItems'), 200).sort((a, b) => recordTime(a) - recordTime(b)),
+      events: newestRecords(scopedRecords('events'), eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),
+      routeEvents: newestRecords(scopedRecords('routeEvents'), 80).sort((a, b) => recordTime(a) - recordTime(b)),
+      systemNotifications: newestRecords(scopedRecords('systemNotifications'), 120).sort((a, b) => recordTime(a) - recordTime(b)),
+      attachments: scopedRecords('attachments').filter((attachment) => attachmentIds.has(String(attachment.id))),
     };
   }
   

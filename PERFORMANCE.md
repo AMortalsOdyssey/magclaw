@@ -48,6 +48,9 @@ synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
 - Bootstrap JSON is at most 850 KB and generated in at most 250 ms.
+- Bootstrap server-side projection is windowed: with 10000 source messages, the
+  smoke test allows at most 500 conversation metadata reads while still exposing
+  history pagination.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
@@ -111,12 +114,13 @@ let the client patch only changed surfaces. MagClaw should converge on the same
 shape while keeping its richer Team Sharing, tasks, computer, and agent detail
 workflows.
 
-Local Slock package evidence points in the same direction: agent history reads
-support `before` / `after` / `around` pagination, agent events use `limit` and
-`since` cursors, and busy agents receive pending-message counts before they pull
-message bodies. MagClaw's browser and agent APIs should follow that pattern:
-notify first, hydrate the smallest useful window, and fetch deeper history only
-when the user or agent asks for it.
+Local Slock package evidence points in the same direction: the local daemon
+wrapper talks to a loopback proxy, history reads support `before` / `after` /
+`around` pagination with `limit`, agent events use `since` cursors, and busy
+agents receive pending-message counts before they pull message bodies. MagClaw's
+browser and agent APIs should follow that pattern: notify first, hydrate the
+smallest useful window, and fetch deeper history only when the user or agent
+asks for it.
 
 ## Next Optimization Queue
 

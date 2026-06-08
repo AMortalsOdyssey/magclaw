@@ -527,11 +527,12 @@ function interactionPresentationMarkdown(presentation) {
   }).join('\n\n');
 }
 
-export function teamSharingDisplayBodyForRecord(record = {}) {
+export function teamSharingDisplayBodyForRecord(record = {}, options = {}) {
   const fallback = String(record.body ?? record.displayText ?? record.cleanText ?? record.text ?? '').trim();
+  const metadata = Object.hasOwn(options, 'metadata') ? options.metadata : record.metadata;
   const presentation = normalizeTeamSharingPresentation(
-    record.presentation || record.metadata?.teamSharing?.presentation || record.metadata?.presentation,
-    record.runtime || record.metadata?.teamSharing?.runtime || record.metadata?.runtime || '',
+    record.presentation || metadata?.teamSharing?.presentation || metadata?.presentation,
+    record.runtime || metadata?.teamSharing?.runtime || metadata?.runtime || '',
   );
   if (!presentation || presentation.mode !== 'interaction') return fallback;
   return interactionPresentationMarkdown(presentation) || fallback;
