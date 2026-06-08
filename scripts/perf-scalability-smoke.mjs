@@ -46,7 +46,11 @@ function makeSyntheticState({
       id: 'chan_all',
       workspaceId: 'local',
       name: 'all',
-      memberIds: ['hum_0000'],
+      locked: true,
+      defaultChannel: true,
+      memberIds: [],
+      humanIds: [],
+      agentIds: [],
       createdAt: NOW,
       updatedAt: NOW,
     }],
@@ -81,14 +85,14 @@ function makeSyntheticState({
       createdAt: NOW,
       updatedAt: NOW,
     });
-    if (index < 200 && !state.channels[0].memberIds.includes(id)) {
-      state.channels[0].memberIds.push(id);
-    }
+    state.channels[0].memberIds.push(id);
+    state.channels[0].humanIds.push(id);
   }
 
   for (let index = 0; index < agents; index += 1) {
+    const id = `agt_${String(index).padStart(4, '0')}`;
     state.agents.push({
-      id: `agt_${String(index).padStart(4, '0')}`,
+      id,
       workspaceId: 'local',
       name: `Agent ${index}`,
       description: `Synthetic agent ${index}`,
@@ -107,6 +111,8 @@ function makeSyntheticState({
         runtimeSession: { raw: 'x'.repeat(1024) },
       },
     });
+    state.channels[0].memberIds.push(id);
+    state.channels[0].agentIds.push(id);
   }
 
   for (let index = 0; index < messages; index += 1) {
@@ -561,6 +567,10 @@ async function main() {
     headers: {},
   });
   const body = JSON.stringify(snapshot);
+  const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
+    channel?.id === 'chan_all'
+    || String(channel?.name || '').trim().toLowerCase() === 'all'
+  ));
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
@@ -571,6 +581,11 @@ async function main() {
     agents: snapshot.agents.length,
     humans: snapshot.humans.length,
     cloudMembers: snapshot.cloud?.members?.length || 0,
+    allChannelMembershipMode: bootstrapAllChannel?.membershipMode || '',
+    allChannelMemberCount: bootstrapAllChannel?.memberCount || 0,
+    hasBootstrapAllChannelMembershipLists: ['memberIds', 'humanIds', 'agentIds'].some((key) => (
+      Array.isArray(bootstrapAllChannel?.[key])
+    )),
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
     hasBootstrapMemberChurnFields: snapshot.agents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || snapshot.humans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
@@ -609,6 +624,9 @@ async function main() {
   assertBudget(!bootstrap.hasBootstrapEmptyAgentWorkItems, 'bootstrap leaked empty agent work item arrays');
   assertBudget(bootstrap.cloudMembers === state.humans.length, `bootstrap cloud member fixture expected ${state.humans.length} members but got ${bootstrap.cloudMembers}`);
   assertBudget(!bootstrap.hasBootstrapCloudMemberDuplication, 'bootstrap leaked duplicate cloud member human payloads');
+  assertBudget(bootstrap.allChannelMembershipMode === 'all', 'bootstrap did not compact all-channel membership mode');
+  assertBudget(bootstrap.allChannelMemberCount === state.humans.length + state.agents.length, `bootstrap all-channel member count expected ${state.humans.length + state.agents.length} but got ${bootstrap.allChannelMemberCount}`);
+  assertBudget(!bootstrap.hasBootstrapAllChannelMembershipLists, 'bootstrap leaked all-channel membership id lists');
   assertBudget(bootstrap.tasks <= BUDGETS.bootstrapTasks, `bootstrap ${bootstrap.tasks} tasks exceeds ${BUDGETS.bootstrapTasks}`);
   assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
   assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');

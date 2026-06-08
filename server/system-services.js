@@ -7,6 +7,7 @@ import { createNpmPackageVersionResolver } from './npm-package-versions.js';
 import { defaultReleaseNotes, normalizeReleaseNotes } from './release-notes.js';
 import { normalizeCloudUrl, normalizeFanoutApiConfig, publicApiKeyPreview } from './runtime-config.js';
 import { teamSharingDisplayBodyForRecord } from './team-sharing.js';
+import { isWorkspaceAllChannel } from './workspace-defaults.js';
 
 // System/runtime and local-project services.
 // HTTP route modules use this for public state shaping, installed-runtime
@@ -473,6 +474,23 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function compactBootstrapChannelRecord(channel = {}) {
+    if (!channel || typeof channel !== 'object') return channel;
+    const record = { ...channel };
+    if (!isWorkspaceAllChannel(record)) return record;
+    const memberIds = new Set([
+      ...records(record.memberIds),
+      ...records(record.humanIds),
+      ...records(record.agentIds),
+    ].map(String).filter(Boolean));
+    record.membershipMode = 'all';
+    record.memberCount = memberIds.size || Number(record.memberCount || 0) || 0;
+    delete record.memberIds;
+    delete record.humanIds;
+    delete record.agentIds;
+    return record;
+  }
+
   function bootstrapOptionsFromRequest(req) {
     try {
       const url = new URL(req?.url || '/', 'http://magclaw.local');
@@ -754,6 +772,7 @@ export function createSystemServices(deps) {
       replies: [...replyById.values()]
         .sort((a, b) => recordTime(a) - recordTime(b))
         .map(compactBootstrapConversationRecord),
+      channels: records(snapshot.channels).map(compactBootstrapChannelRecord),
       tasks: visibleTasks,
       agents: records(snapshot.agents).map(compactBootstrapAgentRecord),
       humans: records(snapshot.humans).map(compactBootstrapHumanRecord),

@@ -722,6 +722,13 @@ test('bootstrap state compacts member directory churn fields without changing fu
       createdAt,
       updatedAt,
     }];
+    Object.assign(state.channels[0], {
+      locked: true,
+      defaultChannel: true,
+      memberIds: ['hum_1', 'agt_compact', 'agt_idle'],
+      humanIds: ['hum_1'],
+      agentIds: ['agt_compact', 'agt_idle'],
+    });
     state.messages.push({
       id: 'msg_redundant_update',
       workspaceId: 'local',
@@ -792,8 +799,17 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(full.agents[0].statusUpdatedAt, updatedAt);
   assert.deepEqual(full.agents[1].activeWorkItemIds, []);
   assert.equal(full.humans[0].lastSeenAt, updatedAt);
+  assert.deepEqual(full.channels.find((channel) => channel.id === 'chan_all').memberIds, ['hum_1', 'agt_compact', 'agt_idle']);
   assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, 'local');
   assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, createdAt);
+
+  const bootstrapAllChannel = bootstrap.channels.find((channel) => channel.id === 'chan_all');
+  assert.equal(bootstrapAllChannel.membershipMode, 'all');
+  assert.equal(bootstrapAllChannel.memberCount, 3);
+  assert.equal(bootstrapAllChannel.memberIds, undefined);
+  assert.equal(bootstrapAllChannel.humanIds, undefined);
+  assert.equal(bootstrapAllChannel.agentIds, undefined);
+  assert.deepEqual(bootstrap.channels.find((channel) => channel.id === 'chan_member').memberIds, ['hum_1']);
 
   assert.equal(bootstrap.agents[0].workspaceId, undefined);
   assert.equal(bootstrap.agents[0].role, undefined);

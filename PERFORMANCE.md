@@ -43,8 +43,9 @@ npm run test:quick
 ```
 
 `npm run perf:scalability` creates a synthetic workspace with 1000 humans, 1000
-cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. It
-currently enforces:
+cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
+synthetic `#all` channel includes every human and agent to keep company-scale
+membership fanout visible in the budget. It currently enforces:
 
 - Bootstrap JSON is at most 850 KB and generated in at most 250 ms.
 - Bootstrap includes no internal payload fields such as raw imports, startup
@@ -53,6 +54,9 @@ currently enforces:
   IDs, heartbeat timestamps, and per-record update timestamps.
 - Bootstrap cloud member rows do not duplicate nested Human payloads already
   available in the top-level Humans directory.
+- Bootstrap represents `#all` membership with `membershipMode: all` and a
+  count, instead of duplicating every human and agent ID in channel membership
+  arrays.
 - Bootstrap conversation rows omit request-scoped workspace IDs and redundant
   update timestamps when the update time equals creation time.
 - Deferred and unchanged heartbeat fanout must not serialize full member

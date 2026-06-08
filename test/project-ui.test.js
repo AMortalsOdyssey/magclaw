@@ -1470,7 +1470,7 @@ test('thread mentions include active workspace humans outside the current channe
   assert.equal(candidates.some((item) => item.id === 'hum_removed'), false);
 });
 
-test('channel members use active workspace humans and profile avatars', async () => {
+test('channel members infer all-channel bootstrap members from active workspace humans and agents', async () => {
   const source = await readFile(new URL('../public/app/render-space-chat-tasks.js', import.meta.url), 'utf8');
   const modalSource = await readFile(new URL('../public/app/render-modals-uploads.js', import.meta.url), 'utf8');
   const appState = {
@@ -1479,7 +1479,14 @@ test('channel members use active workspace humans and profile avatars', async ()
       { id: 'hum_legacy', name: 'Legacy Admin', status: 'online' },
       { id: 'hum_current', name: 'Current User', status: 'online', avatar: 'data:image/png;base64,current' },
     ],
-    channels: [{ id: 'chan_all', memberIds: ['agt_one', 'hum_legacy', 'hum_current'], humanIds: ['hum_legacy', 'hum_current'] }],
+    channels: [{
+      id: 'chan_all',
+      name: 'all',
+      locked: true,
+      defaultChannel: true,
+      membershipMode: 'all',
+      memberCount: 2,
+    }],
   };
   const context = {
     appState,
@@ -1493,6 +1500,7 @@ test('channel members use active workspace humans and profile avatars', async ()
 
   const members = context.getChannelMembers('chan_all');
 
+  assert.deepEqual(members.agents.map((agent) => agent.id), ['agt_one']);
   assert.deepEqual(members.humans.map((human) => human.id), ['hum_current']);
   assert.match(modalSource, /renderHumanAvatar\(member, 'dm-avatar member-avatar'\)/);
   assert.match(modalSource, /workspaceHumans\(\)\.filter/);
