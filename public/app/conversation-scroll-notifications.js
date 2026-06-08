@@ -21,6 +21,7 @@ function sortTasks(tasks) {
 }
 
 function threadReplies(messageId) {
+  if (typeof repliesForParentMessage === 'function') return repliesForParentMessage(messageId);
   return (appState?.replies || [])
     .filter((reply) => reply.parentMessageId === messageId)
     .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));

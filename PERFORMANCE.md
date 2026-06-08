@@ -98,6 +98,9 @@ membership fanout visible in the budget. It currently enforces:
   and task lookup maps for the current state snapshot, so large workspaces do
   not repeatedly scan Agent, Human, Task, or Computer arrays for each visible
   record.
+- Browser thread and unread surfaces read replies from a parent-message index
+  for the current state snapshot, so rendering many thread rows does not scan
+  and sort the full reply list once per row.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

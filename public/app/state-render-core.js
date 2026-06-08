@@ -765,11 +765,27 @@ function mapEntitiesById(items = []) {
   return map;
 }
 
+function mapRepliesByParentMessageId(replies = []) {
+  const map = new Map();
+  for (const reply of replies || []) {
+    const parentId = String(reply?.parentMessageId || '');
+    if (!parentId) continue;
+    const parentReplies = map.get(parentId) || [];
+    parentReplies.push(reply);
+    map.set(parentId, parentReplies);
+  }
+  for (const parentReplies of map.values()) {
+    parentReplies.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+  }
+  return map;
+}
+
 function stateEntityLookup(stateSnapshot = appState) {
   const stateAgents = stateSnapshot?.agents || [];
   const stateHumans = stateSnapshot?.humans || [];
   const stateTasks = stateSnapshot?.tasks || [];
   const stateComputers = stateSnapshot?.computers || [];
+  const stateReplies = stateSnapshot?.replies || [];
   if (
     stateEntityLookupCache
     && stateEntityLookupCache.stateSnapshot === stateSnapshot
@@ -777,10 +793,12 @@ function stateEntityLookup(stateSnapshot = appState) {
     && stateEntityLookupCache.stateHumans === stateHumans
     && stateEntityLookupCache.stateTasks === stateTasks
     && stateEntityLookupCache.stateComputers === stateComputers
+    && stateEntityLookupCache.stateReplies === stateReplies
     && stateEntityLookupCache.agentCount === stateAgents.length
     && stateEntityLookupCache.humanCount === stateHumans.length
     && stateEntityLookupCache.taskCount === stateTasks.length
     && stateEntityLookupCache.computerCount === stateComputers.length
+    && stateEntityLookupCache.replyCount === stateReplies.length
   ) {
     return stateEntityLookupCache;
   }
@@ -790,14 +808,17 @@ function stateEntityLookup(stateSnapshot = appState) {
     stateHumans,
     stateTasks,
     stateComputers,
+    stateReplies,
     agentCount: stateAgents.length,
     humanCount: stateHumans.length,
     taskCount: stateTasks.length,
     computerCount: stateComputers.length,
+    replyCount: stateReplies.length,
     agentsById: mapEntitiesById(stateAgents),
     humansById: mapEntitiesById(stateHumans),
     tasksById: mapEntitiesById(stateTasks),
     computersById: mapEntitiesById(stateComputers),
+    repliesByParentMessageId: mapRepliesByParentMessageId(stateReplies),
   };
   return stateEntityLookupCache;
 }
@@ -820,6 +841,11 @@ function taskById(id, stateSnapshot = appState) {
 function computerById(id, stateSnapshot = appState) {
   const target = String(id || '');
   return target ? stateEntityLookup(stateSnapshot).computersById.get(target) || null : null;
+}
+
+function repliesForParentMessage(messageId, stateSnapshot = appState) {
+  const target = String(messageId || '');
+  return target ? stateEntityLookup(stateSnapshot).repliesByParentMessageId.get(target) || [] : [];
 }
 
 function cloudMemberDisplayRole(member = {}, options = {}) {

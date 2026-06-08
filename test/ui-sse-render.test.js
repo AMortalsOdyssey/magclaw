@@ -106,6 +106,23 @@ test('state sync module loads before realtime and submit consumers', async () =>
   assert.ok(stateSyncIndex < submitIndex, 'state sync should load before submit handlers');
 });
 
+test('thread replies use the current state lookup index instead of scanning every reply', async () => {
+  const app = await readAppSource();
+  const stateLookupSource = app.slice(
+    app.indexOf('function mapRepliesByParentMessageId'),
+    app.indexOf('function cloudMemberDisplayRole'),
+  );
+  const threadRepliesSource = app.slice(
+    app.indexOf('function threadReplies(messageId)'),
+    app.indexOf('function threadUpdatedAt(message)'),
+  );
+
+  assert.match(stateLookupSource, /function mapRepliesByParentMessageId\(replies = \[\]\)/);
+  assert.match(stateLookupSource, /repliesByParentMessageId: mapRepliesByParentMessageId\(stateReplies\)/);
+  assert.match(stateLookupSource, /function repliesForParentMessage\(messageId, stateSnapshot = appState\)/);
+  assert.match(threadRepliesSource, /if \(typeof repliesForParentMessage === 'function'\) return repliesForParentMessage\(messageId\);/);
+});
+
 test('state SSE updates route through the non-destructive state renderer', async () => {
   const app = await readAppSource();
   const connectEventsSource = app.slice(
