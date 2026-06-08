@@ -37,6 +37,7 @@ Run these before claiming a performance change is safe:
 
 ```bash
 npm run perf:scalability
+MAGCLAW_PERF_BASE_URL=http://127.0.0.1:6543 npm run perf:environment
 node --test test/server-io.test.js test/system-services.test.js test/state-core.test.js test/system-routes.test.js test/ui-sse-render.test.js
 npm run test:ui
 npm run test:quick
@@ -153,6 +154,13 @@ membership fanout visible in the budget. It currently enforces:
   patches through `window.__magclawPerf`, so local, test, and production
   investigations can compare concrete browser-stage timings instead of relying
   on visual impressions.
+- Environment smoke records `/api/readyz`, uncompressed bootstrap, compressed
+  bootstrap, and a short `/api/events?presence=defer` window with response
+  sizes, Server-Timing headers, decoded JSON collection counts, and SSE event
+  mix. Auth can be provided with `MAGCLAW_PERF_COOKIE`,
+  `MAGCLAW_PERF_AUTH_HEADER`, `MAGCLAW_PERF_BEARER_TOKEN`, or
+  `MAGCLAW_PERF_EXTRA_HEADERS`; the JSON report only records whether auth was
+  present and which extra header names were used.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 
@@ -163,10 +171,20 @@ curl -sS -o /tmp/magclaw-bootstrap.json -w 'status=%{http_code} bytes=%{size_dow
 curl -sS -H 'Accept-Encoding: gzip' -o /tmp/magclaw-bootstrap.gz -D /tmp/magclaw-bootstrap.headers \
   -w 'status=%{http_code} transfer=%{size_download} time=%{time_total}\n' \
   'http://127.0.0.1:6543/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160'
+MAGCLAW_PERF_BASE_URL=http://127.0.0.1:6543 npm run perf:environment
 ```
 
 SSE smoke should show heartbeat/realtime/resync events only, never a full-state
 `state-delta` payload on stream open.
+
+For test or production rollout evidence, run the same command before and after
+the release and archive the JSON output:
+
+```bash
+MAGCLAW_PERF_BASE_URL=https://<magclaw-host> \
+MAGCLAW_PERF_COOKIE='<browser-cookie-for-that-environment>' \
+npm run perf:environment -- --space-id <active-channel-id>
+```
 
 ## Slock-Informed Direction
 
@@ -186,5 +204,6 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Add production/test-environment verification that records response sizes,
-  server timing, and SSE event mix before and after rollout.
+- Run and archive `perf:environment` JSON against Sentinel test and production
+  before and after the next `magclaw-web` rollout, then compare bootstrap bytes,
+  Server-Timing, and SSE event mix with local baselines.

@@ -14,6 +14,7 @@
     "test:pg": "node scripts/test-runner.mjs pg",
     "test:all": "node scripts/test-runner.mjs all",
     "perf:scalability": "node scripts/perf-scalability-smoke.mjs",
+    "perf:environment": "node scripts/perf-environment-smoke.mjs",
     "build:web-assets": "node scripts/build-web-assets.mjs",
     "web:build": "npm run build:web-assets",
     "check": "node --check server/index.js",

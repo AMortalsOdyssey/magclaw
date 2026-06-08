@@ -34,6 +34,7 @@ const suites = {
     'test/npm-package-versions.test.js',
     'test/package-version-release.test.js',
     'test/path-utils.test.js',
+    'test/perf-environment-smoke.test.js',
     'test/project-files.test.js',
     'test/project-routes.test.js',
     'test/release-notes.test.js',
