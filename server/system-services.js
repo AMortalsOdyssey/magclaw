@@ -418,6 +418,39 @@ export function createSystemServices(deps) {
     return record;
   }
 
+  function compactBootstrapAgentRecord(agent = {}) {
+    const record = { ...agent };
+    for (const key of ['workspaceId', 'role', 'statusReason', 'statusUpdatedAt', 'heartbeatAt', 'updatedAt']) {
+      if (Object.hasOwn(record, key)) delete record[key];
+    }
+    return record;
+  }
+
+  function compactBootstrapHumanRecord(human = {}) {
+    const record = { ...human };
+    for (const key of ['workspaceId', 'lastSeenAt', 'presenceUpdatedAt', 'updatedAt']) {
+      if (Object.hasOwn(record, key)) delete record[key];
+    }
+    return record;
+  }
+
+  function compactBootstrapCloudMember(member = {}) {
+    if (!member || typeof member !== 'object') return member;
+    return {
+      ...member,
+      human: member.human && typeof member.human === 'object'
+        ? compactBootstrapHumanRecord(member.human)
+        : member.human,
+    };
+  }
+
+  function compactBootstrapCloudState(cloud = null) {
+    if (!cloud || typeof cloud !== 'object') return cloud;
+    const next = { ...cloud };
+    if (Array.isArray(cloud.members)) next.members = cloud.members.map(compactBootstrapCloudMember);
+    return next;
+  }
+
   function bootstrapOptionsFromRequest(req) {
     try {
       const url = new URL(req?.url || '/', 'http://magclaw.local');
@@ -696,12 +729,15 @@ export function createSystemServices(deps) {
       messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
       tasks: visibleTasks,
+      agents: records(snapshot.agents).map(compactBootstrapAgentRecord),
+      humans: records(snapshot.humans).map(compactBootstrapHumanRecord),
       runs: newestRecords(snapshot.runs, 80).sort((a, b) => recordTime(a) - recordTime(b)),
       workItems: newestRecords(snapshot.workItems, 200).sort((a, b) => recordTime(a) - recordTime(b)),
       events: newestRecords(snapshot.events, eventLimit).sort((a, b) => recordTime(a) - recordTime(b)),
       routeEvents: newestRecords(snapshot.routeEvents, 80).sort((a, b) => recordTime(a) - recordTime(b)),
       systemNotifications: newestRecords(snapshot.systemNotifications, 120).sort((a, b) => recordTime(a) - recordTime(b)),
       attachments: records(snapshot.attachments).filter((attachment) => attachmentIds.has(String(attachment.id))),
+      cloud: compactBootstrapCloudState(snapshot.cloud),
     };
   }
   

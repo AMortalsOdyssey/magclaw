@@ -6,7 +6,7 @@ import { createSystemServices } from '../server/system-services.js';
 
 const NOW = '2026-06-08T00:00:00.000Z';
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 1_500_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 900_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
@@ -533,6 +533,8 @@ async function main() {
     agents: snapshot.agents.length,
     humans: snapshot.humans.length,
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
+    hasBootstrapMemberChurnFields: snapshot.agents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
+      || snapshot.humans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
     hasInternalFields: body.includes('externalImport')
       || body.includes('startupCollaboration')
       || body.includes('promptCache')
@@ -548,6 +550,7 @@ async function main() {
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
+  assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
   assertBudget(bootstrap.tasks <= BUDGETS.bootstrapTasks, `bootstrap ${bootstrap.tasks} tasks exceeds ${BUDGETS.bootstrapTasks}`);
   assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
   assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');

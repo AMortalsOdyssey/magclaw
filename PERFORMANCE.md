@@ -45,9 +45,11 @@ npm run test:quick
 `npm run perf:scalability` creates a synthetic workspace with 1000 humans, 1000
 agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 
-- Bootstrap JSON is at most 1.5 MB and generated in at most 250 ms.
+- Bootstrap JSON is at most 900 KB and generated in at most 250 ms.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
+- Bootstrap compacts member-directory churn fields such as repeated workspace
+  IDs, heartbeat timestamps, and per-record update timestamps.
 - Off-space unread hydration remains bounded to 80 records.
 - Task hydration remains windowed to at most 200 records in the synthetic smoke,
   with selected-space and global task pagination cursors exposed for older

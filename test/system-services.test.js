@@ -682,6 +682,102 @@ test('bootstrap state projects record metadata to frontend display fields only',
   assert.equal(agent.metadata, undefined);
 });
 
+test('bootstrap state compacts member directory churn fields without changing full public state', () => {
+  const createdAt = '2026-05-18T00:04:00.000Z';
+  const updatedAt = '2026-05-18T00:05:00.000Z';
+  const services = makeServices((state) => {
+    state.agents = [{
+      id: 'agt_compact',
+      workspaceId: 'local',
+      name: 'Compact Agent',
+      description: 'Still searchable',
+      role: 'agent',
+      status: 'working',
+      runtime: 'codex',
+      runtimeId: 'codex',
+      model: 'gpt-test',
+      reasoningEffort: 'medium',
+      activeWorkItemIds: ['wi_1'],
+      statusUpdatedAt: updatedAt,
+      heartbeatAt: updatedAt,
+      createdAt,
+      updatedAt,
+    }];
+    state.humans = [{
+      id: 'hum_1',
+      workspaceId: 'local',
+      name: 'Owner',
+      role: 'owner',
+      status: 'online',
+      lastSeenAt: updatedAt,
+      presenceUpdatedAt: updatedAt,
+      createdAt,
+      updatedAt,
+    }];
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { workspaceId: 'local', humanId: 'hum_1', role: 'admin' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [{
+        id: 'mem_1',
+        workspaceId: 'local',
+        userId: 'usr_1',
+        humanId: 'hum_1',
+        role: 'owner',
+        status: 'active',
+        createdAt,
+        updatedAt,
+        user: { id: 'usr_1', email: 'owner@example.test' },
+        human: {
+          id: 'hum_1',
+          workspaceId: 'local',
+          name: 'Owner',
+          role: 'owner',
+          status: 'online',
+          lastSeenAt: updatedAt,
+          presenceUpdatedAt: updatedAt,
+          createdAt,
+          updatedAt,
+        },
+      }],
+    }),
+  });
+
+  const full = services.publicState();
+  const bootstrap = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all',
+    headers: {},
+  });
+
+  assert.equal(full.agents[0].workspaceId, 'local');
+  assert.equal(full.agents[0].statusUpdatedAt, updatedAt);
+  assert.equal(full.humans[0].lastSeenAt, updatedAt);
+
+  assert.equal(bootstrap.agents[0].workspaceId, undefined);
+  assert.equal(bootstrap.agents[0].role, undefined);
+  assert.equal(bootstrap.agents[0].statusUpdatedAt, undefined);
+  assert.equal(bootstrap.agents[0].heartbeatAt, undefined);
+  assert.equal(bootstrap.agents[0].updatedAt, undefined);
+  assert.equal(bootstrap.agents[0].description, 'Still searchable');
+  assert.equal(bootstrap.agents[0].runtime, 'codex');
+  assert.equal(bootstrap.agents[0].model, 'gpt-test');
+  assert.equal(bootstrap.agents[0].createdAt, createdAt);
+
+  assert.equal(bootstrap.humans[0].workspaceId, undefined);
+  assert.equal(bootstrap.humans[0].lastSeenAt, undefined);
+  assert.equal(bootstrap.humans[0].presenceUpdatedAt, undefined);
+  assert.equal(bootstrap.humans[0].updatedAt, undefined);
+  assert.equal(bootstrap.humans[0].role, 'owner');
+  assert.equal(bootstrap.humans[0].createdAt, createdAt);
+  assert.equal(bootstrap.cloud.members[0].human.workspaceId, undefined);
+  assert.equal(bootstrap.cloud.members[0].human.lastSeenAt, undefined);
+  assert.equal(bootstrap.cloud.members[0].human.createdAt, createdAt);
+});
+
 test('public state for signed-in non-members keeps empty collection fields stable', () => {
   const services = makeServices(null, {
     publicCloudState: () => ({
