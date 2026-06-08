@@ -472,7 +472,9 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
     assert.equal(realtime.seqStart, 1);
     assert.equal(realtime.seq, 10);
     assert.equal(realtime.coalescedCount, 10);
+    assert.equal(realtime.payload.entryType, 'agent_status_changed');
     assert.equal(realtime.payload.entries.length, 10);
+    assert.equal(realtime.payload.entries.every((entry) => typeof entry === 'string'), true);
     assert.equal(realtime.payload.agent.status, 'thinking');
     assert.deepEqual(core.state.cloud.realtimeEvents.map((event) => event.seq), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     assert.equal(clients.every((client) => ssePackets(client, 'heartbeat').length === 0), true);

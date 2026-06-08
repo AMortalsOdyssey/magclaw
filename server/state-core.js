@@ -1244,6 +1244,10 @@ export function createStateCore(deps) {
     const rawIsStatusMetadata = rawKeys.length > 0
       && rawKeys.every((key) => ['previousStatus', 'status', 'reason'].includes(key));
     if ((entry.type || entry.eventType) !== 'agent_status_changed' || !rawIsStatusMetadata) return entry;
+    if (!entry.id && !entry.activity && !entry.message && !entry.createdAt && !entry.at) {
+      const detail = String(entry.detail || '').trim();
+      if (detail) return detail;
+    }
     const { raw: _raw, ...rest } = entry;
     return rest;
   }
@@ -1262,6 +1266,7 @@ export function createStateCore(deps) {
       coalescedCount: Number(previous.coalescedCount || 1) + 1,
       payload: {
         ...nextPayload,
+        ...(entries.length && entries.every((entry) => typeof entry === 'string') ? { entryType: 'agent_status_changed' } : {}),
         entries,
       },
     };

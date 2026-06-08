@@ -2072,6 +2072,12 @@ function agentActivityDetailFromPayload(payload = {}) {
 }
 
 function realtimeAgentActivityEvent(payload = {}, entry = {}, index = 0) {
+  if (typeof entry === 'string') {
+    entry = {
+      type: payload.entryType || payload.type || 'agent_activity_changed',
+      detail: entry,
+    };
+  }
   const agentId = String(entry.agentId || payload.agentId || payload.agent?.id || '').trim();
   if (!agentId) return null;
   const activity = entry.activity || payload.runtimeActivity || payload.agent?.runtimeActivity || null;

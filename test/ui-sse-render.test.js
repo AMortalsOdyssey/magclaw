@@ -870,6 +870,21 @@ test('agent activity realtime events use per-agent seq guards and patch state lo
   assert.doesNotMatch(helperSource, /render\(\)/);
 });
 
+test('agent activity realtime events accept compact status string entries', async () => {
+  const context = await createRealtimeHarness();
+  const event = context.realtimeAgentActivityEvent({
+    agentId: 'agt_1',
+    activitySeq: 7,
+    activityAt: '2026-06-08T00:00:00.000Z',
+    entryType: 'agent_status_changed',
+  }, 'Codex Local is working.', 0);
+
+  assert.equal(event.type, 'agent_status_changed');
+  assert.equal(event.agentId, 'agt_1');
+  assert.equal(event.message, 'Codex Local is working.');
+  assert.equal(event.createdAt, '2026-06-08T00:00:00.000Z');
+});
+
 test('active DM status updates patch the DM header during scoped chat refreshes', async () => {
   const app = await readAppSource();
   const patchConversationSource = app.slice(

@@ -84,7 +84,7 @@ const BUDGETS = Object.freeze({
   humanHeartbeatChurnBytes: Number(process.env.MAGCLAW_PERF_HUMAN_HEARTBEAT_CHURN_BYTES || 10_000),
   presenceMemberDeltaBytes: Number(process.env.MAGCLAW_PERF_PRESENCE_MEMBER_DELTA_BYTES || 35_000),
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
-  stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 120_000),
+  stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 90_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 100),
   bootstrapProjectedConversationReads: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROJECTED_CONVERSATION_READS || 500),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
@@ -882,6 +882,10 @@ async function measureStateChangeFanout(state) {
       packets: packets.length,
       realtimeEvents: realtimePackets.length,
       maxEntries: Math.max(0, ...realtimeEnvelopes.map((envelope) => (envelope.payload?.entries || []).length)),
+      compactStatusEntries: realtimeEnvelopes.every((envelope) => (
+        envelope.payload?.entryType === 'agent_status_changed'
+        && (envelope.payload?.entries || []).every((entry) => typeof entry === 'string')
+      )),
       maxCoalescedCount: Math.max(0, ...realtimeEnvelopes.map((envelope) => Number(envelope.coalescedCount || 0))),
       minSeqStart: Math.min(...realtimeEnvelopes.map((envelope) => Number(envelope.seqStart || 0))),
       maxSeq: Math.max(0, ...realtimeEnvelopes.map((envelope) => Number(envelope.seq || 0))),
@@ -1300,6 +1304,7 @@ async function main() {
   assertBudget(stateChangeFanout.realtimeEvents <= BUDGETS.stateChangeFanoutEvents, `state change fanout ${stateChangeFanout.realtimeEvents} realtime events exceeds ${BUDGETS.stateChangeFanoutEvents}`);
   assertBudget(stateChangeFanout.realtimeEvents === stateChangeFanout.clients, 'state change fanout did not coalesce to one realtime event per client');
   assertBudget(stateChangeFanout.maxEntries === stateChangeFanout.statusChanges, 'state change fanout dropped coalesced activity entries');
+  assertBudget(stateChangeFanout.compactStatusEntries, 'state change fanout did not compact status activity entries');
   assertBudget(stateChangeFanout.maxCoalescedCount === stateChangeFanout.statusChanges, 'state change fanout did not report the full coalesced count');
   assertBudget(stateChangeFanout.minSeqStart === 1 && stateChangeFanout.maxSeq === stateChangeFanout.statusChanges, 'state change fanout did not preserve a continuous sequence range');
   assertBudget(stateChangeFanout.stateResyncEvents === 0, 'status-only state change fanout sent resync events');
