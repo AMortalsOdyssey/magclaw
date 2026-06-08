@@ -709,6 +709,7 @@ test('workspace people directories cache normalization without losing roles or a
     'globalThis.humanByIdAny = humanByIdAny;',
     'globalThis.agentById = agentById;',
     'globalThis.taskById = taskById;',
+    'globalThis.unreadEntryBySpace = unreadEntryBySpace;',
   ].join('\n');
   const members = Array.from({ length: 1000 }, (_item, index) => {
     const suffix = String(index).padStart(4, '0');
@@ -735,7 +736,17 @@ test('workspace people directories cache normalization without losing roles or a
       return agent?.status !== 'deleted';
     },
     appState: {
-      cloud: { workspace: { id: 'local', ownerUserId: 'usr_0000' }, members },
+      cloud: {
+        workspace: { id: 'local', ownerUserId: 'usr_0000' },
+        members,
+        unreadCounts: {
+          spaces: Array.from({ length: 1000 }, (_item, index) => ({
+            spaceType: 'channel',
+            spaceId: `chan_${String(index).padStart(4, '0')}`,
+            unreadCount: index,
+          })),
+        },
+      },
       agents,
       computers: [],
       tasks: Array.from({ length: 1000 }, (_item, index) => ({
@@ -764,6 +775,7 @@ test('workspace people directories cache normalization without losing roles or a
   assert.equal(context.humanByIdAny('usr_0002')?.id, 'hum_0002');
   assert.equal(context.agentById('agt_0002')?.name, 'Agent 2');
   assert.equal(context.taskById('task_0999')?.title, 'Task 999');
+  assert.equal(context.unreadEntryBySpace('channel', 'chan_0999')?.unreadCount, 999);
 
   const firstAgents = context.workspaceAgents();
   const checksAfterFirstAgents = activeAgentChecks;
@@ -788,6 +800,7 @@ test('workspace people directories cache normalization without losing roles or a
   assert.match(source, /humanIdentityById/);
   assert.match(source, /function agentById\(id, stateSnapshot = appState\)/);
   assert.match(source, /function taskById\(id, stateSnapshot = appState\)/);
+  assert.match(source, /function unreadEntryBySpace\(spaceType, spaceId, stateSnapshot = appState\)/);
   assert.match(syncSource, /stateEntityLookupCache = null/);
   assert.match(syncSource, /workspaceHumansCache = null/);
   assert.match(syncSource, /workspaceAgentsCache = null/);

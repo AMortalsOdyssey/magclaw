@@ -101,6 +101,9 @@ membership fanout visible in the budget. It currently enforces:
 - Browser thread and unread surfaces read replies from a parent-message index
   for the current state snapshot, so rendering many thread rows does not scan
   and sort the full reply list once per row.
+- Browser rail channel rows read server unread entries from a space-keyed index
+  for the current state snapshot, so channel rendering does not scan the full
+  unread-space list once per channel.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

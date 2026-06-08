@@ -123,6 +123,23 @@ test('thread replies use the current state lookup index instead of scanning ever
   assert.match(threadRepliesSource, /if \(typeof repliesForParentMessage === 'function'\) return repliesForParentMessage\(messageId\);/);
 });
 
+test('rail unread entries use the current state lookup index instead of scanning every space', async () => {
+  const app = await readAppSource();
+  const stateLookupSource = app.slice(
+    app.indexOf('function unreadSpaceKey'),
+    app.indexOf('function cloudMemberDisplayRole'),
+  );
+  const unreadEntrySource = app.slice(
+    app.indexOf('function serverUnreadEntryForSpace'),
+    app.indexOf('function applyUnreadCountsPayload'),
+  );
+
+  assert.match(stateLookupSource, /function mapUnreadEntriesBySpaceKey\(spaces = \[\]\)/);
+  assert.match(stateLookupSource, /unreadEntriesBySpaceKey: mapUnreadEntriesBySpaceKey\(stateUnreadSpaces\)/);
+  assert.match(stateLookupSource, /function unreadEntryBySpace\(spaceType, spaceId, stateSnapshot = appState\)/);
+  assert.match(unreadEntrySource, /if \(typeof unreadEntryBySpace === 'function'\) return unreadEntryBySpace\(spaceType, spaceId, stateSnapshot\);/);
+});
+
 test('state SSE updates route through the non-destructive state renderer', async () => {
   const app = await readAppSource();
   const connectEventsSource = app.slice(

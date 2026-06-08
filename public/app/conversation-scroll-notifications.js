@@ -75,6 +75,7 @@ function serverUnreadCountsPayload(stateSnapshot = appState) {
 }
 
 function serverUnreadEntryForSpace(spaceType, spaceId, stateSnapshot = appState) {
+  if (typeof unreadEntryBySpace === 'function') return unreadEntryBySpace(spaceType, spaceId, stateSnapshot);
   const key = spaceUnreadKey(spaceType, spaceId);
   return (serverUnreadCountsPayload(stateSnapshot)?.spaces || [])
     .find((item) => spaceUnreadKey(item.spaceType, item.spaceId) === key) || null;

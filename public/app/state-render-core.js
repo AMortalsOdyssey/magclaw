@@ -780,12 +780,25 @@ function mapRepliesByParentMessageId(replies = []) {
   return map;
 }
 
+function unreadSpaceKey(spaceType, spaceId) {
+  return `${spaceType || 'channel'}:${spaceId || ''}`;
+}
+
+function mapUnreadEntriesBySpaceKey(spaces = []) {
+  const map = new Map();
+  for (const item of spaces || []) {
+    map.set(unreadSpaceKey(item?.spaceType, item?.spaceId), item);
+  }
+  return map;
+}
+
 function stateEntityLookup(stateSnapshot = appState) {
   const stateAgents = stateSnapshot?.agents || [];
   const stateHumans = stateSnapshot?.humans || [];
   const stateTasks = stateSnapshot?.tasks || [];
   const stateComputers = stateSnapshot?.computers || [];
   const stateReplies = stateSnapshot?.replies || [];
+  const stateUnreadSpaces = stateSnapshot?.cloud?.unreadCounts?.spaces || [];
   if (
     stateEntityLookupCache
     && stateEntityLookupCache.stateSnapshot === stateSnapshot
@@ -794,11 +807,13 @@ function stateEntityLookup(stateSnapshot = appState) {
     && stateEntityLookupCache.stateTasks === stateTasks
     && stateEntityLookupCache.stateComputers === stateComputers
     && stateEntityLookupCache.stateReplies === stateReplies
+    && stateEntityLookupCache.stateUnreadSpaces === stateUnreadSpaces
     && stateEntityLookupCache.agentCount === stateAgents.length
     && stateEntityLookupCache.humanCount === stateHumans.length
     && stateEntityLookupCache.taskCount === stateTasks.length
     && stateEntityLookupCache.computerCount === stateComputers.length
     && stateEntityLookupCache.replyCount === stateReplies.length
+    && stateEntityLookupCache.unreadSpaceCount === stateUnreadSpaces.length
   ) {
     return stateEntityLookupCache;
   }
@@ -809,16 +824,19 @@ function stateEntityLookup(stateSnapshot = appState) {
     stateTasks,
     stateComputers,
     stateReplies,
+    stateUnreadSpaces,
     agentCount: stateAgents.length,
     humanCount: stateHumans.length,
     taskCount: stateTasks.length,
     computerCount: stateComputers.length,
     replyCount: stateReplies.length,
+    unreadSpaceCount: stateUnreadSpaces.length,
     agentsById: mapEntitiesById(stateAgents),
     humansById: mapEntitiesById(stateHumans),
     tasksById: mapEntitiesById(stateTasks),
     computersById: mapEntitiesById(stateComputers),
     repliesByParentMessageId: mapRepliesByParentMessageId(stateReplies),
+    unreadEntriesBySpaceKey: mapUnreadEntriesBySpaceKey(stateUnreadSpaces),
   };
   return stateEntityLookupCache;
 }
@@ -846,6 +864,10 @@ function computerById(id, stateSnapshot = appState) {
 function repliesForParentMessage(messageId, stateSnapshot = appState) {
   const target = String(messageId || '');
   return target ? stateEntityLookup(stateSnapshot).repliesByParentMessageId.get(target) || [] : [];
+}
+
+function unreadEntryBySpace(spaceType, spaceId, stateSnapshot = appState) {
+  return stateEntityLookup(stateSnapshot).unreadEntriesBySpaceKey.get(unreadSpaceKey(spaceType, spaceId)) || null;
 }
 
 function cloudMemberDisplayRole(member = {}, options = {}) {
