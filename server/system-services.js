@@ -1435,14 +1435,15 @@ export function createSystemServices(deps) {
     }
   }
 
-  function publicStateScope(req = null) {
+  function publicStateScope(req = null, options = {}) {
     const currentState = getState() || {};
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
     const currentHumanId = cloud?.auth?.currentMember?.humanId || null;
+    const includeConversationArrays = options.includeConversationArrays !== false;
     const channels = records(currentState.channels);
     const dms = records(currentState.dms);
-    const messages = records(currentState.messages);
-    const replies = records(currentState.replies);
+    const messages = includeConversationArrays ? records(currentState.messages) : [];
+    const replies = includeConversationArrays ? records(currentState.replies) : [];
     const activeWorkspaceId = cloud?.auth?.currentMember?.workspaceId || cloud?.workspace?.id || '';
     const scopeToWorkspace = Boolean(cloud?.auth?.currentUser && cloud?.auth?.currentMember && activeWorkspaceId);
     const keepLegacyUnscopedRecords = cloud?.auth?.storageBackend !== 'postgres';
@@ -1453,8 +1454,8 @@ export function createSystemServices(deps) {
     );
     const scopedChannels = channels.filter(inCurrentWorkspace);
     const scopedDms = dms.filter(inCurrentWorkspace);
-    const scopedMessages = messages.filter(inCurrentWorkspace);
-    const scopedReplies = replies.filter(inCurrentWorkspace);
+    const scopedMessages = includeConversationArrays ? messages.filter(inCurrentWorkspace) : [];
+    const scopedReplies = includeConversationArrays ? replies.filter(inCurrentWorkspace) : [];
     const scopedRecords = (key) => records(currentState[key]).filter(inCurrentWorkspace);
     const scopedAgents = scopedRecords('agents');
     const visibleComputers = scopedRecords('computers').filter((computer) => {
@@ -1487,6 +1488,7 @@ export function createSystemServices(deps) {
       visibleComputers,
       visibleDms,
       visibleDmIds,
+      inCurrentWorkspace,
       conversationVisible,
     };
   }
@@ -1590,18 +1592,17 @@ export function createSystemServices(deps) {
   }
 
   function publicBootstrapState(req = null, options = {}) {
-    const scope = publicStateScope(req);
+    const scope = publicStateScope(req, { includeConversationArrays: false });
     const {
       currentState,
       cloud,
       currentHumanId,
       scopedChannels,
-      scopedMessages,
-      scopedReplies,
       scopedRecords,
       scopedAgents,
       visibleComputers,
       visibleDms,
+      inCurrentWorkspace,
       conversationVisible,
     } = scope;
     if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) return publicState(req);
@@ -1622,8 +1623,13 @@ export function createSystemServices(deps) {
     const directoryScope = effectiveOptions.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
       ? BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
       : 'full';
-    const visibleMessages = scopedMessages.filter(conversationVisible);
-    const visibleReplies = scopedReplies.filter(conversationVisible);
+    const visibleConversationRecord = (record) => Boolean(record)
+      && inCurrentWorkspace(record)
+      && conversationVisible(record);
+    const visibleMessages = (Array.isArray(currentState.messages) ? currentState.messages : [])
+      .filter(visibleConversationRecord);
+    const visibleReplies = (Array.isArray(currentState.replies) ? currentState.replies : [])
+      .filter(visibleConversationRecord);
     const selectedChannel = spaceType === 'channel'
       ? scopedChannels.find((channel) => String(channel?.id || '') === spaceId)
       : null;

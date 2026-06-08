@@ -323,6 +323,73 @@ test('bootstrap state projects only the visible conversation window', () => {
   assert.ok(metadataReads < 80, `metadata reads should stay windowed, got ${metadataReads}`);
 });
 
+test('bootstrap state filters source conversation arrays once before windowing', () => {
+  class CountingMessages extends Array {
+    static filterCalls = 0;
+
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    filter(...args) {
+      CountingMessages.filterCalls += 1;
+      return super.filter(...args);
+    }
+  }
+  class CountingReplies extends Array {
+    static filterCalls = 0;
+
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    filter(...args) {
+      CountingReplies.filterCalls += 1;
+      return super.filter(...args);
+    }
+  }
+  const messages = CountingMessages.from(Array.from({ length: 240 }, (_value, index) => ({
+    id: `msg_count_${String(index).padStart(3, '0')}`,
+    workspaceId: 'local',
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    authorType: 'agent',
+    authorId: 'agt_1',
+    body: `message ${index}`,
+    readBy: ['hum_1'],
+    createdAt: `2026-05-18T00:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+    updatedAt: `2026-05-18T00:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+  })));
+  const replies = CountingReplies.from(Array.from({ length: 40 }, (_value, index) => ({
+    id: `rep_count_${String(index).padStart(3, '0')}`,
+    workspaceId: 'local',
+    parentMessageId: `msg_count_${String(200 + (index % 20)).padStart(3, '0')}`,
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    authorType: 'agent',
+    authorId: 'agt_1',
+    body: `reply ${index}`,
+    readBy: ['hum_1'],
+    createdAt: `2026-05-18T01:00:${String(index).padStart(2, '0')}.000Z`,
+    updatedAt: `2026-05-18T01:00:${String(index).padStart(2, '0')}.000Z`,
+  })));
+  const services = makeServices((state) => {
+    state.messages = messages;
+    state.replies = replies;
+    state.agents = [{ id: 'agt_1', workspaceId: 'local', name: 'Ada', status: 'idle' }];
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
+    headers: {},
+  });
+
+  assert.equal(snapshot.messages.length, 20);
+  assert.equal(snapshot.bootstrap.hasMoreMessages, true);
+  assert.equal(CountingMessages.filterCalls, 1);
+  assert.equal(CountingReplies.filterCalls, 1);
+});
+
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
   const services = makeServices((state) => {
     state.messages = [
