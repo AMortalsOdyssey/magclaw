@@ -411,24 +411,27 @@ export function createSystemServices(deps) {
     };
   }
 
-  function newestRecordPages(items, specs = []) {
+  function newestRecordPages(items, specs = [], options = {}) {
     const source = Array.isArray(items) ? items : [];
+    const visit = typeof options?.visit === 'function' ? options.visit : null;
     const collectors = records(specs).map((spec) => ({
       predicate: typeof spec?.predicate === 'function' ? spec.predicate : null,
       collector: createNewestPageCollector(spec?.limit),
     }));
-    if (!collectors.length) return [];
+    if (!collectors.length && !visit) return [];
     let previous = null;
     let monotonicOldestFirst = true;
     for (const item of source) {
       if (!item) continue;
+      if (visit) visit(item);
       if (previous && compareOldestRecords(previous, item) > 0) {
         monotonicOldestFirst = false;
-        break;
       }
-      for (const entry of collectors) {
-        if (entry.predicate && !entry.predicate(item)) continue;
-        addMonotonicNewestRecord(entry.collector, item);
+      if (monotonicOldestFirst) {
+        for (const entry of collectors) {
+          if (entry.predicate && !entry.predicate(item)) continue;
+          addMonotonicNewestRecord(entry.collector, item);
+        }
       }
       previous = item;
     }
@@ -1854,22 +1857,27 @@ export function createSystemServices(deps) {
     if (threadMessageId) fullMessageIds.add(threadMessageId);
 
     const latestReplyByParent = new Map();
-    for (const reply of sourceReplies) {
-      if (!reply) continue;
-      if (!visibleConversationRecord(reply)) continue;
-      const parentMessageId = reply.parentMessageId;
-      if (messageById.has(parentMessageId)) {
-        const previous = latestReplyByParent.get(parentMessageId);
-        if (!previous || compareNewestRecords(reply, previous) < 0) latestReplyByParent.set(parentMessageId, reply);
-      }
-    }
+    const selectedThreadReplyPages = newestRecordPages(
+      sourceReplies,
+      threadMessageId
+        ? [{
+            limit: threadReplyLimit,
+            predicate: (reply) => visibleConversationRecord(reply)
+              && String(reply?.parentMessageId || '') === threadMessageId,
+          }]
+        : [],
+      {
+        visit: (reply) => {
+          if (!visibleConversationRecord(reply)) return;
+          const parentMessageId = reply.parentMessageId;
+          if (!messageById.has(parentMessageId)) return;
+          const previous = latestReplyByParent.get(parentMessageId);
+          if (!previous || compareNewestRecords(reply, previous) < 0) latestReplyByParent.set(parentMessageId, reply);
+        },
+      },
+    );
     const selectedThreadReplyPage = threadMessageId
-      ? newestRecordsPage(
-          sourceReplies,
-          threadReplyLimit,
-          (reply) => visibleConversationRecord(reply)
-            && String(reply?.parentMessageId || '') === threadMessageId,
-        )
+      ? selectedThreadReplyPages[0] || { records: [], total: 0, hasMore: false }
       : { records: [], total: 0, hasMore: false };
     const selectedThreadReplies = selectedThreadReplyPage.records.slice().sort(compareOldestRecords);
     const fullReplyIds = new Set(selectedThreadReplies.map((reply) => String(reply?.id || '')).filter(Boolean));
@@ -1911,21 +1919,22 @@ export function createSystemServices(deps) {
     const globalTaskPage = [];
     const referencedTaskById = new Map();
     let openTaskCount = 0;
-    for (const task of taskRecords) {
-      if (openStatuses.has(String(task.status || 'todo'))) openTaskCount += 1;
-      if (taskIds.has(task.id)) referencedTaskById.set(task.id, task);
-    }
-    const selectedSpaceTasks = newestRecordsPage(
-      taskRecords,
-      taskLimit,
-      (task) => task.spaceType === spaceType && String(task.spaceId) === spaceId,
-    );
+    const [selectedSpaceTasks, globalChannelTasks] = newestRecordPages(taskRecords, [
+      {
+        limit: taskLimit,
+        predicate: (task) => task.spaceType === spaceType && String(task.spaceId) === spaceId,
+      },
+      {
+        limit: taskLimit,
+        predicate: (task) => task.spaceType === 'channel' && (!currentHumanId || memberChannelIds.has(task.spaceId)),
+      },
+    ], {
+      visit: (task) => {
+        if (openStatuses.has(String(task.status || 'todo'))) openTaskCount += 1;
+        if (taskIds.has(task.id)) referencedTaskById.set(task.id, task);
+      },
+    });
     selectedSpaceTaskPage.push(...selectedSpaceTasks.records);
-    const globalChannelTasks = newestRecordsPage(
-      taskRecords,
-      taskLimit,
-      (task) => task.spaceType === 'channel' && (!currentHumanId || memberChannelIds.has(task.spaceId)),
-    );
     globalTaskPage.push(...globalChannelTasks.records);
     const visibleTaskById = new Map();
     for (const task of [...selectedSpaceTaskPage, ...globalTaskPage]) {

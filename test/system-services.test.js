@@ -464,7 +464,7 @@ test('bootstrap state windows source conversation arrays without materializing f
   const replies = CountingReplies.from(Array.from({ length: 40 }, (_value, index) => ({
     id: `rep_count_${String(index).padStart(3, '0')}`,
     workspaceId: 'local',
-    parentMessageId: `msg_count_${String(200 + (index % 20)).padStart(3, '0')}`,
+    parentMessageId: `msg_count_${String(220 + (index % 20)).padStart(3, '0')}`,
     spaceType: 'channel',
     spaceId: 'chan_all',
     authorType: 'agent',
@@ -485,7 +485,7 @@ test('bootstrap state windows source conversation arrays without materializing f
   CountingReplies.iteratorCalls = 0;
 
   const snapshot = services.publicBootstrapState({
-    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20',
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&threadMessageId=msg_count_220',
     headers: {},
   });
 
