@@ -311,6 +311,7 @@ test('state core broadcasts agent activity realtime events without forcing state
       spaceId: 'chan_all',
       messageId: 'msg_1',
     });
+    core.flushRealtimeBroadcasts();
 
     const channelEvents = sseEnvelopes(channelClient, 'realtime-event');
     const otherEvents = sseEnvelopes(otherChannelClient, 'realtime-event');
@@ -454,10 +455,18 @@ test('state core keeps state generation bounded for 100 SSE clients during agent
     for (let index = 0; index < 10; index += 1) {
       core.setAgentStatus(agent, index % 2 === 0 ? 'working' : 'thinking', 'load_test', { forceEvent: true });
     }
+    core.flushRealtimeBroadcasts();
 
     assert.equal(publicStateCalls, 0);
     assert.equal(clients.every((client) => ssePackets(client, 'state-resync-required').length === 1), true);
-    assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length === 10), true);
+    assert.equal(clients.every((client) => ssePackets(client, 'realtime-event').length === 1), true);
+    const realtime = sseEnvelopes(clients[0], 'realtime-event')[0];
+    assert.equal(realtime.seqStart, 1);
+    assert.equal(realtime.seq, 10);
+    assert.equal(realtime.coalescedCount, 10);
+    assert.equal(realtime.payload.entries.length, 10);
+    assert.equal(realtime.payload.agent.status, 'thinking');
+    assert.deepEqual(core.state.cloud.realtimeEvents.map((event) => event.seq), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     assert.equal(clients.every((client) => ssePackets(client, 'heartbeat').length === 0), true);
     const averagePacketBytes = clients
       .flatMap((client) => client.writes)

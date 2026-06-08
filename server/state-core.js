@@ -1108,6 +1108,8 @@ export function createStateCore(deps) {
   function realtimeEventEnvelope(event) {
     return {
       seq: Number(event.seq || 0),
+      seqStart: Number(event.seqStart || event.seq || 0),
+      coalescedCount: Number(event.coalescedCount || 1),
       type: 'realtime_event',
       eventType: event.eventType || event.event_type || '',
       scopeType: event.scopeType || 'workspace',
@@ -1177,6 +1179,11 @@ export function createStateCore(deps) {
     ensureSseDrainHandler(res);
   }
 
+  const REALTIME_BROADCAST_BATCH_MS = Math.max(0, Number(deps.REALTIME_BROADCAST_BATCH_MS ?? 16) || 0);
+  const REALTIME_BATCH_EVENT_TYPES = new Set(['agent_activity_changed']);
+  const pendingRealtimeBroadcasts = new Map();
+  let realtimeBroadcastTimer = null;
+
   function writeSsePacket(res, packet, { coalesceKey = 'packet' } = {}) {
     if (!res || typeof res.write !== 'function') return;
     if (res.magclawSseBackpressure || res.writableNeedDrain) {
@@ -1216,15 +1223,92 @@ export function createStateCore(deps) {
     }
   }
 
-  function broadcastRealtimeEvent(event) {
+  function realtimeBroadcastCoalesceKey(event = {}) {
+    return `realtime-event:${event.eventType}:${event.scopeType}:${event.scopeId || ''}`;
+  }
+
+  function shouldBatchRealtimeBroadcast(event = {}) {
+    return REALTIME_BATCH_EVENT_TYPES.has(String(event.eventType || ''))
+      && event.scopeType === 'agent'
+      && Boolean(event.scopeId);
+  }
+
+  function realtimeActivityEntries(payload = {}) {
+    return Array.isArray(payload.entries) && payload.entries.length ? payload.entries : [];
+  }
+
+  function compactRealtimeActivityEntryForSse(entry = {}) {
+    if (!entry || typeof entry !== 'object') return entry;
+    const raw = entry.raw && typeof entry.raw === 'object' ? entry.raw : null;
+    const rawKeys = raw ? Object.keys(raw) : [];
+    const rawIsStatusMetadata = rawKeys.length > 0
+      && rawKeys.every((key) => ['previousStatus', 'status', 'reason'].includes(key));
+    if ((entry.type || entry.eventType) !== 'agent_status_changed' || !rawIsStatusMetadata) return entry;
+    const { raw: _raw, ...rest } = entry;
+    return rest;
+  }
+
+  function mergeRealtimeBroadcastEvents(previous = null, next = null) {
+    if (!previous || !next || previous.eventType !== next.eventType) return next;
+    if (previous.scopeType !== next.scopeType || previous.scopeId !== next.scopeId) return next;
+    const previousPayload = previous.payload || {};
+    const nextPayload = next.payload || {};
+    const entries = realtimeActivityEntries(previousPayload)
+      .concat(realtimeActivityEntries(nextPayload))
+      .map(compactRealtimeActivityEntryForSse);
+    return {
+      ...next,
+      seqStart: Number(previous.seqStart || previous.seq || next.seq || 0),
+      coalescedCount: Number(previous.coalescedCount || 1) + 1,
+      payload: {
+        ...nextPayload,
+        entries,
+      },
+    };
+  }
+
+  function broadcastRealtimeEventNow(event) {
     if (!sseClients.size) return;
     const envelope = realtimeEventEnvelope(event);
     const packet = ssePacket('realtime-event', envelope);
-    const coalesceKey = `realtime-event:${envelope.eventType}:${envelope.scopeType}:${envelope.scopeId || ''}`;
+    const coalesceKey = realtimeBroadcastCoalesceKey(envelope);
     for (const res of sseClients) {
       if (!realtimeEventMatchesRequest(event, res.magclawRequest || null)) continue;
       writeSsePacket(res, packet, { coalesceKey });
     }
+  }
+
+  function flushRealtimeBroadcasts() {
+    if (realtimeBroadcastTimer) {
+      clearTimeout(realtimeBroadcastTimer);
+      realtimeBroadcastTimer = null;
+    }
+    if (!pendingRealtimeBroadcasts.size) return;
+    const events = [...pendingRealtimeBroadcasts.values()];
+    pendingRealtimeBroadcasts.clear();
+    for (const event of events) broadcastRealtimeEventNow(event);
+  }
+
+  function scheduleRealtimeBroadcastFlush() {
+    if (realtimeBroadcastTimer) return;
+    realtimeBroadcastTimer = setTimeout(() => {
+      realtimeBroadcastTimer = null;
+      flushRealtimeBroadcasts();
+    }, REALTIME_BROADCAST_BATCH_MS);
+    realtimeBroadcastTimer.unref?.();
+  }
+
+  function broadcastRealtimeEvent(event) {
+    if (!shouldBatchRealtimeBroadcast(event)) {
+      broadcastRealtimeEventNow(event);
+      return;
+    }
+    const coalesceKey = realtimeBroadcastCoalesceKey(event);
+    pendingRealtimeBroadcasts.set(coalesceKey, mergeRealtimeBroadcastEvents(
+      pendingRealtimeBroadcasts.get(coalesceKey),
+      event,
+    ));
+    scheduleRealtimeBroadcastFlush();
   }
   
   function broadcast(type, payload) {
@@ -1687,6 +1771,7 @@ export function createStateCore(deps) {
     recordRealtimeEvent,
     resolveCodexRuntime,
     flushActivityLog: () => activityLog.flush(),
+    flushRealtimeBroadcasts,
     setExternalStatePersister,
     setAgentStatus,
     state: stateProxy,

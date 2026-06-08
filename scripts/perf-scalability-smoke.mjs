@@ -15,7 +15,8 @@ const BUDGETS = Object.freeze({
   humanHeartbeatChurnBytes: Number(process.env.MAGCLAW_PERF_HUMAN_HEARTBEAT_CHURN_BYTES || 10_000),
   presenceMemberDeltaBytes: Number(process.env.MAGCLAW_PERF_PRESENCE_MEMBER_DELTA_BYTES || 50_000),
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
-  stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 1_000),
+  stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 120_000),
+  stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 100),
   unreadHydrationRecords: Number(process.env.MAGCLAW_PERF_UNREAD_RECORDS || 80),
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
 });
@@ -488,15 +489,22 @@ async function measureStateChangeFanout(state) {
       core.setAgentStatus(agent, index % 2 === 0 ? 'working' : 'thinking', 'perf_state_change', { forceEvent: true });
       core.broadcastState({ immediate: true, skipCloudPush: true, realtimeOnly: true });
     }
+    core.flushRealtimeBroadcasts();
 
     const packets = clients.flatMap((client) => client.writes);
     const heartbeatPackets = packets.filter((packet) => packet.startsWith('event: heartbeat\n'));
+    const realtimePackets = packets.filter((packet) => packet.startsWith('event: realtime-event\n'));
+    const realtimeEnvelopes = realtimePackets.map((packet) => JSON.parse(packet.match(/^event: realtime-event\ndata: ([\s\S]*)\n\n$/)?.[1] || '{}'));
     return {
       clients: clients.length,
       statusChanges: 10,
       totalBytes: packets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
       packets: packets.length,
-      realtimeEvents: packets.filter((packet) => packet.startsWith('event: realtime-event\n')).length,
+      realtimeEvents: realtimePackets.length,
+      maxEntries: Math.max(0, ...realtimeEnvelopes.map((envelope) => (envelope.payload?.entries || []).length)),
+      maxCoalescedCount: Math.max(0, ...realtimeEnvelopes.map((envelope) => Number(envelope.coalescedCount || 0))),
+      minSeqStart: Math.min(...realtimeEnvelopes.map((envelope) => Number(envelope.seqStart || 0))),
+      maxSeq: Math.max(0, ...realtimeEnvelopes.map((envelope) => Number(envelope.seq || 0))),
       stateResyncEvents: packets.filter((packet) => packet.startsWith('event: state-resync-required\n')).length,
       heartbeatEvents: heartbeatPackets.length,
       heartbeatBytes: heartbeatPackets.reduce((sum, packet) => sum + Buffer.byteLength(packet, 'utf8'), 0),
@@ -559,7 +567,12 @@ async function main() {
   assertBudget(presenceMemberDelta.maxHumans <= 1, 'presence member delta sent unchanged humans');
   assertBudget(presenceMemberDelta.fullPayloadEvents === 0, 'presence member delta sent full member payloads');
   assertBudget(stateChangeFanout.totalBytes <= BUDGETS.stateChangeFanoutBytes, `state change fanout ${stateChangeFanout.totalBytes} bytes exceeds ${BUDGETS.stateChangeFanoutBytes}`);
+  assertBudget(stateChangeFanout.totalBytes <= BUDGETS.stateChangeFanoutBytesCoalesced, `coalesced state change fanout ${stateChangeFanout.totalBytes} bytes exceeds ${BUDGETS.stateChangeFanoutBytesCoalesced}`);
   assertBudget(stateChangeFanout.realtimeEvents <= BUDGETS.stateChangeFanoutEvents, `state change fanout ${stateChangeFanout.realtimeEvents} realtime events exceeds ${BUDGETS.stateChangeFanoutEvents}`);
+  assertBudget(stateChangeFanout.realtimeEvents === stateChangeFanout.clients, 'state change fanout did not coalesce to one realtime event per client');
+  assertBudget(stateChangeFanout.maxEntries === stateChangeFanout.statusChanges, 'state change fanout dropped coalesced activity entries');
+  assertBudget(stateChangeFanout.maxCoalescedCount === stateChangeFanout.statusChanges, 'state change fanout did not report the full coalesced count');
+  assertBudget(stateChangeFanout.minSeqStart === 1 && stateChangeFanout.maxSeq === stateChangeFanout.statusChanges, 'state change fanout did not preserve a continuous sequence range');
   assertBudget(stateChangeFanout.stateResyncEvents === 0, 'status-only state change fanout sent resync events');
   assertBudget(stateChangeFanout.heartbeatEvents === 0, 'state change fanout sent heartbeat payload events');
   assertBudget(stateChangeFanout.heartbeatBytes === 0, 'state change fanout sent heartbeat payload bytes');

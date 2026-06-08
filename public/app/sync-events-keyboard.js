@@ -1536,15 +1536,17 @@ function applyRunEventUpdate(incoming) {
   patchRailSurface();
 }
 
-function applySseSeq(seqInput) {
+function applySseSeq(seqInput, seqStartInput = 0) {
   const seq = Number(seqInput || 0);
   if (!seq) return false;
+  const seqStart = Math.max(0, Number(seqStartInput || 0) || 0);
   if (lastSseSeq && seq < lastSseSeq) {
     lastSseSeq = seq;
     sessionStorage.setItem(SSE_LAST_SEQ_STORAGE_KEY, String(seq));
     return false;
   }
-  const hasGap = Boolean(lastSseSeq && seq > lastSseSeq + 1);
+  const expectedNextSeq = lastSseSeq + 1;
+  const hasGap = Boolean(lastSseSeq && (seqStart ? seqStart > expectedNextSeq : seq > expectedNextSeq));
   if (seq > lastSseSeq) {
     lastSseSeq = seq;
     sessionStorage.setItem(SSE_LAST_SEQ_STORAGE_KEY, String(seq));
@@ -1668,7 +1670,7 @@ function applyAgentActivityChangedEvent(payload = {}, stateSnapshot = pendingSta
 }
 
 function applyRealtimeJournalEvent(envelope) {
-  if (applySseSeq(envelope?.seq)) {
+  if (applySseSeq(envelope?.seq, envelope?.seqStart)) {
     refreshAfterSseGap(envelope);
     return;
   }

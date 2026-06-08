@@ -129,7 +129,7 @@ test('state SSE updates route through the non-destructive state renderer', async
   assert.match(connectEventsSource, /addEventListener\('realtime-event'[\s\S]*applyRealtimeJournalEvent\(JSON\.parse\(event\.data\)\)/);
   assert.match(connectEventsSource, /addEventListener\('state-resync-required'[\s\S]*applyStateResyncRequiredEnvelope\(incoming\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
-  assert.match(app, /function applySseSeq\(seqInput\)[\s\S]*seq > lastSseSeq \+ 1/);
+  assert.match(app, /function applySseSeq\(seqInput, seqStartInput = 0\)[\s\S]*seqStart > expectedNextSeq[\s\S]*seq > expectedNextSeq/);
   assert.match(connectEventsSource, /applyRunEventUpdate\(incoming\)/);
   assert.match(connectEventsSource, /eventSource\.addEventListener\('heartbeat'/);
   assert.match(connectEventsSource, /applyPresenceHeartbeat\(JSON\.parse\(event\.data\)\)/);
@@ -840,6 +840,7 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
   assert.match(realtimeSource, /queueStateUpdate\(\{[\s\S]*\.\.\.stateSnapshot,[\s\S]*agents,[\s\S]*humans,[\s\S]*updatedAt: heartbeat\.updatedAt \|\| stateSnapshot\.updatedAt/);
   assert.match(realtimeSource, /if \(envelope\?\.type === 'state_patch' && envelope\.payload\) \{[\s\S]*queueStateUpdate\(envelope\.payload\)/);
   assert.match(realtimeSource, /function applyStateResyncRequiredEnvelope\(envelope = \{\}\)[\s\S]*applySseSeq\(envelope\?\.seq \|\| envelope\?\.currentSeq\)[\s\S]*refreshAfterSseGap\(envelope\)/);
+  assert.match(realtimeSource, /function applyRealtimeJournalEvent\(envelope\)[\s\S]*applySseSeq\(envelope\?\.seq, envelope\?\.seqStart\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /function claimHumanPresenceLease\(\)/);
   assert.match(browserHeartbeatSource, /if \(!claimHumanPresenceLease\(\)\) return/);
