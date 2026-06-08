@@ -2641,10 +2641,32 @@ test('team sharing context page renders plan goal and interaction presentation p
       goal: { objective: '把 Goal 模式接入 Team Sharing', source: 'user', objectiveMatchesUser: true },
     },
   });
-  assert.match(goalHtml, /context-goal-panel/);
+  assert.match(goalHtml, /context-goal-badge/);
+  assert.match(goalHtml, /context-goal-logo/);
+  assert.match(goalHtml, />Goal</);
+  assert.doesNotMatch(goalHtml, /context-goal-panel/);
   assert.match(goalHtml, /context-avatar/);
   assert.match(goalHtml, />JHB</);
   assert.match(goalHtml, /把 Goal 模式接入 Team Sharing/);
+  assert.doesNotMatch(goalHtml, /codex_internal_context|objectiveMatchesUser|Continuation behavior/);
+
+  const legacyGoalHtml = context.eventHtml({
+    eventId: 'evt_legacy_goal',
+    role: 'user',
+    text: [
+      '<codex_internal_context source="goal">',
+      'Continue working toward the active thread goal.',
+      '<objective>持续优化正式环境响应速度</objective>',
+      'Continuation behavior:',
+      '- Keep the full objective intact.',
+      '</codex_internal_context>',
+    ].join('\n'),
+    createdAt: '2026-06-01T10:03:15.000Z',
+  });
+  assert.match(legacyGoalHtml, /context-goal-badge/);
+  assert.match(legacyGoalHtml, /context-goal-logo/);
+  assert.match(legacyGoalHtml, /持续优化正式环境响应速度/);
+  assert.doesNotMatch(legacyGoalHtml, /codex_internal_context|Continuation behavior|objective&gt;/);
 
   const customAvatarHtml = context.eventHtml({
     eventId: 'evt_custom_avatar',

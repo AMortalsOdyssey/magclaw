@@ -138,6 +138,26 @@ function extractProposedPlanText(value = '') {
   return match ? compactPresentationText(match[1], 12000) : '';
 }
 
+function decodeInternalContextMarkup(value = '') {
+  return String(value || '')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;|&#39;/gi, "'");
+}
+
+function extractCodexGoalInternalContext(value = '') {
+  const text = decodeInternalContextMarkup(value);
+  const openTag = text.match(/<codex_internal_context\b[^>]*>/i);
+  if (!openTag) return null;
+  if (!/\bsource\s*=\s*(?:"goal"|'goal'|goal)/i.test(openTag[0])) return null;
+  const bodyStart = Number(openTag.index || 0) + openTag[0].length;
+  const body = text.slice(bodyStart).replace(/<\/codex_internal_context>[\s\S]*$/i, '');
+  const objectiveMatch = body.match(/<objective>\s*([\s\S]*?)\s*<\/objective>/i);
+  const objective = objectiveMatch ? compactPresentationText(objectiveMatch[1], 8000) : '';
+  return objective ? { objective } : null;
+}
+
 function codexVisibleUserRequestText(value = '') {
   const raw = String(value || '').replace(/\r\n/g, '\n').trim();
   const match = raw.match(/(?:^|\n)\s*#+\s*My request for Codex:\s*\n?([\s\S]*)/i)
@@ -517,6 +537,24 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
     if (!text) continue;
     if (role === 'user') {
       if (isCodexImplementationPlanPrompt(text)) continue;
+      const goalContext = extractCodexGoalInternalContext(text);
+      if (goalContext) {
+        const event = assignTranscriptEvent(events, sourceOrdinalRef, {
+          role,
+          text: goalContext.objective,
+          createdAt,
+          toolCalls: [],
+          isGoalRequest: true,
+          presentation: buildGoalPresentation({
+            objective: goalContext.objective,
+            source: 'user',
+            objectiveMatchesUser: true,
+            runtime: 'codex',
+          }),
+        });
+        goalEventRef.current = event;
+        continue;
+      }
       const goalCommand = stripGoalCommandPrefix(text);
       assignTranscriptEvent(events, sourceOrdinalRef, {
         role,

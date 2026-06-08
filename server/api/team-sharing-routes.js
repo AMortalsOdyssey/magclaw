@@ -1972,6 +1972,12 @@ function sendContextHtml(res, {
     .context-avatar-claude { background:#f8f3ed; border-color:#d6b49c; }
     .role { display:inline-flex; align-items:center; min-height:20px; border-radius:999px; background:var(--chip); padding:2px 8px; font-size:12px; font-weight:800; color:#0f5f76; }
     .time { margin-left:8px; color:var(--muted); font-size:12px; }
+    .context-goal-badge { display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; min-height:22px; margin-left:auto; border:1px solid #bfdbfe; border-radius:999px; background:#eff6ff; color:#1d4ed8; padding:2px 8px 2px 6px; font-size:11px; font-weight:900; line-height:1; }
+    .context-goal-logo { position:relative; width:15px; height:15px; border-radius:999px; background:radial-gradient(circle, #2563eb 0 2px, #eff6ff 2.5px 4px, #60a5fa 4.5px 5.8px, transparent 6.2px 100%); box-shadow:inset 0 0 0 1px #93c5fd; }
+    .context-goal-logo::before,
+    .context-goal-logo::after { content:""; position:absolute; left:50%; top:50%; background:#1d4ed8; opacity:.82; transform:translate(-50%, -50%); }
+    .context-goal-logo::before { width:11px; height:1px; }
+    .context-goal-logo::after { width:1px; height:11px; }
     .text,
     .context-main { overflow-wrap:anywhere; line-height:1.65; font-size:14px; }
     .text { margin-top:10px; }
@@ -2426,6 +2432,41 @@ function sendContextHtml(res, {
           const body = segments.find(segment => String(segment?.type || '').toLowerCase() === 'body');
           return body?.text || body?.content || event?.displayText || event?.cleanText || event?.text || '';
         }
+        function decodeInternalContextMarkup(text) {
+          return String(text || '')
+            .replace(/&lt;/gi, '<')
+            .replace(/&gt;/gi, '>')
+            .replace(/&quot;/gi, '"')
+            .replace(/&apos;|&#39;/gi, "'");
+        }
+        function compactGoalObjective(text) {
+          const clean = String(text || '')
+            .replace(/\\r\\n/g, '\\n')
+            .replace(/[ \\t]+\\n/g, '\\n')
+            .replace(/\\n{3,}/g, '\\n\\n')
+            .trim();
+          return Array.from(clean).slice(0, 8000).join('').trim();
+        }
+        function goalInternalContextPresentation(event) {
+          const text = decodeInternalContextMarkup(contextEventBodyText(event));
+          const openTag = text.match(/<codex_internal_context\\b[^>]*>/i);
+          if (!openTag || !/\\bsource\\s*=\\s*(?:"goal"|'goal'|goal)/i.test(openTag[0])) return null;
+          const bodyStart = Number(openTag.index || 0) + openTag[0].length;
+          const body = text.slice(bodyStart).replace(/<\\/codex_internal_context>[\\s\\S]*$/i, '');
+          const objectiveMatch = body.match(/<objective>\\s*([\\s\\S]*?)\\s*<\\/objective>/i);
+          const objective = objectiveMatch ? compactGoalObjective(objectiveMatch[1]) : '';
+          if (!objective) return null;
+          return {
+            mode: 'goal',
+            source: 'codex',
+            title: 'Goal',
+            goal: {
+              objective,
+              source: 'user',
+              objectiveMatchesUser: true,
+            },
+          };
+        }
         function plainContextNoteText(text) {
           const tick = String.fromCharCode(96);
           const fencePattern = new RegExp(tick + tick + tick + '[\\\\s\\\\S]*?' + tick + tick + tick, 'g');
@@ -2709,10 +2750,11 @@ function sendContextHtml(res, {
         }
         function eventPresentation(event) {
           const value = event?.presentation || event?.metadata?.presentation || event?.metadata?.teamSharing?.presentation || null;
-          if (!value || typeof value !== 'object') return null;
-          const mode = String(value.mode || '').toLowerCase();
-          if (!['plan', 'goal', 'interaction'].includes(mode)) return null;
-          return { ...value, mode };
+          if (value && typeof value === 'object') {
+            const mode = String(value.mode || '').toLowerCase();
+            if (['plan', 'goal', 'interaction'].includes(mode)) return { ...value, mode };
+          }
+          return goalInternalContextPresentation(event);
         }
         function presentationLabel(presentation, fallback) {
           return escapeHtml(presentation?.title || fallback || 'Context');
@@ -2721,6 +2763,11 @@ function sendContextHtml(res, {
           return '<section class="context-mode-panel ' + className + '">' +
             '<div class="context-mode-head"><span>' + label + '</span>' + extraHead + '</div>' +
             body + '</section>';
+        }
+        function presentationBadge(event) {
+          const presentation = eventPresentation(event);
+          if (!presentation || presentation.mode !== 'goal') return '';
+          return '<span class="context-goal-badge" aria-label="Goal"><span class="context-goal-logo" aria-hidden="true"></span><span>Goal</span></span>';
         }
         function answerValuesForQuestion(presentation, question, index) {
           const answers = Array.isArray(presentation?.interaction?.answers) ? presentation.interaction.answers : [];
@@ -2781,13 +2828,7 @@ function sendContextHtml(res, {
           if (presentation.mode === 'goal') {
             const goal = presentation.goal || {};
             const objective = goal.objective || text;
-            const status = goal.status ? '<span class="context-goal-status">' + escapeHtml(goal.status) + '</span>' : '';
-            return renderModePanel(
-              'context-goal-panel',
-              presentationLabel(presentation, 'Goal'),
-              '<div class="context-main">' + renderContextMarkdown(objective) + '</div>',
-              status,
-            );
+            return '<div class="context-main context-goal-main">' + renderContextMarkdown(objective) + '</div>';
           }
           if (presentation.mode === 'interaction') return renderInteractionPresentation(presentation);
           return '';
@@ -2812,10 +2853,11 @@ function sendContextHtml(res, {
           const roleClass = event.role === 'user' ? ' context-event-user' : (event.role === 'assistant' || event.role === 'system' ? ' context-event-agent' : ' context-event-other');
           const session = window.__teamSharingSession || {};
           const body = presentationBody(event) || eventSegments(event) || '<div class="text">' + renderContextMarkdown(event.displayText || event.cleanText || event.text || '') + '</div>';
+          const badge = presentationBadge(event);
           const note = renderContextNote(contextNoteSummary(event));
           const noteClass = note ? ' has-context-note' : '';
           return '<article id="' + encodeURIComponent(event.eventId || '') + '" class="' + ('context-event' + roleClass + anchorClass + noteClass).trim() + '">' +
-            '<div class="context-event-head">' + roleAvatarHtml(event, session) + '<div class="context-event-meta"><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div></div>' +
+            '<div class="context-event-head">' + roleAvatarHtml(event, session) + '<div class="context-event-meta"><span class="role">' + escapeHtml(roleLabel(event, session)) + '</span><span class="time">' + escapeHtml(chinaTime(event.createdAt || '')) + '</span></div>' + badge + '</div>' +
             note + body + '</article>';
         }
     async function load(direction, options = {}) {
