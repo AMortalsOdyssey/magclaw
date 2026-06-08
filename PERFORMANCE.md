@@ -54,6 +54,8 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
   history.
 - Presence heartbeat JSON is at most 400 KB and generated in at most 50 ms.
 - Heartbeats include no internal agent runtime payload fields.
+- Repeated unchanged heartbeat fanout to 100 SSE clients stays under 10 KB and
+  sends no `event: heartbeat` payloads.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 
@@ -86,8 +88,8 @@ when the user or agent asks for it.
 
 ## Next Optimization Queue
 
-- Keep heartbeat useful for member and agent presence while reducing repeated
-  all-member/all-agent payloads for very large workspaces.
+- Move presence toward changed-member deltas and cursor hydration for very large
+  workspaces where even the first full heartbeat is too large.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,

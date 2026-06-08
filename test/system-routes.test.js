@@ -221,6 +221,7 @@ test('system event stream opens without a full bootstrap state patch', async () 
   let publicBootstrapCalls = 0;
   let hydrateCalls = 0;
   let heartbeatWorkspaceId = '';
+  let writeHeartbeatCalls = 0;
   const deps = routeDeps({
     cloudAuth: {
       currentActor: () => ({ member: { workspaceId: 'wsp_events' } }),
@@ -233,9 +234,11 @@ test('system event stream opens without a full bootstrap state patch', async () 
       publicBootstrapCalls += 1;
       return { large: 'bootstrap-payload-should-not-be-sent' };
     },
-    presenceHeartbeat: (incomingReq) => {
+    writePresenceHeartbeat: (outRes, incomingReq, options = {}) => {
+      writeHeartbeatCalls += 1;
       heartbeatWorkspaceId = incomingReq?.magclawPresenceWorkspaceId || '';
-      return { agents: [], humans: [] };
+      assert.equal(options.force, true);
+      outRes.write('event: heartbeat\ndata: {"agents":[],"humans":[]}\n\n');
     },
   });
   const res = makeResponse();
@@ -252,6 +255,7 @@ test('system event stream opens without a full bootstrap state patch', async () 
   assert.deepEqual(eventNamesFromWrites(res.writes), ['heartbeat']);
   assert.equal(publicBootstrapCalls, 0);
   assert.equal(hydrateCalls, 0);
+  assert.equal(writeHeartbeatCalls, 1);
   assert.equal(heartbeatWorkspaceId, 'wsp_events');
   assert.equal(deps.sseClients.has(res), true);
 });

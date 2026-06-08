@@ -1155,6 +1155,10 @@ export function createStateCore(deps) {
     return `event: ${type}\ndata: ${JSON.stringify(body)}\n\n`;
   }
 
+  function sseComment(comment = 'keepalive') {
+    return `: ${String(comment || 'keepalive').replace(/[\r\n]+/g, ' ')}\n\n`;
+  }
+
   function ensureSseDrainHandler(res) {
     if (res.magclawSseDrainAttached || typeof res.once !== 'function') return;
     res.magclawSseDrainAttached = true;
@@ -1334,9 +1338,62 @@ export function createStateCore(deps) {
       })),
     };
   }
+
+  function presenceWorkspaceIdForRequest(req = null) {
+    return String(
+      req?.magclawPresenceWorkspaceId
+      || req?.daemonAuth?.workspaceId
+      || state?.connection?.workspaceId
+      || state?.cloud?.workspace?.id
+      || '',
+    ).trim();
+  }
+
+  function presenceHeartbeatSignature(heartbeat = {}) {
+    return JSON.stringify({
+      agents: heartbeat.agents || [],
+      humans: heartbeat.humans || [],
+    });
+  }
+
+  function writePresenceHeartbeatPacket(res, entry, { force = false } = {}) {
+    if (!res || !entry) return false;
+    if (!force && res.magclawPresenceHeartbeatSignature === entry.signature) {
+      writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
+      return false;
+    }
+    res.magclawPresenceHeartbeatSignature = entry.signature;
+    writeSsePacket(res, entry.packet, { coalesceKey: 'heartbeat' });
+    return true;
+  }
+
+  function presenceHeartbeatEntry(req = null) {
+    const body = presenceHeartbeat(req);
+    return {
+      body,
+      signature: presenceHeartbeatSignature(body),
+      packet: ssePacket('heartbeat', body),
+      keepalivePacket: sseComment('heartbeat-unchanged'),
+    };
+  }
+
+  function writePresenceHeartbeat(res, req = null, options = {}) {
+    return writePresenceHeartbeatPacket(res, presenceHeartbeatEntry(req), options);
+  }
   
   function broadcastHeartbeat() {
-    broadcast('heartbeat', (req) => presenceHeartbeat(req));
+    const entriesByWorkspace = new Map();
+    for (const res of sseClients) {
+      const req = res.magclawRequest || null;
+      const workspaceId = presenceWorkspaceIdForRequest(req);
+      const key = workspaceId || '__all__';
+      let entry = entriesByWorkspace.get(key);
+      if (!entry) {
+        entry = presenceHeartbeatEntry(req);
+        entriesByWorkspace.set(key, entry);
+      }
+      writePresenceHeartbeatPacket(res, entry);
+    }
   }
   
   function agentStatusIsBusy(status) {
@@ -1553,6 +1610,7 @@ export function createStateCore(deps) {
     normalizeFanoutApiConfig,
     persistState,
     presenceHeartbeat,
+    writePresenceHeartbeat,
     reconcileAgentStatusHeartbeats,
     realtimeEventsForRequest,
     recordAgentActivityChanged,

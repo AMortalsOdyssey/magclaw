@@ -153,6 +153,7 @@ export async function handleSystemApi(req, res, url, deps) {
     realtimeEventsForRequest,
     sseClients,
     updateFanoutApiConfig,
+    writePresenceHeartbeat,
   } = deps;
   const state = getState();
 
@@ -338,7 +339,11 @@ export async function handleSystemApi(req, res, url, deps) {
         }
       }
     }
-    res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat(req))}\n\n`);
+    if (typeof writePresenceHeartbeat === 'function') {
+      writePresenceHeartbeat(res, req, { force: true });
+    } else {
+      res.write(`event: heartbeat\ndata: ${JSON.stringify(presenceHeartbeat(req))}\n\n`);
+    }
     sseClients.add(res);
     const cleanup = () => sseClients.delete(res);
     req.on('close', cleanup);

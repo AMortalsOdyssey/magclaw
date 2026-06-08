@@ -495,6 +495,49 @@ test('state core filters presence heartbeats to the request workspace', async ()
   }
 });
 
+test('state core skips unchanged presence heartbeat payloads after initial fanout', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-heartbeat-dedupe-'));
+  const sseClients = new Set();
+  const core = makeStateCore(tmp, {
+    USE_SQLITE_STATE: false,
+    WRITE_STATE_JSON: false,
+    sseClients,
+  });
+  try {
+    await core.ensureStorage();
+    core.state.agents = [{
+      id: 'agt_a',
+      workspaceId: 'local',
+      status: 'idle',
+      createdAt: '2026-05-12T00:00:00.000Z',
+    }];
+    core.state.humans = [{
+      id: 'hum_a',
+      workspaceId: 'local',
+      status: 'online',
+      lastSeenAt: new Date().toISOString(),
+      createdAt: '2026-05-12T00:00:00.000Z',
+    }];
+    const client = fakeSseClient({ magclawPresenceWorkspaceId: 'local' });
+    sseClients.add(client);
+
+    core.broadcastHeartbeat();
+    core.broadcastHeartbeat();
+
+    assert.equal(ssePackets(client, 'heartbeat').length, 1);
+    assert.equal(client.writes.at(-1).startsWith(': heartbeat-unchanged'), true);
+
+    core.state.agents[0].status = 'working';
+    core.broadcastHeartbeat();
+
+    const heartbeats = sseEnvelopes(client, 'heartbeat');
+    assert.equal(heartbeats.length, 2);
+    assert.equal(heartbeats.at(-1).agents[0].status, 'working');
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core records scoped realtime journal events for SSE replay', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-journal-'));
   const activityDir = path.join(tmp, 'activity-logs');

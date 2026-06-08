@@ -474,6 +474,7 @@ const {
   setExternalStatePersister,
   setAgentStatus,
   stateJsonSnapshot,
+  writePresenceHeartbeat,
 } = stateCore;
 
 function localStateFallbackInfo(reason = '') {
@@ -1706,6 +1707,7 @@ function systemApiDeps() {
     realtimeEventsForRequest,
     sseClients,
     updateFanoutApiConfig,
+    writePresenceHeartbeat,
   };
 }
 
