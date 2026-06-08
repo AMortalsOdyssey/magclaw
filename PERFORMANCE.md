@@ -60,6 +60,9 @@ agents, 20000 messages, 1000 replies, and 2000 tasks. It currently enforces:
 - Timestamp-only human presence pings fanned out to 100 SSE clients stay under
   10 KB and send no `event: heartbeat` payloads; only visible status changes
   trigger a full presence heartbeat.
+- Single-member Agent/Human presence changes fanned out to 100 SSE clients stay
+  under 50 KB and send only changed-member heartbeat payloads, not the full
+  workspace member list.
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
   under 700 KB total, sends at most 1000 realtime events, and sends no heartbeat
   payloads or resync events.

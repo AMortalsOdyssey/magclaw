@@ -1360,10 +1360,66 @@ export function createStateCore(deps) {
     });
   }
 
+  function presenceEntryMap(entries = []) {
+    const map = new Map();
+    for (const entry of entries || []) {
+      const id = String(entry?.id || '').trim();
+      if (!id) return null;
+      map.set(id, entry);
+    }
+    return map;
+  }
+
+  function samePresenceEntrySet(previous = [], next = []) {
+    const previousMap = presenceEntryMap(previous);
+    const nextMap = presenceEntryMap(next);
+    if (!previousMap || !nextMap || previousMap.size !== nextMap.size) return false;
+    for (const id of nextMap.keys()) {
+      if (!previousMap.has(id)) return false;
+    }
+    return true;
+  }
+
+  function changedPresenceEntries(previous = [], next = []) {
+    const previousMap = presenceEntryMap(previous);
+    if (!previousMap) return next || [];
+    return (next || []).filter((entry) => {
+      const id = String(entry?.id || '').trim();
+      const existing = previousMap.get(id);
+      return JSON.stringify(existing || {}) !== JSON.stringify(entry || {});
+    });
+  }
+
+  function presenceHeartbeatDelta(previous = null, next = null) {
+    if (!previous || !next) return null;
+    const previousAgents = previous.agents || [];
+    const nextAgents = next.agents || [];
+    const previousHumans = previous.humans || [];
+    const nextHumans = next.humans || [];
+    if (!samePresenceEntrySet(previousAgents, nextAgents) || !samePresenceEntrySet(previousHumans, nextHumans)) {
+      return null;
+    }
+    return {
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt,
+      agents: changedPresenceEntries(previousAgents, nextAgents),
+      humans: changedPresenceEntries(previousHumans, nextHumans),
+    };
+  }
+
+  function presenceHeartbeatHasChanges(heartbeat = {}) {
+    return Boolean((heartbeat.agents || []).length || (heartbeat.humans || []).length);
+  }
+
+  function rememberPresenceHeartbeat(res, entry) {
+    res.magclawPresenceHeartbeatSignature = entry.signature;
+    res.magclawPresenceHeartbeatBody = entry.body;
+  }
+
   function writePresenceHeartbeatPacket(res, entry, { force = false, seedOnly = false } = {}) {
     if (!res || !entry) return false;
     if (seedOnly) {
-      res.magclawPresenceHeartbeatSignature = entry.signature;
+      rememberPresenceHeartbeat(res, entry);
       writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
       return false;
     }
@@ -1371,7 +1427,19 @@ export function createStateCore(deps) {
       writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
       return false;
     }
-    res.magclawPresenceHeartbeatSignature = entry.signature;
+    const pendingHeartbeat = res.magclawPendingSsePackets instanceof Map && res.magclawPendingSsePackets.has('heartbeat');
+    const delta = force || res.magclawSseBackpressure || res.writableNeedDrain || pendingHeartbeat
+      ? null
+      : presenceHeartbeatDelta(res.magclawPresenceHeartbeatBody, entry.body);
+    rememberPresenceHeartbeat(res, entry);
+    if (delta) {
+      if (!presenceHeartbeatHasChanges(delta)) {
+        writeSsePacket(res, entry.keepalivePacket, { coalesceKey: 'heartbeat-keepalive' });
+        return false;
+      }
+      writeSsePacket(res, ssePacket('heartbeat', delta), { coalesceKey: 'heartbeat' });
+      return true;
+    }
     writeSsePacket(res, entry.packet, { coalesceKey: 'heartbeat' });
     return true;
   }

@@ -543,6 +543,8 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
 
     let heartbeats = sseEnvelopes(client, 'heartbeat');
     assert.equal(heartbeats.length, 2);
+    assert.equal(heartbeats.at(-1).agents.length, 0);
+    assert.equal(heartbeats.at(-1).humans.length, 1);
     assert.equal(heartbeats.at(-1).humans[0].status, 'offline');
 
     core.state.agents[0].status = 'working';
@@ -550,6 +552,8 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
 
     heartbeats = sseEnvelopes(client, 'heartbeat');
     assert.equal(heartbeats.length, 3);
+    assert.equal(heartbeats.at(-1).agents.length, 1);
+    assert.equal(heartbeats.at(-1).humans.length, 0);
     assert.equal(heartbeats.at(-1).agents[0].status, 'working');
   } finally {
     await rm(tmp, { recursive: true, force: true });
