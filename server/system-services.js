@@ -16,6 +16,7 @@ const RUNTIME_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/comput
 const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
 const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
+const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
 const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
   '@magclaw/web': 'web',
   '@magclaw/daemon': 'daemon',
@@ -259,38 +260,66 @@ export function createSystemServices(deps) {
     };
     if (!currentHumanId) return hydration;
     const sourceMessages = records(messages);
-    const sourceMessageById = new Map(sourceMessages.map((message) => [message.id, message]).filter(([id]) => id));
-    const unreadCandidates = [];
+    const unreadCandidateHeap = [];
+    let unreadCandidateCount = 0;
+    const addUnreadCandidate = (kind, record) => {
+      if (!record?.id) return;
+      unreadCandidateCount += 1;
+      addBoundedNewestRecord(unreadCandidateHeap, {
+        id: `${kind}:${record.id}`,
+        kind,
+        record,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      }, BOOTSTRAP_UNREAD_CANDIDATE_LIMIT);
+    };
     for (const message of sourceMessages) {
       if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
       if (messageById.has(message.id)) continue;
-      unreadCandidates.push({ time: recordTime(message), message, reply: null, parent: null });
+      addUnreadCandidate('message', message);
     }
     for (const reply of records(replies)) {
       if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
       if (replyById.has(reply.id)) continue;
-      const parent = sourceMessageById.get(reply.parentMessageId);
-      unreadCandidates.push({ time: recordTime(reply), message: null, reply, parent });
+      addUnreadCandidate('reply', reply);
     }
-    unreadCandidates.sort((a, b) => b.time - a.time);
+    const unreadCandidates = unreadCandidateHeap.sort(compareNewestRecords);
+    const parentIds = new Set();
+    for (const candidate of unreadCandidates) {
+      if (candidate.kind !== 'reply') continue;
+      const parentId = String(candidate.record?.parentMessageId || '');
+      if (parentId && !messageById.has(parentId)) parentIds.add(parentId);
+    }
+    const parentById = new Map();
+    if (parentIds.size) {
+      for (const message of sourceMessages) {
+        const id = String(message?.id || '');
+        if (!parentIds.has(id)) continue;
+        parentById.set(id, message);
+        if (parentById.size >= parentIds.size) break;
+      }
+    }
     let omitted = 0;
     for (const candidate of unreadCandidates) {
+      const message = candidate.kind === 'message' ? candidate.record : null;
+      const reply = candidate.kind === 'reply' ? candidate.record : null;
+      const parent = reply ? parentById.get(String(reply.parentMessageId || '')) : null;
       const requiredRecords = (
-        (candidate.message && !messageById.has(candidate.message.id) ? 1 : 0)
-        + (candidate.reply && !replyById.has(candidate.reply.id) ? 1 : 0)
-        + (candidate.parent && !messageById.has(candidate.parent.id) ? 1 : 0)
+        (message && !messageById.has(message.id) ? 1 : 0)
+        + (reply && !replyById.has(reply.id) ? 1 : 0)
+        + (parent && !messageById.has(parent.id) ? 1 : 0)
       );
       if (!requiredRecords) continue;
       if (hydration.included + requiredRecords > BOOTSTRAP_UNREAD_RECORD_LIMIT) {
         omitted += requiredRecords;
         continue;
       }
-      if (candidate.parent) messageById.set(candidate.parent.id, candidate.parent);
-      if (candidate.message) messageById.set(candidate.message.id, candidate.message);
-      if (candidate.reply) replyById.set(candidate.reply.id, candidate.reply);
+      if (parent) messageById.set(parent.id, parent);
+      if (message) messageById.set(message.id, message);
+      if (reply) replyById.set(reply.id, reply);
       hydration.included += requiredRecords;
     }
-    hydration.truncated = omitted > 0;
+    hydration.truncated = omitted > 0 || unreadCandidateCount > unreadCandidates.length;
     return hydration;
   }
 

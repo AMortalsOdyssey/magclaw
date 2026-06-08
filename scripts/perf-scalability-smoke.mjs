@@ -23,6 +23,8 @@ const BUDGETS = Object.freeze({
   bootstrapTasks: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_TASKS || 200),
   bootstrapLargeHistoryMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_MS || 250),
   bootstrapLargeHistoryBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_HISTORY_BYTES || 150_000),
+  bootstrapLargeUnreadMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_MS || 250),
+  bootstrapLargeUnreadBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_LARGE_UNREAD_BYTES || 150_000),
 });
 
 function assertBudget(condition, message) {
@@ -685,6 +687,102 @@ function measureLargeBootstrapHistory() {
   };
 }
 
+function makeLargeUnreadState({ messages = 100_000, replies = 5_000 } = {}) {
+  const state = {
+    version: 1,
+    connection: { workspaceId: 'local' },
+    settings: {},
+    channels: [{
+      id: 'chan_all',
+      workspaceId: 'local',
+      name: 'all',
+      locked: true,
+      defaultChannel: true,
+      memberIds: ['hum_0000', 'agt_0000'],
+      humanIds: ['hum_0000'],
+      agentIds: ['agt_0000'],
+      createdAt: NOW,
+      updatedAt: NOW,
+    }],
+    dms: [{
+      id: 'dm_bulk',
+      workspaceId: 'local',
+      participantIds: ['hum_0000', 'agt_0000'],
+      createdAt: NOW,
+      updatedAt: NOW,
+    }],
+    messages: [],
+    replies: [],
+    tasks: [],
+    runs: [],
+    workItems: [],
+    events: [],
+    routeEvents: [],
+    systemNotifications: [],
+    attachments: [],
+    agents: [{ id: 'agt_0000', workspaceId: 'local', name: 'Agent 0', status: 'idle', createdAt: NOW, updatedAt: NOW }],
+    humans: [{ id: 'hum_0000', workspaceId: 'local', name: 'Human 0', status: 'online', createdAt: NOW, updatedAt: NOW }],
+    computers: [],
+    reminders: [],
+    missions: [],
+    projects: [],
+    channelMemberProposals: [],
+  };
+  for (let index = 0; index < messages; index += 1) {
+    const createdAt = timestamp(index * 1000);
+    state.messages.push({
+      id: `msg_unread_${String(index).padStart(6, '0')}`,
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_bulk',
+      authorType: 'human',
+      authorId: 'hum_0000',
+      body: `parent ${index}`,
+      readBy: ['hum_0000'],
+      replyCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  for (let index = 0; index < replies; index += 1) {
+    const createdAt = timestamp((messages + index) * 1000);
+    state.replies.push({
+      id: `rep_unread_${String(index).padStart(5, '0')}`,
+      workspaceId: 'local',
+      parentMessageId: `msg_unread_${String(index * 20).padStart(6, '0')}`,
+      spaceType: 'dm',
+      spaceId: 'dm_bulk',
+      authorType: 'agent',
+      authorId: 'agt_0000',
+      body: `unread reply ${index}`,
+      readBy: [],
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  return state;
+}
+
+function measureLargeUnreadBootstrap() {
+  const state = makeLargeUnreadState();
+  const services = makeSystemServices(state);
+  const started = performance.now();
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160',
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  return {
+    sourceMessages: state.messages.length,
+    sourceReplies: state.replies.length,
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    messages: snapshot.messages.length,
+    replies: snapshot.replies.length,
+    unreadHydration: snapshot.bootstrap?.unreadHydration || null,
+  };
+}
+
 async function main() {
   const state = makeSyntheticState();
   const services = makeSystemServices(state);
@@ -745,6 +843,7 @@ async function main() {
   const stateChangeFanout = await measureStateChangeFanout(state);
   const bootstrapProjection = measureBootstrapProjectionWindow();
   const bootstrapLargeHistory = measureLargeBootstrapHistory();
+  const bootstrapLargeUnread = measureLargeUnreadBootstrap();
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
@@ -791,8 +890,12 @@ async function main() {
   assertBudget(bootstrapLargeHistory.hasMoreMessages === true, 'large-history bootstrap did not expose history pagination');
   assertBudget(bootstrapLargeHistory.ms <= BUDGETS.bootstrapLargeHistoryMs, `large-history bootstrap ${bootstrapLargeHistory.ms}ms exceeds ${BUDGETS.bootstrapLargeHistoryMs}ms`);
   assertBudget(bootstrapLargeHistory.bytes <= BUDGETS.bootstrapLargeHistoryBytes, `large-history bootstrap ${bootstrapLargeHistory.bytes} bytes exceeds ${BUDGETS.bootstrapLargeHistoryBytes}`);
+  assertBudget(bootstrapLargeUnread.unreadHydration?.included === BUDGETS.unreadHydrationRecords, `large-unread bootstrap hydrated ${bootstrapLargeUnread.unreadHydration?.included || 0} unread records`);
+  assertBudget(bootstrapLargeUnread.unreadHydration?.truncated === true, 'large-unread bootstrap did not mark unread hydration as truncated');
+  assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
+  assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
 }
 
 main().catch((error) => {

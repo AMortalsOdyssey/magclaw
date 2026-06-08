@@ -181,6 +181,71 @@ test('bootstrap state bounds off-space unread hydration to newest records', () =
   assert.ok(Buffer.byteLength(JSON.stringify(snapshot), 'utf8') < 500_000);
 });
 
+test('bootstrap state hydrates newest unread replies with parent context', () => {
+  const services = makeServices((state) => {
+    state.dms.push({
+      id: 'dm_reply_bulk',
+      workspaceId: 'local',
+      participantIds: ['hum_1', 'agt_reply_bulk'],
+      createdAt: '2026-05-18T00:10:00.000Z',
+      updatedAt: '2026-05-18T00:10:00.000Z',
+    });
+    const start = Date.parse('2026-05-18T00:10:00.000Z');
+    for (let index = 0; index < 90; index += 1) {
+      const parentTime = new Date(start + index * 1000).toISOString();
+      const replyTime = new Date(start + (1000 + index) * 1000).toISOString();
+      state.messages.push({
+        id: `msg_reply_parent_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_reply_bulk',
+        authorType: 'human',
+        authorId: 'hum_1',
+        body: `parent ${index}`,
+        readBy: ['hum_1'],
+        replyCount: 0,
+        createdAt: parentTime,
+        updatedAt: parentTime,
+      });
+      state.replies.push({
+        id: `rep_reply_bulk_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        parentMessageId: `msg_reply_parent_${String(index).padStart(3, '0')}`,
+        spaceType: 'dm',
+        spaceId: 'dm_reply_bulk',
+        authorType: 'agent',
+        authorId: 'agt_reply_bulk',
+        body: `reply ${index}`,
+        readBy: [],
+        createdAt: replyTime,
+        updatedAt: replyTime,
+      });
+    }
+  });
+  const req = {
+    url: '/api/events?spaceType=dm&spaceId=dm_1&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  };
+
+  const snapshot = services.publicBootstrapState(req);
+  const messageIds = snapshot.messages.map((message) => message.id);
+  const replyIds = snapshot.replies.map((reply) => reply.id);
+
+  assert.equal(messageIds.filter((id) => id.startsWith('msg_reply_parent_')).length, 40);
+  assert.equal(replyIds.filter((id) => id.startsWith('rep_reply_bulk_')).length, 40);
+  assert.ok(messageIds.includes('msg_reply_parent_089'));
+  assert.ok(replyIds.includes('rep_reply_bulk_089'));
+  assert.ok(messageIds.includes('msg_reply_parent_050'));
+  assert.ok(replyIds.includes('rep_reply_bulk_050'));
+  assert.equal(messageIds.includes('msg_reply_parent_049'), false);
+  assert.equal(replyIds.includes('rep_reply_bulk_049'), false);
+  assert.deepEqual(snapshot.bootstrap.unreadHydration, {
+    limit: 80,
+    included: 80,
+    truncated: true,
+  });
+});
+
 test('bootstrap state limits selected thread replies to the loaded page', () => {
   const services = makeServices((state) => {
     state.messages[0].replyCount = 101;

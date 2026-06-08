@@ -54,6 +54,9 @@ membership fanout visible in the budget. It currently enforces:
 - Bootstrap server-side selection avoids full history sorts on large workspaces:
   a 100000-message / 5000-reply history fixture must still return the first
   window in at most 250 ms and 150 KB while exposing history pagination.
+- Bootstrap unread hydration is bounded internally as well as externally: a
+  100000-message / 5000-reply unread fixture must still hydrate only the newest
+  80 unread records with parent context in at most 250 ms and 150 KB.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
