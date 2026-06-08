@@ -240,6 +240,8 @@ function normalizeConversationStateSnapshot(stateSnapshot = {}) {
     messages: [...stateRecordArray(stateSnapshot?.messages)],
     replies: [...stateRecordArray(stateSnapshot?.replies)],
     tasks: [...stateRecordArray(stateSnapshot?.tasks)],
+    missions: [...stateRecordArray(stateSnapshot?.missions)],
+    runs: [...stateRecordArray(stateSnapshot?.runs)],
   };
 }
 
@@ -328,6 +330,22 @@ function applySubmittedConversationResult(result = {}) {
     }
     changed = true;
   }
+  const missionRecords = [
+    result.mission,
+    ...(Array.isArray(result.missions) ? result.missions : []),
+  ].filter(Boolean);
+  for (const mission of missionRecords) {
+    nextState.missions = upsertStateRecord(nextState.missions, mission);
+    changed = true;
+  }
+  const runRecords = [
+    result.run,
+    ...(Array.isArray(result.runs) ? result.runs : []),
+  ].filter(Boolean);
+  for (const run of runRecords) {
+    nextState.runs = upsertStateRecord(nextState.runs, run);
+    changed = true;
+  }
   if (result.message) {
     nextState.messages = upsertConversationRecord(nextState.messages, result.message);
     changed = true;
@@ -336,11 +354,18 @@ function applySubmittedConversationResult(result = {}) {
     nextState.messages = upsertConversationRecord(nextState.messages, result.createdTaskMessage);
     changed = true;
   }
-  if (result.reply) {
+  const replyRecords = [
+    result.reply,
+    ...(Array.isArray(result.replies) ? result.replies : []),
+  ].filter(Boolean);
+  const seenReplyIds = new Set();
+  for (const reply of sortConversationRecords(replyRecords)) {
+    if (reply?.id && seenReplyIds.has(reply.id)) continue;
+    if (reply?.id) seenReplyIds.add(reply.id);
     const replies = stateRecordArray(nextState.replies);
-    const replyWasPresent = replies.some((item) => item?.id === result.reply.id);
-    nextState.replies = upsertConversationRecord(replies, result.reply);
-    nextState.messages = mergeSubmittedReplyParent(nextState.messages, result.reply, replyWasPresent);
+    const replyWasPresent = replies.some((item) => item?.id === reply.id);
+    nextState.replies = upsertConversationRecord(replies, reply);
+    nextState.messages = mergeSubmittedReplyParent(nextState.messages, reply, replyWasPresent);
     changed = true;
   }
   if (!changed) return false;

@@ -45,10 +45,6 @@ export async function handleTaskApi(req, res, url, deps) {
   const allowedTaskStatuses = new Set(TASK_STATUS_VALUES);
   const { startTaskStartupCollaboration } = createTaskStartupCollaboration(deps);
 
-  function broadcastTaskStatusState() {
-    broadcastState();
-  }
-
   function taskThreadMessage(task = null) {
     if (!task) return null;
     const threadId = task.threadMessageId || task.messageId || task.sourceMessageId || '';
@@ -70,13 +66,22 @@ export async function handleTaskApi(req, res, url, deps) {
       .sort(compareTaskRecords)[0] || null;
   }
 
-  function captureTaskThreadReply(task = null, operation = () => {}) {
+  function captureTaskThreadReplies(task = null, operation = () => {}) {
     const beforeReplyIds = new Set((state.replies || []).map((reply) => reply?.id).filter(Boolean));
     const result = operation();
     const parentMessageId = taskThreadMessageId(task);
-    const reply = (state.replies || [])
+    const replies = (state.replies || [])
       .filter((item) => item?.parentMessageId === parentMessageId && !beforeReplyIds.has(item.id))
-      .sort(compareTaskRecords)[0] || null;
+      .sort(compareTaskRecords);
+    return {
+      result,
+      reply: replies[0] || null,
+      replies,
+    };
+  }
+
+  function captureTaskThreadReply(task = null, operation = () => {}) {
+    const { result, reply } = captureTaskThreadReplies(task, operation);
     return {
       result,
       reply,
@@ -92,28 +97,42 @@ export async function handleTaskApi(req, res, url, deps) {
     return { workspaceId, spaceType, spaceId, threadMessageId };
   }
 
-  function recordTaskRealtimeChange(task = null, { reply = null } = {}) {
+  function recordTaskRealtimeChange(task = null, {
+    reply = null,
+    replies = null,
+    mission = null,
+    run = null,
+    workspaceWide = false,
+  } = {}) {
     if (typeof recordRealtimeEvent !== 'function' || !task?.id) return null;
-    const scope = taskRealtimeScope(task, reply);
+    const replyRecords = (Array.isArray(replies) ? replies : [reply]).filter(Boolean);
+    const primaryReply = reply || replyRecords[0] || null;
+    const scope = taskRealtimeScope(task, primaryReply);
+    const workspaceId = workspaceIdForRecord(primaryReply || task || mission || run, scope.workspaceId || 'local') || 'local';
+    const recordId = primaryReply?.id || run?.id || mission?.id || task.id;
+    const recordKind = primaryReply ? 'reply' : run ? 'run' : mission ? 'mission' : 'task';
     return recordRealtimeEvent('conversation_record_changed', {
-      workspaceId: scope.workspaceId,
+      workspaceId,
       spaceType: scope.spaceType,
       spaceId: scope.spaceId,
-      recordId: reply?.id || task.id,
-      parentMessageId: reply?.parentMessageId || scope.threadMessageId || '',
-      recordKind: reply ? 'reply' : 'task',
+      recordId,
+      parentMessageId: primaryReply?.parentMessageId || scope.threadMessageId || '',
+      recordKind,
       task,
-      ...(reply ? { reply } : {}),
+      ...(primaryReply ? { reply: primaryReply } : {}),
+      ...(replyRecords.length ? { replies: replyRecords } : {}),
+      ...(mission ? { mission } : {}),
+      ...(run ? { run } : {}),
     }, {
-      workspaceId: scope.workspaceId,
-      scopeType: scope.spaceType || 'workspace',
-      scopeId: scope.spaceId || scope.workspaceId,
+      workspaceId,
+      scopeType: workspaceWide ? 'workspace' : scope.spaceType || 'workspace',
+      scopeId: workspaceWide ? workspaceId : scope.spaceId || workspaceId,
       threadMessageId: scope.threadMessageId || null,
     });
   }
 
-  function broadcastTaskRealtimeState(task = null, { reply = null } = {}) {
-    recordTaskRealtimeChange(task, { reply });
+  function broadcastTaskRealtimeState(task = null, options = {}) {
+    recordTaskRealtimeChange(task, options);
     broadcastState({ realtimeOnly: true });
   }
 
@@ -463,59 +482,63 @@ export async function handleTaskApi(req, res, url, deps) {
       sendError(res, 409, `Task is already claimed by ${task.claimedBy}.`);
       return true;
     }
-    if (!task.claimedBy) {
-      // A Codex run owns the task while it executes, so unclaimed work is
-      // auto-claimed by the Codex agent before the background process starts.
-      task.claimedBy = actorId;
-      task.assigneeId = actorId;
-      task.assigneeIds = normalizeIds([...(task.assigneeIds || []), actorId]);
-      task.claimedAt = now();
-      task.status = 'in_progress';
-      addTaskHistory(task, 'claimed', 'Auto-claimed before Codex run.', actorId);
-      addSystemReply(ensureTaskThread(task).id, 'Task auto-claimed by Codex before run.');
-      addTaskTimelineMessage(task, `📌 ${displayActor(actorId)} claimed ${taskLabel(task)}`, 'task_claimed');
-    }
+    let mission = null;
+    let run = null;
+    const { replies } = captureTaskThreadReplies(task, () => {
+      if (!task.claimedBy) {
+        // A Codex run owns the task while it executes, so unclaimed work is
+        // auto-claimed by the Codex agent before the background process starts.
+        task.claimedBy = actorId;
+        task.assigneeId = actorId;
+        task.assigneeIds = normalizeIds([...(task.assigneeIds || []), actorId]);
+        task.claimedAt = now();
+        task.status = 'in_progress';
+        addTaskHistory(task, 'claimed', 'Auto-claimed before Codex run.', actorId);
+        addSystemReply(ensureTaskThread(task).id, 'Task auto-claimed by Codex before run.');
+        addTaskTimelineMessage(task, `📌 ${displayActor(actorId)} claimed ${taskLabel(task)}`, 'task_claimed');
+      }
 
-    const mission = {
-      id: makeId('mis'),
-      title: task.title,
-      goal: `${task.title}\n\n${task.body || ''}\n\nTask id: ${task.id}`,
-      status: 'ready',
-      priority: 'normal',
-      workspace: path.resolve(state.settings.defaultWorkspace || root),
-      scopeAllow: ['**/*'],
-      scopeDeny: ['.env*', 'node_modules/**', '.git/**'],
-      gates: ['npm run check'],
-      evidenceRequired: ['diff summary', 'test output', 'risk notes'],
-      humanCheckpoints: ['before dangerous command', 'before deploy'],
-      attachmentIds: Array.isArray(task.attachmentIds) ? task.attachmentIds : [],
-      localReferences: Array.isArray(task.localReferences) ? task.localReferences : [],
-      taskId: task.id,
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    state.missions.unshift(mission);
-    const run = {
-      id: makeId('run'),
-      missionId: mission.id,
-      taskId: task.id,
-      runtime: 'codex',
-      status: 'queued',
-      createdAt: now(),
-      startedAt: null,
-      completedAt: null,
-      exitCode: null,
-      finalMessage: '',
-    };
-    state.runs.unshift(run);
-    task.runIds = Array.isArray(task.runIds) ? task.runIds : [];
-    task.runIds.unshift(run.id);
-    addTaskHistory(task, 'run_started', `Codex run started: ${run.id}`, actorId, { runId: run.id, missionId: mission.id });
-    addSystemReply(ensureTaskThread(task).id, `Codex run started: ${run.id}.`);
+      mission = {
+        id: makeId('mis'),
+        title: task.title,
+        goal: `${task.title}\n\n${task.body || ''}\n\nTask id: ${task.id}`,
+        status: 'ready',
+        priority: 'normal',
+        workspace: path.resolve(state.settings.defaultWorkspace || root),
+        scopeAllow: ['**/*'],
+        scopeDeny: ['.env*', 'node_modules/**', '.git/**'],
+        gates: ['npm run check'],
+        evidenceRequired: ['diff summary', 'test output', 'risk notes'],
+        humanCheckpoints: ['before dangerous command', 'before deploy'],
+        attachmentIds: Array.isArray(task.attachmentIds) ? task.attachmentIds : [],
+        localReferences: Array.isArray(task.localReferences) ? task.localReferences : [],
+        taskId: task.id,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      state.missions.unshift(mission);
+      run = {
+        id: makeId('run'),
+        missionId: mission.id,
+        taskId: task.id,
+        runtime: 'codex',
+        status: 'queued',
+        createdAt: now(),
+        startedAt: null,
+        completedAt: null,
+        exitCode: null,
+        finalMessage: '',
+      };
+      state.runs.unshift(run);
+      task.runIds = Array.isArray(task.runIds) ? task.runIds : [];
+      task.runIds.unshift(run.id);
+      addTaskHistory(task, 'run_started', `Codex run started: ${run.id}`, actorId, { runId: run.id, missionId: mission.id });
+      addSystemReply(ensureTaskThread(task).id, `Codex run started: ${run.id}.`);
+    });
     await persistTaskState(task, 'task_run_started');
-    broadcastTaskStatusState();
+    broadcastTaskRealtimeState(task, { replies, mission, run, workspaceWide: true });
     startCodexRun(mission, run);
-    sendJson(res, 201, { task, mission, run });
+    sendJson(res, 201, { task, mission, run, ...(replies.length ? { reply: replies[0], replies } : {}) });
     return true;
   }
 

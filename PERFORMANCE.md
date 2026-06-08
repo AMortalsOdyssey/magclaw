@@ -147,9 +147,10 @@ membership fanout visible in the budget. It currently enforces:
   heartbeat or `state-resync-required` packets, and does not leak the event to
   unrelated channel subscribers.
 - Common task status and lifecycle actions (status menu moves, claim, unclaim,
-  review, approve, close, and reopen) also return local task/thread patches and
-  broadcast scoped `conversation_record_changed` events instead of forcing every
-  tab through a full state refresh.
+  review, approve, close, reopen, and Codex mission start) also return local
+  task/thread/mission/run patches and broadcast lightweight
+  `conversation_record_changed` events instead of forcing every tab through a
+  full state refresh.
 - Browser human-presence writes are coordinated by a same-origin tab lease so
   one visible browser tab per signed-in user sends `/api/cloud/auth/heartbeat`
   while peer tabs receive the local presence result without issuing duplicate

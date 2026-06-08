@@ -2092,8 +2092,11 @@ document.addEventListener('click', async (event) => {
       toast('Task reopened');
     }
     if (action === 'run-task-codex') {
-      await api(`/api/tasks/${target.dataset.id}/run-codex`, { method: 'POST', body: '{}' });
+      const result = await api(`/api/tasks/${target.dataset.id}/run-codex`, { method: 'POST', body: '{}' });
       activeView = 'missions';
+      if (applySubmittedConversationResult(result)) skipFinalRefresh = true;
+      else render();
+      syncBrowserRouteForActiveView();
       toast('Codex mission started');
     }
     if (action === 'cloud-local' || action === 'cloud-disconnect') {

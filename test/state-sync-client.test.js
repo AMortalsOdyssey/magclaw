@@ -370,3 +370,66 @@ test('submitted task merge can include a task thread reply patch', async () => {
   assert.equal(context.appState.messages[0].replyCount, 1);
   assert.equal(context.appState.messages[0].updatedAt, '2026-05-22T09:04:00.000Z');
 });
+
+test('submitted task run merge includes missions, runs, and multiple thread replies', async () => {
+  const { context } = await createHarness({
+    messages: [{
+      id: 'msg_task',
+      taskId: 'task_1',
+      replyCount: 0,
+      createdAt: '2026-05-22T09:00:00.000Z',
+      updatedAt: '2026-05-22T09:00:00.000Z',
+    }],
+    replies: [],
+    tasks: [{ id: 'task_1', status: 'todo', messageId: 'msg_task' }],
+    missions: [],
+    runs: [],
+  });
+
+  assert.equal(context.applySubmittedConversationResult({
+    task: {
+      id: 'task_1',
+      status: 'in_progress',
+      messageId: 'msg_task',
+      runIds: ['run_1'],
+    },
+    mission: {
+      id: 'mis_1',
+      taskId: 'task_1',
+      title: 'Existing task',
+      status: 'ready',
+      createdAt: '2026-05-22T09:05:00.000Z',
+    },
+    run: {
+      id: 'run_1',
+      taskId: 'task_1',
+      missionId: 'mis_1',
+      status: 'queued',
+      createdAt: '2026-05-22T09:05:00.000Z',
+    },
+    reply: {
+      id: 'rep_run_started',
+      parentMessageId: 'msg_task',
+      body: 'Codex run started.',
+      createdAt: '2026-05-22T09:05:00.000Z',
+    },
+    replies: [{
+      id: 'rep_auto_claimed',
+      parentMessageId: 'msg_task',
+      body: 'Task auto-claimed.',
+      createdAt: '2026-05-22T09:04:00.000Z',
+    }, {
+      id: 'rep_run_started',
+      parentMessageId: 'msg_task',
+      body: 'Codex run started.',
+      createdAt: '2026-05-22T09:05:00.000Z',
+    }],
+  }), true);
+
+  assert.equal(context.appState.tasks[0].status, 'in_progress');
+  assert.equal(context.appState.missions[0].id, 'mis_1');
+  assert.equal(context.appState.runs[0].id, 'run_1');
+  assert.deepEqual([...context.appState.replies.map((reply) => reply.id)], ['rep_auto_claimed', 'rep_run_started']);
+  assert.equal(context.appState.messages[0].replyCount, 2);
+  assert.equal(context.appState.messages[0].updatedAt, '2026-05-22T09:05:00.000Z');
+});

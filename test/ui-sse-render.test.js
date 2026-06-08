@@ -348,11 +348,27 @@ test('conversation realtime events merge records without a bootstrap resync fetc
         spaceId: 'chan_all',
         body: 'hello from another tab',
       },
+      replies: [{
+        id: 'rep_realtime',
+        parentMessageId: 'msg_realtime',
+        body: 'reply patch',
+      }],
+      mission: {
+        id: 'mis_realtime',
+        taskId: 'task_realtime',
+      },
+      run: {
+        id: 'run_realtime',
+        missionId: 'mis_realtime',
+      },
     },
   });
 
   assert.equal(applied.length, 1);
   assert.equal(applied[0].message.id, 'msg_realtime');
+  assert.equal(applied[0].replies[0].id, 'rep_realtime');
+  assert.equal(applied[0].mission.id, 'mis_realtime');
+  assert.equal(applied[0].run.id, 'run_realtime');
   assert.equal(refreshTargets.length, 0);
 });
 
@@ -1256,6 +1272,10 @@ test('message and task clicks merge returned conversation updates before falling
     clickSource.indexOf("if (action === 'task-claim')"),
     clickSource.indexOf("if (action === 'run-task-codex')"),
   );
+  const runTaskSource = clickSource.slice(
+    clickSource.indexOf("if (action === 'run-task-codex')"),
+    clickSource.indexOf("if (action === 'cloud-local'"),
+  );
   const finallySource = clickSource.slice(
     clickSource.lastIndexOf('} finally {'),
     clickSource.lastIndexOf('});'),
@@ -1284,6 +1304,10 @@ test('message and task clicks merge returned conversation updates before falling
     assert.match(actionSource, /const result = await api/);
     assert.match(actionSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
   }
+  assert.match(runTaskSource, /const result = await api\(`\/api\/tasks\/\$\{target\.dataset\.id\}\/run-codex`/);
+  assert.match(runTaskSource, /activeView = 'missions'/);
+  assert.match(runTaskSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
+  assert.match(runTaskSource, /syncBrowserRouteForActiveView\(\)/);
   assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(finallySource, /if \(action === 'open-thread'\) scrollToMessage\(threadMessageId\)/);
 });

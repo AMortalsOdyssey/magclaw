@@ -2266,7 +2266,10 @@ function applyConversationRecordChangedEvent(payload = {}) {
   return applySubmittedConversationResult({
     message: payload.message || null,
     reply: payload.reply || null,
+    replies: payload.replies || null,
     task: payload.task || null,
+    mission: payload.mission || null,
+    run: payload.run || null,
     createdTask: payload.createdTask || null,
     createdTaskMessage: payload.createdTaskMessage || null,
     endedTask: payload.endedTask || null,

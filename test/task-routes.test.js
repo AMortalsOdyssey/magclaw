@@ -666,9 +666,18 @@ test('task route group supports explicit close endpoint', async () => {
 
 test('task route group auto-claims work before starting a Codex run', async () => {
   let started = null;
+  const broadcastOptions = [];
+  const realtimeEvents = [];
   const deps = routeDeps({
     startCodexRun: (mission, run) => {
       started = { mission, run };
+    },
+    broadcastState: (options = {}) => {
+      broadcastOptions.push(options);
+    },
+    recordRealtimeEvent: (...args) => {
+      realtimeEvents.push(args);
+      return { id: `rte_${realtimeEvents.length}` };
     },
   });
   const res = makeResponse();
@@ -684,6 +693,22 @@ test('task route group auto-claims work before starting a Codex run', async () =
   assert.equal(deps.state.missions[0].taskId, 'task_1');
   assert.equal(deps.state.runs[0].taskId, 'task_1');
   assert.equal(started.run.id, 'run_new');
+  assert.equal(res.data.mission.id, 'mis_new');
+  assert.equal(res.data.run.id, 'run_new');
+  assert.equal(res.data.replies.length, 2);
+  assert.ok(res.data.replies.every((reply) => reply.parentMessageId === 'msg_1'));
+  assert.deepEqual(broadcastOptions, [{ realtimeOnly: true }]);
+  assert.equal(realtimeEvents[0]?.[0], 'conversation_record_changed');
+  assert.equal(realtimeEvents[0]?.[1].task.id, 'task_1');
+  assert.equal(realtimeEvents[0]?.[1].mission.id, 'mis_new');
+  assert.equal(realtimeEvents[0]?.[1].run.id, 'run_new');
+  assert.equal(realtimeEvents[0]?.[1].replies.length, 2);
+  assert.deepEqual(realtimeEvents[0]?.[2], {
+    workspaceId: 'local',
+    scopeType: 'workspace',
+    scopeId: 'local',
+    threadMessageId: 'msg_1',
+  });
 });
 
 test('task route group deletes task links from messages', async () => {

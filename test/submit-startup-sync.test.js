@@ -30,9 +30,10 @@ test('submitted conversation writes merge the API response before the final refr
   );
 
   assert.match(submitSource, /nextState\.messages = upsertConversationRecord\(nextState\.messages, result\.message\)/);
+  assert.match(submitSource, /const replyRecords = \[[\s\S]*result\.reply,[\s\S]*result\.replies/);
   assert.match(submitSource, /const replies = stateRecordArray\(nextState\.replies\)/);
-  assert.match(submitSource, /nextState\.replies = upsertConversationRecord\(replies, result\.reply\)/);
-  assert.match(submitSource, /nextState\.messages = mergeSubmittedReplyParent\(nextState\.messages, result\.reply, replyWasPresent\)/);
+  assert.match(submitSource, /nextState\.replies = upsertConversationRecord\(replies, reply\)/);
+  assert.match(submitSource, /nextState\.messages = mergeSubmittedReplyParent\(nextState\.messages, reply, replyWasPresent\)/);
   assert.match(submitSource, /applyStateUpdate\(nextState\)/);
   assert.match(messageFormSource, /result = await api\(`\/api\/spaces\/\$\{selectedSpaceType\}\/\$\{selectedSpaceId\}\/messages`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticMessage\.id \}\);[\s\S]*requestPaneBottomScroll\('main'\)/);
   assert.match(replyFormSource, /result = await api\(`\/api\/messages\/\$\{threadMessageId\}\/replies`[\s\S]*applySubmittedConversationResult\(result, \{ removeOptimisticId: optimisticReply\.id \}\);[\s\S]*requestPaneBottomScroll\('thread'\)/);
