@@ -73,6 +73,14 @@ function sseEnvelopes(client, eventName) {
   });
 }
 
+function presenceId(entry) {
+  return Array.isArray(entry) ? entry[0] : entry?.id;
+}
+
+function presenceStatus(entry) {
+  return Array.isArray(entry) ? entry[1] : entry?.status;
+}
+
 test('state core can skip local SQLite and JSON persistence for PostgreSQL-backed cloud mode', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-'));
   const core = makeStateCore(tmp, {
@@ -497,9 +505,10 @@ test('state core filters presence heartbeats to the request workspace', async ()
 
     const heartbeat = core.presenceHeartbeat({ magclawPresenceWorkspaceId: 'wsp_a' });
 
-    assert.deepEqual(heartbeat.agents.map((agent) => agent.id), ['agt_a', 'agt_legacy']);
-    assert.deepEqual(heartbeat.humans.map((human) => human.id), ['hum_a', 'hum_legacy']);
-    assert.deepEqual(heartbeat.agents[0], { id: 'agt_a', status: 'idle' });
+    assert.equal(heartbeat.presenceFormat, 'tuple-v1');
+    assert.deepEqual(heartbeat.agents.map(presenceId), ['agt_a', 'agt_legacy']);
+    assert.deepEqual(heartbeat.humans.map(presenceId), ['hum_a', 'hum_legacy']);
+    assert.deepEqual(heartbeat.agents[0], ['agt_a', 'idle']);
     assert.equal(heartbeat.agents[0].name, undefined);
     assert.equal(heartbeat.agents[0].activeWorkItemIds, undefined);
     assert.equal(heartbeat.humans[0].name, undefined);
@@ -554,7 +563,7 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
     assert.equal(heartbeats.length, 2);
     assert.equal(heartbeats.at(-1).agents.length, 0);
     assert.equal(heartbeats.at(-1).humans.length, 1);
-    assert.equal(heartbeats.at(-1).humans[0].status, 'offline');
+    assert.equal(presenceStatus(heartbeats.at(-1).humans[0]), 'offline');
 
     core.state.agents[0].status = 'working';
     core.broadcastHeartbeat();
@@ -563,7 +572,7 @@ test('state core skips unchanged presence heartbeat payloads after initial fanou
     assert.equal(heartbeats.length, 3);
     assert.equal(heartbeats.at(-1).agents.length, 1);
     assert.equal(heartbeats.at(-1).humans.length, 0);
-    assert.equal(heartbeats.at(-1).agents[0].status, 'working');
+    assert.equal(presenceStatus(heartbeats.at(-1).agents[0]), 'working');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

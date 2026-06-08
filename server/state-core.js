@@ -1394,31 +1394,46 @@ export function createStateCore(deps) {
       const seenAt = Date.parse(human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt || human.createdAt || '');
       return seenAt && seenAt >= humanCutoff ? 'online' : 'offline';
     };
-    const compact = (entry) => Object.fromEntries(Object.entries(entry).filter(([_key, value]) => {
-      if (value === undefined || value === null || value === '') return false;
-      if (Array.isArray(value) && value.length === 0) return false;
-      if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) return false;
-      return true;
-    }));
+    const compactTuple = (values = []) => {
+      let lastIndex = values.length - 1;
+      while (lastIndex > 1) {
+        const value = values[lastIndex];
+        if (value === undefined || value === null || value === '') {
+          lastIndex -= 1;
+          continue;
+        }
+        if (Array.isArray(value) && value.length === 0) {
+          lastIndex -= 1;
+          continue;
+        }
+        if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+          lastIndex -= 1;
+          continue;
+        }
+        break;
+      }
+      return values.slice(0, lastIndex + 1);
+    };
     return {
+      presenceFormat: 'tuple-v1',
       createdAt: now(),
       updatedAt: state?.updatedAt || null,
-      agents: (state?.agents || []).filter(workspaceMatches).map((agent) => compact({
-        id: agent.id,
-        status: agent.status || 'offline',
-        runtimeLastStartedAt: agent.runtimeLastStartedAt || null,
-        runtimeLastTurnAt: agent.runtimeLastTurnAt || null,
-        runtimeWarmAt: agent.runtimeWarmAt || null,
-        runtimeActivity: agent.runtimeActivity || null,
-        activitySeq: Number(agent.activitySeq || 0) || null,
-        activityAt: agent.activityAt || null,
-      })),
-      humans: (state?.humans || []).filter(workspaceMatches).map((human) => compact({
-        id: human.id,
-        status: humanPresence(human),
-        lastSeenAt: human.lastSeenAt || null,
-        presenceUpdatedAt: human.presenceUpdatedAt || null,
-      })),
+      agents: (state?.agents || []).filter(workspaceMatches).map((agent) => compactTuple([
+        agent.id,
+        agent.status || 'offline',
+        agent.runtimeLastStartedAt || null,
+        agent.runtimeLastTurnAt || null,
+        agent.runtimeWarmAt || null,
+        agent.runtimeActivity || null,
+        Number(agent.activitySeq || 0) || null,
+        agent.activityAt || null,
+      ])),
+      humans: (state?.humans || []).filter(workspaceMatches).map((human) => compactTuple([
+        human.id,
+        humanPresence(human),
+        human.lastSeenAt || null,
+        human.presenceUpdatedAt || null,
+      ])),
     };
   }
 
@@ -1442,21 +1457,26 @@ export function createStateCore(deps) {
         return String(value);
       }
     };
+    const presenceValue = (entry, key, index, fallback = '') => (
+      Array.isArray(entry)
+        ? (entry[index] ?? fallback)
+        : (entry?.[key] ?? fallback)
+    );
     const agentSignature = (agent) => [
-      agent?.id || '',
-      agent?.status || 'offline',
-      agent?.runtimeLastStartedAt || '',
-      agent?.runtimeLastTurnAt || '',
-      agent?.runtimeWarmAt || '',
-      signatureValue(agent?.runtimeActivity),
-      agent?.activitySeq || '',
-      agent?.activityAt || '',
+      presenceValue(agent, 'id', 0, ''),
+      presenceValue(agent, 'status', 1, 'offline'),
+      presenceValue(agent, 'runtimeLastStartedAt', 2, ''),
+      presenceValue(agent, 'runtimeLastTurnAt', 3, ''),
+      presenceValue(agent, 'runtimeWarmAt', 4, ''),
+      signatureValue(presenceValue(agent, 'runtimeActivity', 5, null)),
+      presenceValue(agent, 'activitySeq', 6, ''),
+      presenceValue(agent, 'activityAt', 7, ''),
     ].join('\u001f');
     const humanSignature = (human) => [
-      human?.id || '',
+      presenceValue(human, 'id', 0, ''),
       // Browser pings refresh lastSeenAt frequently; only visible status changes
       // should fan out a full heartbeat payload to every SSE client.
-      human?.status || 'offline',
+      presenceValue(human, 'status', 1, 'offline'),
     ].join('\u001f');
     return [
       'agents',
@@ -1469,7 +1489,7 @@ export function createStateCore(deps) {
   function presenceEntryMap(entries = []) {
     const map = new Map();
     for (const entry of entries || []) {
-      const id = String(entry?.id || '').trim();
+      const id = String(Array.isArray(entry) ? entry[0] : entry?.id || '').trim();
       if (!id) return null;
       map.set(id, entry);
     }
@@ -1490,7 +1510,7 @@ export function createStateCore(deps) {
     const previousMap = presenceEntryMap(previous);
     if (!previousMap) return next || [];
     return (next || []).filter((entry) => {
-      const id = String(entry?.id || '').trim();
+      const id = String(Array.isArray(entry) ? entry[0] : entry?.id || '').trim();
       const existing = previousMap.get(id);
       return JSON.stringify(existing || {}) !== JSON.stringify(entry || {});
     });
@@ -1506,6 +1526,7 @@ export function createStateCore(deps) {
       return null;
     }
     return {
+      presenceFormat: next.presenceFormat || 'tuple-v1',
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
       agents: changedPresenceEntries(previousAgents, nextAgents),

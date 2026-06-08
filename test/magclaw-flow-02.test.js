@@ -15,6 +15,14 @@ import {
   waitFor,
 } from './helpers/magclaw-flow.js';
 
+function presenceId(entry) {
+  return Array.isArray(entry) ? entry[0] : entry?.id;
+}
+
+function presenceStatus(entry) {
+  return Array.isArray(entry) ? entry[1] : entry?.status;
+}
+
 test('memory writeback hooks update MEMORY and notes for task progress and user preferences', async () => {
   const server = await startIsolatedServer();
   try {
@@ -652,7 +660,7 @@ test('SSE publishes heartbeat presence snapshots for live agent status sync', as
   try {
     const heartbeat = await readSseEvent(server.baseUrl, 'heartbeat');
     assert.match(heartbeat.createdAt, /^\d{4}-\d{2}-\d{2}T/);
-    assert.ok(heartbeat.agents.some((agent) => agent.id === 'agt_codex' && agent.status));
+    assert.ok(heartbeat.agents.some((agent) => presenceId(agent) === 'agt_codex' && presenceStatus(agent)));
   } finally {
     await server.stop();
   }

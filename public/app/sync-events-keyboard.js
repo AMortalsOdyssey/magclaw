@@ -1720,11 +1720,45 @@ function applyRealtimeJournalEvent(envelope) {
   }
 }
 
+function normalizeAgentPresenceEntry(entry = null) {
+  if (Array.isArray(entry)) {
+    return {
+      id: entry[0] || '',
+      status: entry[1] || 'offline',
+      runtimeLastStartedAt: entry[2] || null,
+      runtimeLastTurnAt: entry[3] || null,
+      runtimeWarmAt: entry[4] || null,
+      runtimeActivity: entry[5] || null,
+      activitySeq: entry[6] || 0,
+      activityAt: entry[7] || null,
+    };
+  }
+  return entry && typeof entry === 'object' ? entry : {};
+}
+
+function normalizeHumanPresenceEntry(entry = null) {
+  if (Array.isArray(entry)) {
+    return {
+      id: entry[0] || '',
+      status: entry[1] || 'offline',
+      lastSeenAt: entry[2] || null,
+      presenceUpdatedAt: entry[3] || null,
+    };
+  }
+  return entry && typeof entry === 'object' ? entry : {};
+}
+
 function applyPresenceHeartbeat(heartbeat) {
   const stateSnapshot = pendingStateUpdateBase();
   if (!stateSnapshot || !Array.isArray(heartbeat?.agents)) return;
-  const incomingById = new Map(heartbeat.agents.map((agent) => [agent.id, agent]));
-  const incomingHumansById = new Map((heartbeat.humans || []).map((human) => [human.id, human]));
+  const incomingById = new Map(heartbeat.agents
+    .map(normalizeAgentPresenceEntry)
+    .filter((agent) => agent.id)
+    .map((agent) => [agent.id, agent]));
+  const incomingHumansById = new Map((heartbeat.humans || [])
+    .map(normalizeHumanPresenceEntry)
+    .filter((human) => human.id)
+    .map((human) => [human.id, human]));
   let changed = false;
   const agents = (stateSnapshot.agents || []).map((agent) => {
     const incoming = incomingById.get(agent.id);
