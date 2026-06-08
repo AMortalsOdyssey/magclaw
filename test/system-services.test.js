@@ -893,6 +893,72 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.deepEqual(startup.humans.map((human) => human[0]), ['hum_1']);
   assert.deepEqual(startup.cloud.members.map((member) => member[0]), ['mem_1']);
 
+  const leanStartup = makeServices((state) => {
+    state.agents = [
+      {
+        id: 'agt_visible',
+        workspaceId: 'local',
+        name: 'Visible Agent',
+        status: 'working',
+        runtime: 'codex',
+        model: 'gpt-test',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: 'agt_hidden',
+        workspaceId: 'local',
+        name: 'Hidden Agent',
+        status: 'idle',
+        get envVars() {
+          throw new Error('visible bootstrap should not project hidden agents');
+        },
+      },
+    ];
+    state.humans = [
+      { id: 'hum_1', workspaceId: 'local', name: 'Current Human', role: 'owner', status: 'online', createdAt, updatedAt: createdAt },
+      {
+        id: 'hum_hidden',
+        workspaceId: 'local',
+        get name() {
+          throw new Error('visible bootstrap should not project hidden humans');
+        },
+      },
+    ];
+    state.messages[0].authorType = 'agent';
+    state.messages[0].authorId = 'agt_visible';
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        { id: 'mem_1', workspaceId: 'local', userId: 'usr_1', humanId: 'hum_1', role: 'owner', status: 'active' },
+        {
+          id: 'mem_hidden',
+          workspaceId: 'local',
+          userId: 'usr_hidden',
+          humanId: 'hum_hidden',
+          get user() {
+            throw new Error('visible bootstrap should not project hidden members');
+          },
+        },
+      ],
+    }),
+  }).publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&directoryFormat=tuple-v1&directoryScope=visible',
+    headers: {},
+  });
+  assert.deepEqual(leanStartup.agents.map((agent) => agent[0]), ['agt_visible']);
+  assert.deepEqual(leanStartup.humans.map((human) => human[0]), ['hum_1']);
+  assert.deepEqual(leanStartup.cloud.members.map((member) => member[0]), ['mem_1']);
+  assert.equal(leanStartup.bootstrap.directory.agents.total, 2);
+  assert.equal(leanStartup.bootstrap.directory.humans.total, 2);
+  assert.equal(leanStartup.bootstrap.directory.members.total, 2);
+
   const directory = services.publicDirectoryState({
     url: '/api/directory?directoryFormat=tuple-v1',
     headers: {},

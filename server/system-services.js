@@ -1759,25 +1759,20 @@ export function createSystemServices(deps) {
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
       for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
     }
-    const directoryHumans = appendReferencedHumans(
+    const rawDirectoryHumans = appendReferencedHumans(
       scopedRecords('humans'),
       [...messageById.values(), ...replyById.values()],
       currentState,
     );
-    const publicAgents = scopedAgents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
-    const publicHumans = directoryHumans.map(compactBootstrapHumanRecord);
-    const publicCloud = compactBootstrapCloudState(cloud, {
-      humansById: new Map(directoryHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
-    });
     const directoryTotals = {
-      agents: publicAgents.length,
-      humans: publicHumans.length,
-      members: publicCloud?.members?.length || 0,
+      agents: scopedAgents.length,
+      humans: rawDirectoryHumans.length,
+      members: records(cloud?.members).length,
     };
     const visibleDirectoryIds = directoryScope === BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
       ? collectVisibleDirectoryIds({
           currentHumanId,
-          cloud: publicCloud,
+          cloud,
           selectedAgentId: effectiveOptions.selectedAgentId,
           selectedHumanId: effectiveOptions.selectedHumanId,
           selectedChannel,
@@ -1787,12 +1782,20 @@ export function createSystemServices(deps) {
           tasks: visibleTasks,
         })
       : null;
-    const directory = filterDirectoryRecords({
-      agents: publicAgents,
-      humans: publicHumans,
-      cloud: publicCloud,
+    const rawDirectory = filterDirectoryRecords({
+      agents: scopedAgents,
+      humans: rawDirectoryHumans,
+      cloud,
       ids: visibleDirectoryIds,
     });
+    const directoryHumans = records(rawDirectory.humans);
+    const directory = {
+      agents: records(rawDirectory.agents).map(publicAgentRecord).map(compactBootstrapAgentRecord),
+      humans: directoryHumans.map(compactBootstrapHumanRecord),
+      cloud: compactBootstrapCloudState(rawDirectory.cloud, {
+        humansById: new Map(directoryHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+      }),
+    };
 
     const snapshot = {
       ...publicStateBase(currentState),
