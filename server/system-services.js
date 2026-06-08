@@ -234,6 +234,31 @@ export function createSystemServices(deps) {
     return references.length ? [...humans, ...references] : humans;
   }
 
+  function visibleDirectoryHumansForIds(sourceHumans, ids, inScope) {
+    const targetIds = ids?.humanIds instanceof Set ? ids.humanIds : new Set();
+    const humans = [];
+    const foundIds = new Set();
+    let total = 0;
+    let externalVisibleReferences = 0;
+    const source = Array.isArray(sourceHumans) ? sourceHumans : [];
+    for (const human of source) {
+      if (!human) continue;
+      const scoped = inScope(human);
+      if (scoped) total += 1;
+      const id = String(human?.id || '');
+      if (!id || !targetIds.has(id) || foundIds.has(id)) continue;
+      const record = scoped ? human : publicHumanReference(human);
+      if (!record) continue;
+      humans.push(record);
+      foundIds.add(id);
+      if (!scoped) externalVisibleReferences += 1;
+    }
+    return {
+      humans,
+      total: total + externalVisibleReferences,
+    };
+  }
+
   function clampLimit(value, fallback, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -1982,16 +2007,8 @@ export function createSystemServices(deps) {
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
       for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
     }
-    const rawDirectoryHumans = appendReferencedHumans(
-      scopedRecords('humans'),
-      [...messageById.values(), ...replyById.values()],
-      currentState,
-    );
-    const directoryTotals = {
-      agents: scopedAgents.length,
-      humans: rawDirectoryHumans.length,
-      members: records(cloud?.members).length,
-    };
+    const directoryMessages = [...messageById.values()];
+    const directoryReplies = [...replyById.values()];
     const visibleDirectoryIds = directoryScope === BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
       ? collectVisibleDirectoryIds({
           currentHumanId,
@@ -2000,11 +2017,30 @@ export function createSystemServices(deps) {
           selectedHumanId: effectiveOptions.selectedHumanId,
           selectedChannel,
           visibleDms,
-          messages: [...messageById.values()],
-          replies: [...replyById.values()],
+          messages: directoryMessages,
+          replies: directoryReplies,
           tasks: visibleTasks,
         })
       : null;
+    let rawDirectoryHumans;
+    let directoryHumanTotal;
+    if (visibleDirectoryIds) {
+      const visibleHumans = visibleDirectoryHumansForIds(currentState.humans, visibleDirectoryIds, inCurrentWorkspace);
+      rawDirectoryHumans = visibleHumans.humans;
+      directoryHumanTotal = visibleHumans.total;
+    } else {
+      rawDirectoryHumans = appendReferencedHumans(
+        scopedRecords('humans'),
+        [...directoryMessages, ...directoryReplies],
+        currentState,
+      );
+      directoryHumanTotal = rawDirectoryHumans.length;
+    }
+    const directoryTotals = {
+      agents: scopedAgents.length,
+      humans: directoryHumanTotal,
+      members: Array.isArray(cloud?.members) ? cloud.members.length : records(cloud?.members).length,
+    };
     const rawDirectory = filterDirectoryRecords({
       agents: scopedAgents,
       humans: rawDirectoryHumans,

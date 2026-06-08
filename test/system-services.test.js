@@ -567,6 +567,44 @@ test('bootstrap state resolves bound computers without scanning agents per compu
   );
 });
 
+test('bootstrap visible directory selects humans without materializing the full roster', () => {
+  class CountingHumans extends Array {
+    static filterCalls = 0;
+
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    filter(...args) {
+      CountingHumans.filterCalls += 1;
+      return super.filter(...args);
+    }
+  }
+  const humans = CountingHumans.from(Array.from({ length: 250 }, (_value, index) => ({
+    id: index === 0 ? 'hum_1' : `hum_visible_${index}`,
+    workspaceId: 'local',
+    name: `Human ${index}`,
+    role: index === 0 ? 'admin' : 'member',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+  })));
+  const services = makeServices((state) => {
+    state.humans = humans;
+  });
+  CountingHumans.filterCalls = 0;
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&directoryScope=visible',
+    headers: {},
+  });
+
+  assert.equal(snapshot.humans.length, 1);
+  assert.equal(snapshot.humans[0].id, 'hum_1');
+  assert.equal(snapshot.bootstrap.directory.humans.loaded, 1);
+  assert.equal(snapshot.bootstrap.directory.humans.total, 250);
+  assert.equal(CountingHumans.filterCalls, 0);
+});
+
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
   const services = makeServices((state) => {
     state.messages = [
