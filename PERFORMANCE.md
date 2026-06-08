@@ -48,7 +48,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Browser bootstrap JSON is at most 260 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 220 KB and generated in at most 250 ms.
 - Full member directory hydration is isolated from bootstrap and paged at 250
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
@@ -86,15 +86,18 @@ membership fanout visible in the budget. It currently enforces:
   the frontend state boundary. This preserves the first-paint message/thread/task
   window while avoiding repeated JSON field names on every record.
 - Bootstrap keeps full message/reply bodies for the active conversation window
-  and active thread, but sends preview-only bodies for background thread and
-  unread records. Opening a preview thread triggers a scoped refresh that
-  hydrates the full thread root and replies.
+  and active thread, but sends 140-character preview-only bodies for background
+  thread and unread records. Opening a preview thread triggers a scoped refresh
+  that hydrates the full thread root and replies.
 - Browser bootstrap requests also use `directoryScope=visible`, keeping only
   current-view identities in the first paint. Deeper people lookup is now
   server-backed: mention search uses `/api/directory/search`, while Settings /
   Members browsing uses `/api/members/directory` pages. The legacy full
   `/api/directory` hydration path remains available for explicit callers, but
   it is no longer scheduled automatically after refresh or Members navigation.
+- Bootstrap only includes the Web release notes consumed by the first-paint
+  settings surface. Package-specific release details stay available through the
+  package update endpoints instead of riding along with every chat startup.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.

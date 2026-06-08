@@ -121,7 +121,7 @@ test('bootstrap request and normalizer support compact conversation tuples', asy
 
   const normalized = context.normalizeIncomingStateSnapshot({
     bootstrap: { conversationFormat: 'tuple-v1' },
-    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', ['hum_1'], 2, '2026-06-08T00:00:00.000Z', null, null, null, null, null, { bodyTruncated: true }]],
+    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', ['hum_1'], 2, '2026-06-08T00:00:00.000Z', null, null, null, null, null, true]],
     replies: [['rep_1', 'msg_1', 'channel', 'chan_all', 'human', 'hum_1', 'reply', [], '2026-06-08T00:00:01.000Z']],
     tasks: [['task_1', 'channel', 'chan_all', 'Follow up', 'todo', '2026-06-08T00:00:02.000Z']],
     agents: [],

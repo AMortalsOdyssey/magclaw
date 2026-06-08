@@ -40,6 +40,7 @@ const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -55,6 +56,7 @@ const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'id',

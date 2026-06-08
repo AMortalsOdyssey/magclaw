@@ -154,11 +154,11 @@ test('SSE counter handles comments, CRLF frames, default message events, and mul
 test('environment perf helpers build bounded bootstrap/SSE paths and summarize compressed JSON', () => {
   assert.equal(
     buildBootstrapPath({ spaceId: 'chan_perf', threadMessageId: 'msg_1', messageLimit: 20, threadRootLimit: 40 }),
-    '/api/bootstrap?spaceType=channel&spaceId=chan_perf&messageLimit=20&threadRootLimit=40&directoryFormat=tuple-v1&directoryScope=visible&threadMessageId=msg_1',
+    '/api/bootstrap?spaceType=channel&spaceId=chan_perf&messageLimit=20&threadRootLimit=40&directoryFormat=tuple-v1&conversationFormat=tuple-v1&directoryScope=visible&threadMessageId=msg_1',
   );
   assert.equal(
     buildEventsPath({ spaceType: 'dm', spaceId: 'dm_1', messageLimit: 12, threadRootLimit: 24 }),
-    '/api/events?spaceType=dm&spaceId=dm_1&messageLimit=12&threadRootLimit=24&presence=defer',
+    '/api/events?spaceType=dm&spaceId=dm_1&messageLimit=12&threadRootLimit=24&directoryFormat=tuple-v1&conversationFormat=tuple-v1&directoryScope=visible&presence=defer',
   );
   const compressed = gzipSync(JSON.stringify({ messages: [1, 2], cloud: { members: [1] } }));
   const summary = summarizeJsonBody(compressed, {

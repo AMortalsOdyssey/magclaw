@@ -79,6 +79,7 @@ const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -94,6 +95,7 @@ const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -111,7 +113,7 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'metadata',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 260_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 220_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -1198,6 +1200,9 @@ async function main() {
     const match = String(message?.id || '').match(/^msg_(\d+)$/);
     return match ? Number(match[1]) : -1;
   };
+  const previewBodyLengths = [...decodedMessages, ...decodedReplies]
+    .filter((record) => record.bodyTruncated === true)
+    .map((record) => String(record.body || '').length);
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
@@ -1226,6 +1231,7 @@ async function main() {
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
     previewTruncatedMessages: decodedMessages.filter((message) => message.bodyTruncated === true).length,
     previewTruncatedReplies: decodedReplies.filter((reply) => reply.bodyTruncated === true).length,
+    previewMaxBodyChars: previewBodyLengths.length ? Math.max(...previewBodyLengths) : 0,
     selectedPageTruncatedMessages: decodedMessages.filter((message) => (
       message.bodyTruncated === true
       && syntheticMessageIndex(message) >= selectedMessagePageStart
@@ -1285,6 +1291,7 @@ async function main() {
   assertBudget(bootstrap.hasBootstrapConversationTuples, 'bootstrap did not compact conversation records into tuple rows');
   assertBudget(bootstrap.previewTruncatedMessages > 0, 'bootstrap did not truncate background message preview bodies');
   assertBudget(bootstrap.previewTruncatedReplies > 0, 'bootstrap did not truncate background reply preview bodies');
+  assertBudget(bootstrap.previewMaxBodyChars <= 140, `bootstrap preview bodies exceeded 140 chars: ${bootstrap.previewMaxBodyChars}`);
   assertBudget(bootstrap.selectedPageTruncatedMessages === 0, 'bootstrap truncated active conversation page message bodies');
   assertBudget(bootstrap.agents < state.agents.length, 'bootstrap still loaded the full Agent directory');
   assertBudget(bootstrap.humans < state.humans.length, 'bootstrap still loaded the full Human directory');

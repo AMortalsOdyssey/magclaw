@@ -502,9 +502,9 @@ test('bootstrap state truncates only background conversation preview bodies', ()
   const previewReply = preview.replies.find((reply) => reply.id === 'rep_thread');
   assert.equal(preview.messages.find((message) => message.id === 'msg_current').bodyTruncated, undefined);
   assert.equal(previewRoot.bodyTruncated, true);
-  assert.equal(previewRoot.body.length, 180);
+  assert.equal(previewRoot.body.length, 140);
   assert.equal(previewReply.bodyTruncated, true);
-  assert.equal(previewReply.body.length, 180);
+  assert.equal(previewReply.body.length, 140);
 
   const opened = services.publicBootstrapState({
     url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&threadMessageId=msg_thread&messageLimit=1&threadRootLimit=20',
@@ -720,6 +720,20 @@ test('bootstrap state keeps object directories by default and supports tuple dir
     { email: 'human@example.test' },
     'owner',
   ]);
+});
+
+test('bootstrap state only includes web release notes needed by first paint settings', () => {
+  const services = makeServices();
+
+  const bootstrap = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all',
+    headers: {},
+  });
+  const full = services.publicState({ url: '/api/state', headers: {} });
+
+  assert.deepEqual(Object.keys(bootstrap.releaseNotes).sort(), ['web']);
+  assert.equal(Boolean(bootstrap.releaseNotes.web), true);
+  assert.equal(Boolean(full.releaseNotes.daemon), true);
 });
 
 test('bootstrap visible directory scope trims startup members and directory endpoint hydrates full roster', () => {

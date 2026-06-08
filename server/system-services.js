@@ -17,7 +17,7 @@ const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
 const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
-const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 180;
+const BOOTSTRAP_CONVERSATION_PREVIEW_CHARS = 140;
 const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
 const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
@@ -95,6 +95,7 @@ const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -110,6 +111,7 @@ const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'savedBy',
   'metadata',
   'eventType',
+  'bodyTruncated',
 ]);
 const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -1767,7 +1769,7 @@ export function createSystemServices(deps) {
       channelMemberProposals: scopedRecords('channelMemberProposals'),
       connection: publicConnection(),
       cloud: directory.cloud,
-      releaseNotes: publicReleaseNotes(),
+      releaseNotes: publicBootstrapReleaseNotes(),
       runtime: runtimeSnapshot(),
       runningRunIds: [...runningProcesses.keys()],
       bootstrap: {
@@ -2230,6 +2232,13 @@ export function createSystemServices(deps) {
     normalized.teamSharing.currentVersion = localTeamSharingPackageVersion() || normalized.teamSharing.currentVersion;
     normalized.teamSharing.latestVersion = latestTeamSharingPackageVersion(normalized.teamSharing.currentVersion);
     return normalized;
+  }
+
+  function publicBootstrapReleaseNotes() {
+    const notes = publicReleaseNotes();
+    return {
+      web: notes.web,
+    };
   }
 
   function localWebPackageVersion() {
