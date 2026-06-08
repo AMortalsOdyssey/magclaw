@@ -309,6 +309,108 @@ test('team sharing session reporting override persists only hashed local identif
   assert.doesNotMatch(raw, /sess_private_optout|private-session|magclaw-team-sharing-session-reporting-project/);
 });
 
+test('team sharing session reporting store is stable across profile switches', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-profile-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-reporting-profile-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const transcript = path.join(cwd, 'profile-independent-session.jsonl');
+
+  const alpha = teamSharingPaths({ profile: 'alpha', cwd, env });
+  const beta = teamSharingPaths({ profile: 'beta', cwd, env });
+  const disabled = await setTeamSharingSessionReporting({
+    profile: 'alpha',
+    cwd,
+    runtime: 'codex',
+    sessionId: 'sess_profile_independent',
+    transcript,
+    report: false,
+  }, env);
+  const status = await getTeamSharingSessionReporting({
+    profile: 'beta',
+    cwd,
+    runtime: 'codex',
+    sessionId: 'sess_profile_independent',
+    transcript,
+  }, env);
+  const raw = await readFile(beta.sessionOverrides, 'utf8');
+
+  assert.equal(alpha.sessionOverrides, beta.sessionOverrides);
+  assert.equal(alpha.sessionOverrides, path.join(home, '.magclaw', 'team-sharing', 'session-overrides.json'));
+  assert.equal(disabled.sessionOverrides, alpha.sessionOverrides);
+  assert.equal(status.report, false);
+  assert.equal(status.reason, 'user_disabled');
+  assert.doesNotMatch(raw, /alpha|beta|sess_profile_independent|profile-independent-session/);
+});
+
+test('team sharing hook sync reads the same session override store after a profile switch', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-hook-profile-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-session-hook-profile-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    profile: 'hook-alpha',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-alpha',
+  }, env);
+  await loginTeamSharingProfile({
+    profile: 'hook-beta',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-beta',
+  }, env);
+  await initTeamSharingProject({
+    profile: 'hook-beta',
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_profile_hook', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '这一轮应该被本地配置跳过。' }] } }),
+  ].join('\n'));
+  await setTeamSharingSessionReporting({
+    profile: 'hook-alpha',
+    cwd,
+    runtime: 'codex',
+    sessionId: 'sess_profile_hook',
+    transcript,
+    report: false,
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init });
+    throw new Error('profile-independent session override should skip before upload');
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      profile: 'hook-beta',
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'Stop',
+      integration: 'team-sharing',
+    }, env);
+    const paths = teamSharingPaths({ profile: 'hook-beta', cwd, env });
+    const auditRecord = JSON.parse((await readFile(paths.projectAuditLog, 'utf8')).trim());
+
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.equal(result.reason, 'session_reporting_disabled');
+    assert.equal(calls.length, 0);
+    assert.equal(auditRecord.phase, 'session_reporting');
+    assert.equal(auditRecord.sessionReporting.matched, true);
+    assert.equal(result.sessionReporting.sessionOverrides, path.join(home, '.magclaw', 'team-sharing', 'session-overrides.json'));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing hook sync understands natural-language session opt-out before upload', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-no-report-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-no-report-home-'));
