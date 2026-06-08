@@ -1613,6 +1613,17 @@ test('team sharing share list and delete links are scoped and role gated', async
   assert.deepEqual(activeList.data.shares.map((share) => share.shareId), [firstShareId]);
   assert.equal(activeList.data.shares[0].canEdit, true);
 
+  const rootAfterDelete = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    rootAfterDelete,
+    new URL('https://magclaw.example/s/server-route/share'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner' } }) },
+  ), true);
+  assert.equal(rootAfterDelete.statusCode, 200);
+  assert.match(rootAfterDelete.body, /需要保留的分享/);
+  assert.doesNotMatch(rootAfterDelete.body, /可以删除的分享/);
+
   const auditList = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },

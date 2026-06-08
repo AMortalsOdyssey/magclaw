@@ -4268,7 +4268,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
-    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(teamSharingState, access.workspaceId), teamSharingState));
+    const activeShares = sharesForShareRoot(teamSharingState, access.workspaceId)
+      .filter((share) => !share.revokedAt);
+    sendShareHtml(res, renderShareIndexHtml(activeShares, teamSharingState));
     return true;
   }
 
