@@ -1635,6 +1635,7 @@ test('thread rows use the last reply actor avatar and prefix the preview with th
   assert.match(inboxItemSource, /previewRecord,/);
   assert.match(inboxItemSource, /preview: threadPreviewText\(message\)/);
   assert.match(threadsSource, /const previewRecord = threadPreviewRecord\(message\)/);
+  assert.match(threadsSource, /teamSharingPresentationBadgeHtml\(previewRecord, \{ compact: true \}\)/);
   assert.match(threadsSource, /renderThreadRowAvatar\(previewRecord\)/);
   assert.match(threadsSource, /threadPreviewText\(message\)/);
   assert.match(app, /\$\{lastReplyAuthor\}：\$\{previewBody\}/);

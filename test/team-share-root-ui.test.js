@@ -92,12 +92,17 @@ test('team sharing plan presentation uses a document panel in channel and thread
 
   assert.match(app, /function teamSharingPresentationModeForRecord\(record = \{\}\)/);
   assert.match(app, /function teamSharingPresentationClass\(record = \{\}\)/);
+  assert.match(app, /function teamSharingPresentationBadgeHtml\(record = \{\}, options = \{\}\)/);
   assert.match(app, /teamSharingPresentationClass\(message\)/);
   assert.match(app, /teamSharingPresentationClass\(reply\)/);
+  assert.match(app, /teamSharingPresentationBadgeHtml\(message\)/);
+  assert.match(app, /teamSharingPresentationBadgeHtml\(reply\)/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown \{[\s\S]*background:\s*#f3f4f6/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown \{[\s\S]*color:\s*#1f2937/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown code/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-markdown code \{[\s\S]*background:\s*#e5e7eb/);
   assert.match(styles, /\.message-card\.team-sharing-mode-plan \.message-color-swatch/);
+  assert.match(styles, /\.team-sharing-presentation-badge-goal/);
+  assert.match(styles, /\.team-sharing-presentation-goal-logo::after/);
 });

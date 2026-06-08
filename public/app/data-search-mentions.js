@@ -100,6 +100,24 @@ function teamSharingPresentationClass(record = {}) {
   return mode ? ` team-sharing-mode-${mode}` : '';
 }
 
+function teamSharingPresentationBadgeLabel(mode = '') {
+  if (mode === 'plan') return 'Plan';
+  if (mode === 'goal') return 'Goal';
+  if (mode === 'interaction') return 'Q&A';
+  return '';
+}
+
+function teamSharingPresentationBadgeHtml(record = {}, options = {}) {
+  const mode = teamSharingPresentationModeForRecord(record);
+  const label = teamSharingPresentationBadgeLabel(mode);
+  if (!label) return '';
+  const compact = options.compact ? ' compact' : '';
+  const icon = mode === 'goal'
+    ? '<span class="team-sharing-presentation-goal-logo" aria-hidden="true"></span>'
+    : '';
+  return `<span class="team-sharing-presentation-badge team-sharing-presentation-badge-${escapeHtml(mode)}${compact}" aria-label="${escapeHtml(label)}">${icon}<span>${escapeHtml(label)}</span></span>`;
+}
+
 function teamSharingUploaderForRecord(record = {}) {
   const uploader = record?.metadata?.teamSharing?.uploader;
   return uploader && typeof uploader === 'object' ? uploader : null;

@@ -2325,6 +2325,7 @@ function renderMessage(message, options = {}) {
   const authorClass = ['agent', 'human', 'system'].includes(message.authorType) ? message.authorType : 'unknown';
   const streamingClass = messageIsStreaming(message) ? ' is-agent-streaming' : '';
   const presentationClass = typeof teamSharingPresentationClass === 'function' ? teamSharingPresentationClass(message) : '';
+  const presentationBadge = typeof teamSharingPresentationBadgeHtml === 'function' ? teamSharingPresentationBadgeHtml(message) : '';
   const replyActionLabel = replyCount ? `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}` : 'Reply';
   const agentAuthorAttr = message.authorType === 'agent' ? ` data-agent-author-id="${escapeHtml(message.authorId)}"` : '';
   const receiptTray = renderAgentReceiptTray(message);
@@ -2340,6 +2341,7 @@ function renderMessage(message, options = {}) {
           <span class="sender-role">${escapeHtml(actorSubtitle(message.authorId, message.authorType, message))}</span>
           <time>${fmtTime(message.createdAt)}</time>
           ${task ? renderTaskInlineBadge(task) : ''}
+          ${presentationBadge}
         </div>
 	        ${renderMessageReferences(message)}
 	        <div class="message-markdown">${renderStreamingMessageMarkdown(message)}</div>
@@ -2650,6 +2652,7 @@ function renderThreads() {
         const replies = threadReplies(message.id);
         const lastReply = replies.at(-1);
         const previewRecord = threadPreviewRecord(message);
+        const previewPresentationBadge = typeof teamSharingPresentationBadgeHtml === 'function' ? teamSharingPresentationBadgeHtml(previewRecord, { compact: true }) : '';
         const author = displayName(message.authorId);
         const task = message.taskId
           ? (typeof taskById === 'function' ? taskById(message.taskId) : byId(appState.tasks, message.taskId))
@@ -2665,6 +2668,7 @@ function renderThreads() {
             <span class="thread-row-meta-line">
               <span>${escapeHtml(spaceName(message.spaceType, message.spaceId))}</span>
               ${renderThreadKindBadge(message, task)}
+              ${previewPresentationBadge}
               <span>${escapeHtml(author)}</span>
               <time>${fmtTime(lastReply?.createdAt || message.updatedAt || message.createdAt)}</time>
             </span>

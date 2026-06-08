@@ -979,6 +979,7 @@ function renderReply(reply) {
   const shareSelected = shareSelectable && shareSelectedIds().includes(String(reply.id)) ? ' share-selected' : '';
   const streamingClass = messageIsStreaming(reply) ? ' is-agent-streaming' : '';
   const presentationClass = typeof teamSharingPresentationClass === 'function' ? teamSharingPresentationClass(reply) : '';
+  const presentationBadge = typeof teamSharingPresentationBadgeHtml === 'function' ? teamSharingPresentationBadgeHtml(reply) : '';
   const receiptTray = renderAgentReceiptTray(reply);
   const footer = renderMessageFooter({ receiptTray });
   return `
@@ -990,6 +991,7 @@ function renderReply(reply) {
           ${renderActorName(reply.authorId, reply.authorType, reply)}
           <span class="sender-role">${escapeHtml(actorSubtitle(reply.authorId, reply.authorType, reply))}</span>
           <time>${fmtTime(reply.createdAt)}</time>
+          ${presentationBadge}
         </div>
 	        ${renderMessageReferences(reply)}
 	        <div class="message-markdown">${renderStreamingMessageMarkdown(reply)}</div>
