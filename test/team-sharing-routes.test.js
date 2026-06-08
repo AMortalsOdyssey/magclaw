@@ -1,4 +1,9 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Writable } from 'node:stream';
 import test from 'node:test';
 import vm from 'node:vm';
 
@@ -25,6 +30,32 @@ function makeResponse() {
       this.body = String(body || '');
     },
   };
+}
+
+function makeStreamResponse() {
+  const chunks = [];
+  const res = new Writable({
+    write(chunk, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  res.statusCode = null;
+  res.headers = {};
+  res.body = '';
+  res.setHeader = function setHeader(name, value) {
+    this.headers[String(name).toLowerCase()] = value;
+  };
+  res.writeHead = function writeHead(statusCode, headers = {}) {
+    this.statusCode = statusCode;
+    for (const [name, value] of Object.entries(headers)) this.setHeader(name, value);
+  };
+  res.end = function end(body = '') {
+    if (body) chunks.push(Buffer.isBuffer(body) ? body : Buffer.from(String(body)));
+    Writable.prototype.end.call(this);
+  };
+  res.bodyBuffer = () => Buffer.concat(chunks);
+  return res;
 }
 
 function routeDeps(overrides = {}) {
@@ -1255,6 +1286,220 @@ test('team sharing route creates an authenticated share and protects it by works
     { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
   ), true);
   assert.equal(scopedWrongServerIndex.statusCode, 403);
+});
+
+test('team sharing share assets are deduped, protected, and range-readable', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-assets-'));
+  const saveAttachmentBuffer = async ({ name, type, buffer, source, extra = {} }) => {
+    const id = `att_${extra.createdBy || 'asset'}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const storageKey = `2026/06/${id}-${name}`;
+    const filePath = path.join(tmp, storageKey);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, buffer);
+    return {
+      id,
+      name,
+      type,
+      bytes: buffer.length,
+      path: filePath,
+      storageKey,
+      relativePath: storageKey,
+      storageMode: 'pvc',
+      checksumSha256: 'stored-by-test',
+      source,
+      createdAt: '2026-06-01T10:00:00.000Z',
+      ...extra,
+    };
+  };
+  const videoBytes = Buffer.concat([
+    Buffer.from('video-start-'),
+    Buffer.alloc(70 * 1024, 7),
+    Buffer.from('-video-end'),
+  ]);
+  const dataUrl = `data:video/mp4;base64,${videoBytes.toString('base64')}`;
+  const html = `<!doctype html><html><body><section id="demo"><h2>演示</h2><video src="${dataUrl}"></video></section></body></html>`;
+  const deps = routeDeps({
+    saveAttachmentBuffer,
+    attachmentStorageDir: tmp,
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_creator', role: 'owner', name: 'Creator' } }),
+    readJson: async () => ({
+      title: '含视频分享',
+      contentType: 'html',
+      content: html,
+      workspaceId: 'ws_route',
+    }),
+  });
+
+  const first = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    first,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  assert.equal(first.statusCode, 201);
+  assert.equal(deps.state.teamSharing.assets.length, 1);
+  assert.equal(deps.state.teamSharing.shareContents.length, 1);
+  assert.equal(first.data.share.assetRefs.length, 1);
+  assert.doesNotMatch(deps.state.teamSharing.shareContents[0].content, /data:video\/mp4;base64/);
+  assert.match(deps.state.teamSharing.shareContents[0].content, /\/api\/team-sharing\/assets\/asset_/);
+
+  const second = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    second,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  assert.equal(second.statusCode, 201);
+  assert.equal(deps.state.teamSharing.assets.length, 1);
+  assert.equal(second.data.share.assetRefs[0].id, first.data.share.assetRefs[0].id);
+
+  const asset = deps.state.teamSharing.assets[0];
+  const denied = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    denied,
+    new URL(`https://magclaw.example/api/team-sharing/assets/${asset.id}/${asset.filename}`),
+    { ...deps, currentActor: () => null, teamSharingAuthRequired: () => true },
+  ), true);
+  assert.equal(denied.statusCode, 401);
+
+  const rangeRes = makeStreamResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { range: 'bytes=0-10' } },
+    rangeRes,
+    new URL(`https://magclaw.example/api/team-sharing/assets/${asset.id}/${asset.filename}`),
+    deps,
+  ), true);
+  if (!rangeRes.writableFinished) await once(rangeRes, 'finish');
+  assert.equal(rangeRes.statusCode, 206);
+  assert.equal(rangeRes.headers['content-type'], 'video/mp4');
+  assert.match(rangeRes.headers['cache-control'], /immutable/);
+  assert.match(rangeRes.headers.etag, /"/);
+  assert.equal(rangeRes.bodyBuffer().toString(), videoBytes.slice(0, 11).toString());
+
+  const notModified = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { 'if-none-match': rangeRes.headers.etag } },
+    notModified,
+    new URL(`https://magclaw.example/api/team-sharing/assets/${asset.id}/${asset.filename}`),
+    deps,
+  ), true);
+  assert.equal(notModified.statusCode, 304);
+});
+
+test('team sharing share patch updates one section in place with creator/admin permissions', async () => {
+  const html = [
+    '<!doctype html><html><body>',
+    '<nav><a id="toc-alpha" href="#alpha">Alpha</a><a id="toc-beta" href="#beta">Beta</a></nav>',
+    '<section id="alpha"><h2>Alpha</h2><p>旧内容。</p></section>',
+    '<section id="beta"><h2>Beta</h2><p>保持不变。</p></section>',
+    '</body></html>',
+  ].join('');
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_creator', role: 'member', name: 'Creator' } }),
+    readJson: async () => ({
+      title: '局部编辑分享',
+      contentType: 'html',
+      content: html,
+      workspaceId: 'ws_route',
+    }),
+  });
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_creator', userId: 'usr_creator', role: 'member', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_member', userId: 'usr_member', role: 'member', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_owner', userId: 'usr_owner', role: 'owner', status: 'active' },
+    { workspaceId: 'ws_route', humanId: 'hum_admin', userId: 'usr_admin', role: 'admin', status: 'active' },
+  ];
+
+  const created = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    created,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  const shareId = created.data.shareId;
+
+  const sections = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    sections,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}/sections`),
+    deps,
+  ), true);
+  const alpha = sections.data.sections.find((section) => section.sectionId === 'alpha');
+  const beta = sections.data.sections.find((section) => section.sectionId === 'beta');
+  assert.ok(alpha);
+  assert.ok(beta);
+
+  const memberDenied = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'PATCH', headers: {}, url: `/api/team-sharing/shares/${shareId}` },
+    memberDenied,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    {
+      ...deps,
+      currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_member', role: 'member' } }),
+      readJson: async () => ({
+        baseVersionId: sections.data.versionId,
+        operations: [{ op: 'replace_section', sectionId: 'alpha', expectedHash: alpha.hash, content: '<section id="alpha"><h2>Alpha</h2><p>新内容。</p></section>' }],
+      }),
+    },
+  ), true);
+  assert.equal(memberDenied.statusCode, 403);
+  assert.equal(memberDenied.data.reason, 'share_edit_forbidden');
+
+  const ownerPatch = makeResponse();
+  const patchBody = {
+    baseVersionId: sections.data.versionId,
+    operations: [
+      { op: 'replace_section', sectionId: 'alpha', expectedHash: alpha.hash, content: '<section id="alpha"><h2>Alpha</h2><p>新内容。</p></section>' },
+      { op: 'replace_selector_text', selector: '#toc-alpha', text: 'Alpha 新版' },
+    ],
+  };
+  assert.equal(await handleTeamSharingApi(
+    { method: 'PATCH', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' }, url: `/api/team-sharing/shares/${shareId}` },
+    ownerPatch,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    {
+      ...deps,
+      currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner' } }),
+      readJson: async () => patchBody,
+    },
+  ), true);
+  assert.equal(ownerPatch.statusCode, 200);
+  assert.equal(ownerPatch.data.url, `https://magclaw.example/s/${shareId}`);
+  assert.notEqual(ownerPatch.data.versionId, sections.data.versionId);
+
+  const after = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    after,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_admin', role: 'admin' } }) },
+  ), true);
+  assert.match(after.data.content, /Alpha 新版/);
+  assert.match(after.data.content, /新内容/);
+  assert.match(after.data.content, /保持不变/);
+  const betaAfter = after.data.sections.find((section) => section.sectionId === 'beta');
+  assert.equal(betaAfter.hash, beta.hash);
+  assert.equal(deps.state.teamSharing.shares[0].versions.length, 2);
+
+  const conflict = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'PATCH', headers: {}, url: `/api/team-sharing/shares/${shareId}` },
+    conflict,
+    new URL(`https://magclaw.example/api/team-sharing/shares/${shareId}`),
+    {
+      ...deps,
+      currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_admin', role: 'admin' } }),
+      readJson: async () => patchBody,
+    },
+  ), true);
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(conflict.data.reason, 'version_conflict');
 });
 
 test('team sharing link inspection reports server access actions and token user memberships', async () => {

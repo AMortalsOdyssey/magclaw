@@ -34,7 +34,14 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 5. For deep follow-up, run `team-sharing context --session-id <sessionId> --anchor-event-id <eventId> --direction around --limit 21 --order asc`.
 6. Cite session titles, semantic source links, and the original-session web context link from the command output.
 7. When the user wants to share the synthesis, prefer a standalone HTML artifact using the Default Share HTML Style below, then run `team-sharing share-artifact --file <path> --title "<title>" --type html`.
-8. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
+   - `share-artifact` optimizes large inline `data:image/*`, `data:video/*`, and `data:audio/*` assets into protected Team Sharing asset references when the server supports it. Do not manually paste large base64 payloads into replies.
+8. When the user wants to improve only one chapter, section, screenshot-selected area, heading, button, or related copy inside an existing MagClaw share link, do not regenerate the whole document.
+   - First run `team-sharing read-link "<url>" --format json` and use `sections`, `versionId`, `contentHash`, and `assetRefs`.
+   - Prepare a patch with `baseVersionId` and `operations`. Prefer `replace_section` with the target `sectionId`, `expectedHash`, and replacement HTML/Markdown. Also update related local anchors, TOC labels, summaries, or button text through additional operations only when they directly reference the changed section.
+   - Apply it with `team-sharing edit-link "<url>" --patch <patch.json>`. Use `--dry-run` before applying when the user is still deciding.
+   - After applying, rerun `team-sharing read-link "<url>" --format json` and verify the target section hash changed, unrelated section hashes stayed the same, and video/image assets remain as `assetRefs` rather than large inline base64.
+   - If the command returns `version_conflict`, reread the link, rebuild the patch against the latest `versionId` and section hashes, then retry.
+9. Return the MagClaw share URL from the command output. 访问遵循当前 MagClaw 服务的登录和权限策略, and the share page includes the creator and creation time in the footer.
 
 ## User-Facing Examples
 
@@ -66,7 +73,7 @@ Use this skill when the user asks what teammates discussed, wants to align with 
 
 Use this style whenever the user asks to share something with the team, use MagClaw sharing, or create a MagClaw share link, unless the user explicitly asks for another visual direction.
 
-- Format: produce one self-contained `<!doctype html>` file with inline CSS, `lang="zh-CN"` by default, `meta viewport`, smooth anchor scrolling, and no external assets unless they are already public and intentional.
+- Format: produce one `<!doctype html>` file with inline CSS, `lang="zh-CN"` by default, `meta viewport`, and smooth anchor scrolling. Small assets may stay inline; large media should be left for `share-artifact` to convert into protected Team Sharing asset references.
 - Hero: start with a deep blue-black technical hero using a subtle cyan dot-grid or radial pattern over a dark linear background. Include a compact eyebrow label, an emerald pulse/status mark, a clear H1, a short subtitle, and 3-4 metric tiles for the most important facts.
 - Layout: use a max-width content shell around 1160px. On desktop, use a two-column layout with a 240-260px sticky table of contents on the left and report content on the right. On small screens, collapse to a single column and make the nav static.
 - Body surface: use a pale wash page background and white report cards for major sections. Cards should use 8px radius, 1px neutral borders, subtle slate shadows, and generous but compact padding. Do not nest cards inside cards.

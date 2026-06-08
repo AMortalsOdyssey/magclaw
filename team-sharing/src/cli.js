@@ -9,6 +9,7 @@ import {
 import {
   checkTeamSharingUpgrade,
   disableTeamSharingSkill,
+  editTeamSharingLink,
   initTeamSharingProject,
   installTeamSharingHooks,
   installTeamSharingSkill,
@@ -165,6 +166,7 @@ function renderTeamSharingHelp() {
     '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic)',
     '  context  Read original context around an anchor',
     '  read-link Read a protected MagClaw share/context URL with the Team Sharing CLI login',
+    '  edit-link Patch one section of an existing MagClaw share URL',
     '  share-artifact Create a public MagClaw share link from a local file',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  skills   Install/remove/status the local Team Sharing skill',
@@ -297,6 +299,10 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         if (!format || format === 'json') printJson(result);
         else process.stdout.write(`${formatTeamSharingReadLinkResult(result, format)}\n`);
       }
+      break;
+    case 'edit-link':
+    case 'editlink':
+      printJson(await editTeamSharingLink(flags, env));
       break;
     case 'share':
     case 'share-artifact':

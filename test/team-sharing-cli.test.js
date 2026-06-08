@@ -15,6 +15,7 @@ import {
 } from '../team-sharing/src/onboarding-feedback.js';
 import {
   checkTeamSharingUpgrade,
+  editTeamSharingLink,
   installTeamSharingHooks,
   installTeamSharingSkill,
   initTeamSharingProject,
@@ -1925,6 +1926,148 @@ test('team sharing cli uploads an artifact share and returns a public link', asy
   }
 });
 
+test('team sharing cli optimizes large inline share assets before upload', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-assets-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-assets-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const video = Buffer.concat([Buffer.from('video-start'), Buffer.alloc(70 * 1024, 3)]);
+  const artifact = path.join(cwd, 'video-share.html');
+  await writeFile(artifact, `<!doctype html><html><body><section id="demo"><video src="data:video/mp4;base64,${video.toString('base64')}"></video></section></body></html>`);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : {};
+    calls.push({ url: String(url), init, body });
+    if (String(url).endsWith('/api/team-sharing/assets/resolve')) {
+      assert.equal(body.workspaceId, 'ws_team');
+      assert.equal(body.mimeType, 'video/mp4');
+      assert.equal(body.bytes, video.length);
+      assert.equal(body.dataUrl, undefined);
+      return { ok: true, json: async () => ({ ok: true, found: false, asset: null }) };
+    }
+    if (String(url).endsWith('/api/team-sharing/assets')) {
+      assert.match(body.dataUrl, /^data:video\/mp4;base64,/);
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          reused: false,
+          asset: {
+            id: 'asset_video',
+            filename: 'team-sharing-video.mp4',
+            mimeType: 'video/mp4',
+            bytes: video.length,
+            checksumSha256: body.sha256,
+            url: 'https://magclaw.example/api/team-sharing/assets/asset_video/team-sharing-video.mp4',
+          },
+        }),
+      };
+    }
+    if (String(url).endsWith('/api/team-sharing/shares')) {
+      assert.doesNotMatch(body.content, /data:video\/mp4;base64/);
+      assert.match(body.content, /\/api\/team-sharing\/assets\/asset_video\/team-sharing-video\.mp4/);
+      assert.deepEqual(body.assetIds, ['asset_video']);
+      assert.equal(body.source.assetOptimization.optimized, true);
+      assert.doesNotMatch(JSON.stringify(body), /team-sharing-token-secret|Bearer/i);
+      return { ok: true, json: async () => ({ ok: true, shareId: 'share_asset', url: 'https://magclaw.example/s/share_asset' }) };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const result = await shareTeamSharingArtifact({ file: artifact, cwd, type: 'html' }, env);
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli edit-link fills section hashes and patches the same share URL', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-edit-link-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-edit-link-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const patchFile = path.join(cwd, 'patch.json');
+  await writeFile(patchFile, JSON.stringify({
+    operations: [
+      { op: 'replace_section', sectionId: 'alpha', content: '<section id="alpha"><h2>Alpha</h2><p>新版</p></section>' },
+    ],
+  }));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const body = init.body ? JSON.parse(init.body) : {};
+    calls.push({ url: String(url), init, body });
+    if (String(url).includes('/api/team-sharing/shares/share_edit/sections')) {
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          shareId: 'share_edit',
+          versionId: 'shv_1',
+          sections: [{ sectionId: 'alpha', selector: 'section#alpha', title: 'Alpha', hash: 'hash_alpha' }],
+        }),
+      };
+    }
+    if (String(url).includes('/api/team-sharing/shares/share_edit')) {
+      assert.equal(init.method, 'PATCH');
+      assert.equal(body.baseVersionId, 'shv_1');
+      assert.equal(body.operations[0].expectedHash, 'hash_alpha');
+      assert.doesNotMatch(JSON.stringify(body), /team-sharing-token-secret|Bearer/i);
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          shareId: 'share_edit',
+          url: 'https://magclaw.example/s/share_edit',
+          versionId: 'shv_2',
+          changedSections: [{ sectionId: 'alpha' }],
+        }),
+      };
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  try {
+    const dryRun = await editTeamSharingLink({ cwd, _: ['edit-link', 'https://magclaw.example/s/share_edit'], patch: patchFile, dryRun: true }, env);
+    assert.equal(dryRun.ok, true);
+    assert.equal(dryRun.dryRun, true);
+    assert.equal(dryRun.changedSections[0].expectedHash, 'hash_alpha');
+    assert.equal(calls.length, 1);
+
+    const result = await editTeamSharingLink({ cwd, _: ['edit-link', 'https://magclaw.example/s/share_edit'], patch: patchFile }, env);
+    assert.equal(result.ok, true);
+    assert.equal(result.url, 'https://magclaw.example/s/share_edit');
+    assert.equal(calls.length, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing cli infers artifact title and type from local documents', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-share-infer-home-'));
@@ -1991,6 +2134,11 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.match(skill, /team-sharing search/);
   assert.match(skill, /team-sharing context/);
   assert.match(skill, /team-sharing share-artifact/);
+  assert.match(skill, /team-sharing edit-link "<url>" --patch <patch\.json>/);
+  assert.match(skill, /sections.*versionId.*contentHash.*assetRefs/s);
+  assert.match(skill, /replace_section/);
+  assert.match(skill, /version_conflict/);
+  assert.match(skill, /protected Team Sharing asset references/);
   assert.match(skill, /--time today/);
   assert.match(skill, /--time yesterday/);
   assert.match(skill, /--keyword/);

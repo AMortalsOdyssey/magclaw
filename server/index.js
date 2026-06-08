@@ -1832,9 +1832,11 @@ function teamSharingApiDeps() {
     persistState,
     readJson,
     rerank: ({ query, candidates, limit }) => rerankClient.rerank({ query, candidates, limit }),
+    saveAttachmentBuffer,
     sendError,
     sendJson,
     summarizeSession: (input) => summaryClient.summarizeSession(input),
+    attachmentStorageDir: ATTACHMENTS_DIR,
     teamSharingAuthRequired: () => (
       /^(1|true|yes)$/i.test(String(process.env.MAGCLAW_TEAM_SHARING_REQUIRE_AUTH || ''))
       || process.env.MAGCLAW_DEPLOYMENT === 'cloud'

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,6 +61,10 @@ function byteLength(value = '') {
 
 function stableHash(value = '') {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
+}
+
+function sha256Hex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function normalizeSearchMode(value = '') {
@@ -1172,6 +1176,37 @@ async function teamSharingRequestJson({ serverUrl, token = '', machineFingerprin
   return data;
 }
 
+async function teamSharingRequestBytes({ serverUrl, token = '', machineFingerprint = '', pathname = '/', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS));
+  try {
+    const fingerprint = String(machineFingerprint || '').trim();
+    const response = await fetch(`${normalizeServerUrl(serverUrl)}${pathname}`, {
+      method: 'GET',
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(fingerprint ? { 'x-magclaw-machine-fingerprint': fingerprint } : {}),
+      },
+      signal: controller.signal,
+    });
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) {
+      const error = new Error(`${response.status} ${response.statusText}`);
+      error.status = response.status;
+      throw error;
+    }
+    return {
+      ok: true,
+      status: response.status,
+      contentType: String(response.headers.get('content-type') || '').trim(),
+      bytes: buffer.length,
+      buffer,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function absoluteTeamSharingWebUrl(serverUrl = '', value = '') {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -2148,7 +2183,7 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
       pathname: `/api/team-sharing/shares/${encodeURIComponent(parsed.shareId)}`,
       timeoutMs: requestTimeoutMs(flags, env),
     });
-    return {
+    const shareResult = {
       ...result,
       kind: result.kind || 'share',
       linkUrl: parsed.url.toString(),
@@ -2159,6 +2194,16 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
         target: inspect.data?.target,
       } : {}),
     };
+    if (booleanFlag(flags.includeAssets || flags.include_assets)) {
+      shareResult.assetContents = await readTeamSharingAssetContents({
+        result: shareResult,
+        serverUrl: requestServerUrl,
+        token,
+        machineFingerprint,
+        timeoutMs: requestTimeoutMs(flags, env),
+      });
+    }
+    return shareResult;
   }
   const apiPath = contextLinkApiPath(parsed);
   const result = await teamSharingRequestJson({
@@ -2182,6 +2227,113 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
   }, {
     serverUrl: requestServerUrl,
     fallbackContextUrl: apiPath.replace('/api/team-sharing/context/', '/team-sharing/context/'),
+  });
+}
+
+async function readTeamSharingAssetContents({ result = {}, serverUrl = '', token = '', machineFingerprint = '', timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const contents = [];
+  for (const asset of Array.isArray(result.assetRefs) ? result.assetRefs : []) {
+    const rawUrl = String(asset.url || '').trim();
+    if (!rawUrl) continue;
+    let pathname = rawUrl;
+    try {
+      const parsed = new URL(rawUrl);
+      pathname = `${parsed.pathname}${parsed.search || ''}`;
+    } catch {}
+    const bytes = await teamSharingRequestBytes({
+      serverUrl,
+      token,
+      machineFingerprint,
+      pathname,
+      timeoutMs,
+    });
+    const contentType = bytes.contentType || asset.mimeType || 'application/octet-stream';
+    contents.push({
+      id: asset.id,
+      filename: asset.filename,
+      mimeType: contentType,
+      bytes: bytes.bytes,
+      checksumSha256: asset.checksumSha256 || '',
+      dataUrl: `data:${contentType};base64,${bytes.buffer.toString('base64')}`,
+    });
+  }
+  return contents;
+}
+
+export async function editTeamSharingLink(flags = {}, env = process.env) {
+  const link = String(flags.url || flags.link || flags.href || flags._?.[1] || '').trim();
+  const parsed = parseTeamSharingReadableLink(link);
+  if (!parsed.ok || parsed.type !== 'share') {
+    const error = new Error('Usage: team-sharing edit-link <share-url> --patch <patch.json>');
+    error.reason = parsed.reason || 'unsupported_link';
+    error.status = 400;
+    throw error;
+  }
+  const requestServerUrl = normalizeServerUrl(flags.serverUrl || parsed.serverUrl);
+  const { token, machineFingerprint } = await resolveTeamSharingClient({
+    ...flags,
+    serverUrl: requestServerUrl,
+  }, env, { allowLogin: true });
+  const sections = await teamSharingRequestJson({
+    serverUrl: requestServerUrl,
+    token,
+    machineFingerprint,
+    pathname: `/api/team-sharing/shares/${encodeURIComponent(parsed.shareId)}/sections`,
+    timeoutMs: requestTimeoutMs(flags, env),
+  });
+  const patch = readPatchPayload(flags);
+  const operations = Array.isArray(patch.operations)
+    ? patch.operations
+    : Array.isArray(patch)
+      ? patch
+      : [];
+  if (!operations.length) {
+    const error = new Error('Patch must include an operations array.');
+    error.status = 400;
+    throw error;
+  }
+  const sectionsById = new Map((sections.sections || []).map((section) => [String(section.sectionId || ''), section]));
+  const sectionsBySelector = new Map((sections.sections || []).map((section) => [String(section.selector || ''), section]));
+  const normalizedOperations = operations.map((operation) => {
+    const type = String(operation?.op || operation?.type || '').trim();
+    if (type !== 'replace_section') return operation;
+    const section = sectionsById.get(String(operation.sectionId || operation.section_id || ''))
+      || sectionsBySelector.get(String(operation.selector || ''));
+    return {
+      ...operation,
+      op: type,
+      ...(section && !operation.sectionId && !operation.section_id ? { sectionId: section.sectionId } : {}),
+      expectedHash: operation.expectedHash || operation.expected_hash || section?.hash || '',
+    };
+  });
+  const payload = {
+    ...patch,
+    baseVersionId: patch.baseVersionId || patch.base_version_id || sections.versionId,
+    operations: normalizedOperations,
+  };
+  if (booleanFlag(flags.dryRun || flags.dry_run)) {
+    return {
+      ok: true,
+      dryRun: true,
+      shareId: parsed.shareId,
+      url: parsed.url.toString(),
+      versionId: sections.versionId,
+      changedSections: normalizedOperations.map((operation) => ({
+        type: String(operation?.op || operation?.type || '').trim(),
+        sectionId: String(operation?.sectionId || operation?.section_id || '').trim(),
+        selector: String(operation?.selector || '').trim(),
+        expectedHash: String(operation?.expectedHash || operation?.expected_hash || '').trim(),
+      })),
+    };
+  }
+  return teamSharingRequestJson({
+    serverUrl: requestServerUrl,
+    token,
+    machineFingerprint,
+    method: 'PATCH',
+    pathname: `/api/team-sharing/shares/${encodeURIComponent(parsed.shareId)}`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    body: payload,
   });
 }
 
@@ -2315,6 +2467,146 @@ function pickShareArtifactTitle(content = '', sourceType = 'markdown', filePath 
   return fallback || 'MagClaw shared page';
 }
 
+function mimeExtension(mimeType = '') {
+  const clean = String(mimeType || '').trim().toLowerCase();
+  if (clean === 'image/jpeg') return 'jpg';
+  if (clean === 'image/png') return 'png';
+  if (clean === 'image/gif') return 'gif';
+  if (clean === 'image/webp') return 'webp';
+  if (clean === 'image/svg+xml') return 'svg';
+  if (clean === 'video/mp4') return 'mp4';
+  if (clean === 'video/webm') return 'webm';
+  if (clean === 'audio/mpeg') return 'mp3';
+  if (clean === 'audio/wav') return 'wav';
+  return clean.split('/').pop()?.replace(/[^a-z0-9.+-]+/g, '') || 'bin';
+}
+
+function shareAssetPathFromUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    return `${url.pathname}${url.search || ''}`;
+  } catch {
+    return raw;
+  }
+}
+
+function optimizeAssetsEnabled(flags = {}) {
+  const value = flags.optimizeAssets ?? flags.optimize_assets;
+  if (value === undefined || value === null || value === true) return true;
+  if (value === false) return false;
+  return !/^(0|false|no|off|none|inline)$/i.test(String(value).trim());
+}
+
+async function resolveOrUploadTeamSharingAsset({
+  serverUrl,
+  token,
+  machineFingerprint,
+  workspaceId = '',
+  mimeType = '',
+  buffer,
+  timeoutMs,
+} = {}) {
+  const sha256 = sha256Hex(buffer);
+  const bytes = buffer.length;
+  const filename = `team-sharing-${sha256.slice(0, 16)}.${mimeExtension(mimeType)}`;
+  const resolve = await teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: '/api/team-sharing/assets/resolve',
+    timeoutMs,
+    body: { workspaceId, sha256, bytes, mimeType },
+  });
+  if (resolve?.found && resolve.asset?.url) return { asset: resolve.asset, reused: true };
+  const uploaded = await teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: '/api/team-sharing/assets',
+    timeoutMs,
+    body: {
+      workspaceId,
+      filename,
+      mimeType,
+      sha256,
+      bytes,
+      dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+    },
+  });
+  return { asset: uploaded.asset, reused: Boolean(uploaded.reused) };
+}
+
+async function optimizeShareArtifactAssets({
+  content = '',
+  contentType = '',
+  serverUrl,
+  token,
+  machineFingerprint,
+  workspaceId = '',
+  flags = {},
+  env = process.env,
+} = {}) {
+  const text = String(content || '');
+  if (!optimizeAssetsEnabled(flags) || !['html', 'svg'].includes(String(contentType || '').trim().toLowerCase())) {
+    return { content: text, assetIds: [], assetRefs: [], optimized: false, fallback: false };
+  }
+  const threshold = Math.max(1024, Number(flags.assetThresholdBytes || env.MAGCLAW_TEAM_SHARING_ASSET_THRESHOLD_BYTES || 64 * 1024) || 64 * 1024);
+  const pattern = /\b(src|href)=(["'])data:((?:image|video|audio)\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)\2/gi;
+  let output = '';
+  let lastIndex = 0;
+  let match;
+  const assetRefs = [];
+  let fallback = false;
+  while ((match = pattern.exec(text))) {
+    output += text.slice(lastIndex, match.index);
+    lastIndex = pattern.lastIndex;
+    const [full, attr, quote, mimeType, base64Body] = match;
+    let replacement = full;
+    const buffer = Buffer.from(String(base64Body || '').replace(/\s+/g, ''), 'base64');
+    if (buffer.length >= threshold) {
+      try {
+        const { asset } = await resolveOrUploadTeamSharingAsset({
+          serverUrl,
+          token,
+          machineFingerprint,
+          workspaceId,
+          mimeType,
+          buffer,
+          timeoutMs: requestTimeoutMs(flags, env),
+        });
+        if (asset?.url) {
+          assetRefs.push(asset);
+          replacement = `${attr}=${quote}${shareAssetPathFromUrl(asset.url)}${quote}`;
+        }
+      } catch {
+        fallback = true;
+      }
+    }
+    output += replacement;
+  }
+  output += text.slice(lastIndex);
+  return {
+    content: output,
+    assetIds: Array.from(new Set(assetRefs.map((asset) => String(asset.id || '').trim()).filter(Boolean))),
+    assetRefs,
+    optimized: assetRefs.length > 0,
+    fallback,
+  };
+}
+
+function readPatchPayload(flags = {}) {
+  const raw = flags.patch || flags.patchFile || flags.patchJson || flags._?.[2] || '';
+  if (!raw) return {};
+  const text = String(raw);
+  const filePath = path.resolve(flags.cwd || process.cwd(), text);
+  if (existsSync(filePath)) return JSON.parse(readFileSync(filePath, 'utf8'));
+  return JSON.parse(text);
+}
+
 export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
   const fileArg = String(flags.file || flags.path || flags.artifact || flags._?.[1] || '').trim();
   const inlineContent = flags.content ?? flags.markdown ?? flags.html ?? '';
@@ -2326,7 +2618,18 @@ export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
   const content = filePath ? await readFile(filePath, 'utf8') : String(inlineContent);
   const { project, serverUrl, token, machineFingerprint } = await resolveTeamSharingClient(flags, env, { allowLogin: true });
   const contentType = inferShareArtifactType(flags.type || flags.contentType, filePath);
-  const title = String(flags.title || flags.name || pickShareArtifactTitle(content, contentType, filePath)).trim() || 'MagClaw shared page';
+  const optimized = await optimizeShareArtifactAssets({
+    content,
+    contentType,
+    serverUrl,
+    token,
+    machineFingerprint,
+    workspaceId: flags.workspaceId || project.config.workspaceId || '',
+    flags,
+    env,
+  });
+  const shareContent = optimized.content;
+  const title = String(flags.title || flags.name || pickShareArtifactTitle(shareContent, contentType, filePath)).trim() || 'MagClaw shared page';
   return teamSharingRequestJson({
     serverUrl,
     token,
@@ -2337,15 +2640,22 @@ export async function shareTeamSharingArtifact(flags = {}, env = process.env) {
       title,
       description: flags.description || '',
       contentType,
-      content,
+      content: shareContent,
+      assetIds: optimized.assetIds,
       workspaceId: flags.workspaceId || project.config.workspaceId || '',
       channelId: flags.channelId || project.config.channelId || '',
       channelPath: flags.channelPath || project.config.channelPath || '',
       projectKey: flags.projectKey || project.config.projectKey || '',
+      optimizeAssets: optimizeAssetsEnabled(flags),
       source: {
         kind: 'cli_artifact',
         runtime: flags.runtime || '',
         file: filePath ? path.basename(filePath) : '',
+        assetOptimization: {
+          optimized: optimized.optimized,
+          fallback: optimized.fallback,
+          assetCount: optimized.assetRefs.length,
+        },
       },
     },
   });

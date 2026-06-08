@@ -1,3 +1,5 @@
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import {
   applyTeamSharingFeedback,
   contextWindowForTeamSharingSession,
@@ -9,6 +11,7 @@ import {
 import { TEAM_SHARING_COMMON_LINK_ICONS } from '../team-sharing-link-icons.js';
 import { ensureWorkspaceAllChannel } from '../workspace-defaults.js';
 import { channelFeishuRouteKey, parseChannelImportPath } from '../integrations/feishu-connect/route-token.js';
+import { attachmentPathWithinStorage, safeFileName } from '../path-utils.js';
 import crypto from 'node:crypto';
 
 function asArray(value) {
@@ -103,6 +106,7 @@ function resultContextWebUrl(req, state = {}, item = {}, queryId = '') {
 
 const SHARE_CONTENT_TYPES = new Set(['html', 'markdown', 'svg', 'mermaid']);
 const MAX_SHARE_CONTENT_LENGTH = 10 * 1024 * 1024;
+const TEAM_SHARING_INLINE_ASSET_THRESHOLD_BYTES = 64 * 1024;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const MACHINE_FINGERPRINT_PATTERN = /^mfp_[a-f0-9]{64}$/;
 const TEAM_SHARING_AUTH_THROTTLE_WINDOW_MS = 10 * 60 * 1000;
@@ -125,6 +129,259 @@ function ensureTeamSharingShares(teamSharingState = {}) {
   return teamSharingState.shares;
 }
 
+function ensureTeamSharingAssets(teamSharingState = {}) {
+  teamSharingState.assets = Array.isArray(teamSharingState.assets) ? teamSharingState.assets : [];
+  return teamSharingState.assets;
+}
+
+function ensureTeamSharingShareContents(teamSharingState = {}) {
+  teamSharingState.shareContents = Array.isArray(teamSharingState.shareContents) ? teamSharingState.shareContents : [];
+  return teamSharingState.shareContents;
+}
+
+function sha256Buffer(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+function sha256Text(value = '') {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function mimeExtension(mimeType = '') {
+  const clean = String(mimeType || '').trim().toLowerCase();
+  if (clean === 'image/jpeg') return 'jpg';
+  if (clean === 'image/png') return 'png';
+  if (clean === 'image/gif') return 'gif';
+  if (clean === 'image/webp') return 'webp';
+  if (clean === 'image/svg+xml') return 'svg';
+  if (clean === 'video/mp4') return 'mp4';
+  if (clean === 'video/webm') return 'webm';
+  if (clean === 'audio/mpeg') return 'mp3';
+  if (clean === 'audio/wav') return 'wav';
+  return clean.split('/').pop()?.replace(/[^a-z0-9.+-]+/g, '') || 'bin';
+}
+
+function teamSharingAssetPath(asset = {}) {
+  const id = String(asset.id || '').trim();
+  if (!id) return '';
+  const filename = safeFileName(asset.filename || asset.name || `asset-${id}`);
+  return `/api/team-sharing/assets/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`;
+}
+
+function teamSharingAssetUrl(req, asset = {}) {
+  const path = teamSharingAssetPath(asset);
+  return path ? `${publicUrlFromRequest(req)}${path}` : '';
+}
+
+function publicTeamSharingAsset(req, asset = {}) {
+  return {
+    id: String(asset.id || '').trim(),
+    filename: String(asset.filename || asset.name || '').trim(),
+    mimeType: String(asset.mimeType || asset.type || '').trim(),
+    bytes: Number(asset.bytes || asset.sizeBytes || asset.size || 0),
+    checksumSha256: String(asset.checksumSha256 || asset.sha256 || '').trim(),
+    workspaceId: String(asset.workspaceId || '').trim(),
+    url: teamSharingAssetUrl(req, asset),
+    createdAt: String(asset.createdAt || '').trim(),
+  };
+}
+
+function findTeamSharingAsset(teamSharingState = {}, { workspaceId = '', checksumSha256 = '', bytes = 0, mimeType = '', assetId = '' } = {}) {
+  const cleanAssetId = String(assetId || '').trim();
+  const cleanWorkspaceId = String(workspaceId || '').trim();
+  const cleanHash = String(checksumSha256 || '').trim().toLowerCase();
+  const cleanMime = String(mimeType || '').trim().toLowerCase();
+  const cleanBytes = Number(bytes || 0);
+  return ensureTeamSharingAssets(teamSharingState).find((asset) => {
+    if (!asset || asset.revokedAt) return false;
+    if (cleanAssetId) return String(asset.id || '').trim() === cleanAssetId;
+    if (!cleanWorkspaceId || !cleanHash) return false;
+    return String(asset.workspaceId || '').trim() === cleanWorkspaceId
+      && String(asset.checksumSha256 || '').trim().toLowerCase() === cleanHash
+      && (!cleanBytes || Number(asset.bytes || 0) === cleanBytes)
+      && (!cleanMime || String(asset.mimeType || asset.type || '').trim().toLowerCase() === cleanMime);
+  }) || null;
+}
+
+function decodeDataUrl(value = '') {
+  const match = String(value || '').match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+  if (!match) return null;
+  try {
+    const mimeType = String(match[1] || '').trim();
+    const buffer = Buffer.from(String(match[2] || '').replace(/\s+/g, ''), 'base64');
+    return buffer.length ? { mimeType, buffer } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function upsertTeamSharingAsset({
+  teamSharingState,
+  state,
+  saveAttachmentBuffer,
+  makeId,
+  now,
+  workspaceId = '',
+  filename = '',
+  mimeType = '',
+  buffer,
+  actorId = '',
+} = {}) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) {
+    const error = new Error('Asset content is required.');
+    error.status = 400;
+    throw error;
+  }
+  const cleanWorkspaceId = String(workspaceId || '').trim() || 'local';
+  const checksumSha256 = sha256Buffer(buffer);
+  const cleanMimeType = String(mimeType || 'application/octet-stream').trim();
+  const existing = findTeamSharingAsset(teamSharingState, {
+    workspaceId: cleanWorkspaceId,
+    checksumSha256,
+    bytes: buffer.length,
+    mimeType: cleanMimeType,
+  });
+  if (existing) return { asset: existing, reused: true };
+  if (typeof saveAttachmentBuffer !== 'function') {
+    const error = new Error('Team Sharing asset storage is unavailable.');
+    error.status = 503;
+    throw error;
+  }
+  const fallbackName = `team-sharing-${checksumSha256.slice(0, 16)}.${mimeExtension(cleanMimeType)}`;
+  const safeName = safeFileName(filename || fallbackName);
+  const attachment = await saveAttachmentBuffer({
+    name: safeName,
+    type: cleanMimeType,
+    buffer,
+    source: 'team-sharing-asset',
+    extra: {
+      workspaceId: cleanWorkspaceId,
+      serverId: cleanWorkspaceId,
+      ...(actorId ? { createdBy: actorId } : {}),
+    },
+  });
+  state.attachments = Array.isArray(state.attachments) ? state.attachments : [];
+  state.attachments.push(attachment);
+  const createdAt = now();
+  const asset = {
+    id: typeof makeId === 'function' ? makeId('asset') : randomToken('asset'),
+    workspaceId: cleanWorkspaceId,
+    attachmentId: attachment.id || '',
+    filename: safeName,
+    mimeType: cleanMimeType,
+    bytes: buffer.length,
+    checksumSha256,
+    storageMode: attachment.storageMode || 'pvc',
+    storageKey: attachment.storageKey || attachment.relativePath || '',
+    relativePath: attachment.relativePath || attachment.storageKey || '',
+    path: attachment.path || '',
+    createdBy: actorId,
+    createdAt,
+    updatedAt: createdAt,
+  };
+  ensureTeamSharingAssets(teamSharingState).push(asset);
+  return { asset, reused: false };
+}
+
+function upsertShareContentBlob(teamSharingState = {}, { workspaceId = '', contentType = '', content = '', assetIds = [], now, makeId } = {}) {
+  const cleanWorkspaceId = String(workspaceId || '').trim() || 'local';
+  const cleanContentType = String(contentType || '').trim();
+  const text = String(content || '');
+  const contentHash = sha256Text(text);
+  const existing = ensureTeamSharingShareContents(teamSharingState).find((blob) => (
+    blob
+    && !blob.revokedAt
+    && String(blob.workspaceId || '').trim() === cleanWorkspaceId
+    && String(blob.contentHash || '').trim() === contentHash
+    && String(blob.contentType || '').trim() === cleanContentType
+  ));
+  if (existing) return existing;
+  const createdAt = typeof now === 'function' ? now() : new Date().toISOString();
+  const blob = {
+    id: typeof makeId === 'function' ? makeId('shc') : `shc_${contentHash.slice(0, 16)}`,
+    workspaceId: cleanWorkspaceId,
+    contentHash,
+    contentType: cleanContentType,
+    content: text,
+    bytes: Buffer.byteLength(text, 'utf8'),
+    assetIds: Array.from(new Set(assetIds.map(String).filter(Boolean))),
+    createdAt,
+    updatedAt: createdAt,
+  };
+  ensureTeamSharingShareContents(teamSharingState).push(blob);
+  return blob;
+}
+
+function currentShareVersion(share = {}) {
+  const versions = Array.isArray(share.versions) ? share.versions : [];
+  const currentVersionId = String(share.currentVersionId || '').trim();
+  return versions.find((version) => String(version.id || '').trim() === currentVersionId)
+    || versions.at(-1)
+    || null;
+}
+
+function shareContentBlob(teamSharingState = {}, version = {}) {
+  const blobId = String(version?.contentBlobId || '').trim();
+  const hash = String(version?.contentHash || '').trim();
+  return ensureTeamSharingShareContents(teamSharingState).find((blob) => (
+    blob
+    && !blob.revokedAt
+    && ((blobId && String(blob.id || '').trim() === blobId) || (hash && String(blob.contentHash || '').trim() === hash))
+  )) || null;
+}
+
+function shareContentRecord(teamSharingState = {}, share = {}) {
+  const version = currentShareVersion(share);
+  const blob = shareContentBlob(teamSharingState, version);
+  const content = String(blob?.content ?? version?.content ?? share.content ?? '');
+  const contentType = String(version?.contentType || blob?.contentType || share.contentType || '').trim();
+  const assetIds = Array.from(new Set(asArray(version?.assetIds || blob?.assetIds || share.assetIds).map(String).filter(Boolean)));
+  return {
+    version,
+    blob,
+    content,
+    contentType,
+    contentHash: String(version?.contentHash || blob?.contentHash || share.contentHash || (content ? sha256Text(content) : '')).trim(),
+    assetIds,
+  };
+}
+
+function ensureShareVersionModel(teamSharingState = {}, share = {}, { makeId, now } = {}) {
+  share.versions = Array.isArray(share.versions) ? share.versions : [];
+  if (share.versions.length && share.currentVersionId) return shareContentRecord(teamSharingState, share);
+  const createdAt = share.createdAt || (typeof now === 'function' ? now() : new Date().toISOString());
+  const contentType = normalizeShareContentType(share.contentType, share.content || '');
+  const assetIds = asArray(share.assetIds).map(String).filter(Boolean);
+  const blob = upsertShareContentBlob(teamSharingState, {
+    workspaceId: share.workspaceId || 'local',
+    contentType,
+    content: share.content || '',
+    assetIds,
+    now,
+    makeId,
+  });
+  const version = {
+    id: typeof makeId === 'function' ? makeId('shv') : `shv_${blob.contentHash.slice(0, 16)}`,
+    shareId: share.id || '',
+    title: share.title || 'MagClaw shared page',
+    description: share.description || '',
+    contentType,
+    contentHash: blob.contentHash,
+    contentBlobId: blob.id,
+    assetIds,
+    createdAt,
+    createdBy: share.creator?.id || share.createdBy || '',
+    reason: 'initial',
+  };
+  share.versions.push(version);
+  share.currentVersionId = version.id;
+  share.contentHash = blob.contentHash;
+  share.assetIds = assetIds;
+  share.contentType = contentType;
+  share.updatedAt = share.updatedAt || createdAt;
+  return { version, blob, content: blob.content, contentType, contentHash: blob.contentHash, assetIds };
+}
+
 function publicUrlFromRequest(req) {
   const configured = String(process.env.MAGCLAW_PUBLIC_URL || '').trim().replace(/\/+$/, '');
   if (configured) return configured;
@@ -139,15 +396,152 @@ function shareUrl(req, shareId = '') {
   return `${publicUrlFromRequest(req)}/s/${encodeURIComponent(shareId)}`;
 }
 
-function shareReadPayload(req, share = {}) {
+function stripTags(value = '') {
+  return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function slugSegment(value = '', fallback = 'section') {
+  const slug = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72);
+  return slug || fallback;
+}
+
+function htmlAttr(attrs = '', name = '') {
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*([\"'])(.*?)\\1`, 'i');
+  const match = String(attrs || '').match(pattern);
+  return match ? String(match[2] || '').trim() : '';
+}
+
+function extractHtmlShareSections(content = '') {
+  const text = String(content || '');
+  const sections = [];
+  const sectionPattern = /<section\b([^>]*)>[\s\S]*?<\/section>/gi;
+  let match;
+  let index = 0;
+  while ((match = sectionPattern.exec(text))) {
+    index += 1;
+    const html = match[0];
+    const attrs = match[1] || '';
+    const explicitId = htmlAttr(attrs, 'id');
+    const heading = html.match(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/i);
+    const title = stripTags(heading?.[2] || explicitId || `Section ${index}`);
+    const sectionId = explicitId || slugSegment(title, `section-${index}`);
+    sections.push({
+      sectionId,
+      selector: explicitId ? `section#${explicitId}` : `section:nth-of-type(${index})`,
+      title,
+      hash: sha256Text(html),
+      content: html,
+      startOffset: match.index,
+      endOffset: match.index + html.length,
+    });
+  }
+  if (sections.length) return sections;
+  const headingPattern = /<h([1-3])\b([^>]*)>[\s\S]*?<\/h\1>/gi;
+  const headings = [];
+  while ((match = headingPattern.exec(text))) {
+    headings.push({ index: match.index, heading: match[0], attrs: match[2] || '' });
+  }
+  return headings.map((heading, idx) => {
+    const end = headings[idx + 1]?.index ?? text.length;
+    const html = text.slice(heading.index, end);
+    const explicitId = htmlAttr(heading.attrs, 'id');
+    const title = stripTags(heading.heading);
+    const sectionId = explicitId || slugSegment(title, `section-${idx + 1}`);
+    return {
+      sectionId,
+      selector: explicitId ? `#${explicitId}` : `h${idx + 1}`,
+      title,
+      hash: sha256Text(html),
+      content: html,
+      startOffset: heading.index,
+      endOffset: end,
+    };
+  });
+}
+
+function extractMarkdownShareSections(content = '') {
+  const text = String(content || '');
+  const headingPattern = /^(#{1,3})\s+(.+)$/gm;
+  const headings = [];
+  let match;
+  while ((match = headingPattern.exec(text))) {
+    headings.push({ index: match.index, marker: match[1], title: match[2] });
+  }
+  if (!headings.length) {
+    return [{
+      sectionId: 'document',
+      selector: 'document',
+      title: 'Document',
+      hash: sha256Text(text),
+      content: text,
+      startOffset: 0,
+      endOffset: text.length,
+    }];
+  }
+  return headings.map((heading, idx) => {
+    const end = headings[idx + 1]?.index ?? text.length;
+    const block = text.slice(heading.index, end);
+    const title = String(heading.title || '').trim();
+    return {
+      sectionId: slugSegment(title, `section-${idx + 1}`),
+      selector: `${heading.marker} ${title}`,
+      title,
+      hash: sha256Text(block),
+      content: block,
+      startOffset: heading.index,
+      endOffset: end,
+    };
+  });
+}
+
+function extractShareSections(content = '', contentType = '') {
+  const type = String(contentType || '').trim().toLowerCase();
+  const sections = type === 'html' || type === 'svg'
+    ? extractHtmlShareSections(content)
+    : extractMarkdownShareSections(content);
+  return sections.map((section, index) => ({
+    ...section,
+    ordinal: index + 1,
+    bytes: Buffer.byteLength(String(section.content || ''), 'utf8'),
+  }));
+}
+
+function shareAssetRefs(req, teamSharingState = {}, assetIds = []) {
+  const ids = new Set(asArray(assetIds).map(String).filter(Boolean));
+  if (!ids.size) return [];
+  return ensureTeamSharingAssets(teamSharingState)
+    .filter((asset) => ids.has(String(asset.id || '')) && !asset.revokedAt)
+    .map((asset) => publicTeamSharingAsset(req, asset));
+}
+
+function shareReadPayload(req, share = {}, teamSharingState = {}) {
+  const record = shareContentRecord(teamSharingState, share);
+  const contentType = record.contentType || String(share.contentType || '').trim();
   return {
     ok: true,
     kind: 'share',
     shareId: String(share.id || '').trim(),
     title: String(share.title || '').trim(),
     description: String(share.description || '').trim(),
-    contentType: String(share.contentType || '').trim(),
-    content: String(share.content || ''),
+    contentType,
+    content: record.content,
+    versionId: String(record.version?.id || share.currentVersionId || '').trim(),
+    contentHash: record.contentHash,
+    assetRefs: shareAssetRefs(req, teamSharingState, record.assetIds),
+    sections: extractShareSections(record.content, contentType).map((section) => ({
+      sectionId: section.sectionId,
+      selector: section.selector,
+      title: section.title,
+      hash: section.hash,
+      bytes: section.bytes,
+      ordinal: section.ordinal,
+    })),
     workspaceId: String(share.workspaceId || '').trim(),
     channelId: String(share.channelId || '').trim(),
     channelPath: String(share.channelPath || '').trim(),
@@ -158,8 +552,320 @@ function shareReadPayload(req, share = {}) {
       email: String(share.creator.email || '').trim(),
     } : null,
     createdAt: String(share.createdAt || '').trim(),
+    updatedAt: String(share.updatedAt || '').trim(),
     url: shareUrl(req, share.id || ''),
   };
+}
+
+function shareSectionsPayload(req, share = {}, teamSharingState = {}) {
+  const record = shareContentRecord(teamSharingState, share);
+  const contentType = record.contentType || String(share.contentType || '').trim();
+  return {
+    ok: true,
+    kind: 'share_sections',
+    shareId: String(share.id || '').trim(),
+    versionId: String(record.version?.id || share.currentVersionId || '').trim(),
+    contentHash: record.contentHash,
+    contentType,
+    title: String(share.title || '').trim(),
+    sections: extractShareSections(record.content, contentType),
+    assetRefs: shareAssetRefs(req, teamSharingState, record.assetIds),
+    url: shareUrl(req, share.id || ''),
+  };
+}
+
+function parseAttachmentRange(rangeHeader, size) {
+  const value = String(rangeHeader || '').trim();
+  if (!value || !Number.isFinite(size) || size < 0) return null;
+  const match = value.match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match) return { unsatisfiable: true };
+  let [, rawStart, rawEnd] = match;
+  if (!rawStart && !rawEnd) return { unsatisfiable: true };
+  if (!size) return { unsatisfiable: true };
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return { unsatisfiable: true };
+    const start = Math.max(0, size - suffixLength);
+    return { start, end: size - 1 };
+  }
+  const start = Number(rawStart);
+  const end = rawEnd ? Number(rawEnd) : size - 1;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= size) {
+    return { unsatisfiable: true };
+  }
+  return { start, end: Math.min(end, size - 1) };
+}
+
+function assetWorkspaceAccess(req, { actor, currentUser, teamSharingState, asset, state } = {}) {
+  const workspaceId = String(asset?.workspaceId || '').trim();
+  const browserAccess = browserWorkspaceAccess({
+    actor,
+    currentUser,
+    state,
+    workspaceId,
+    error: 'This Team Sharing asset is only available to members of this server.',
+  });
+  if (browserAccess) return browserAccess;
+  const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+  const tokenAccess = tokenWorkspaceAccess(state, tokenRecord, workspaceId, 'This Team Sharing asset is only available to members of this server.');
+  if (tokenAccess) return tokenAccess;
+  return { ok: false, status: 401, workspaceId, actorId: '', error: 'Sign in to MagClaw and join this server to open this asset.' };
+}
+
+function identityForEditor({ actor = null, currentUser = null, tokenRecord = null } = {}) {
+  const member = actor?.member || {};
+  const user = currentUser || actor?.user || tokenRecord?.user || {};
+  return {
+    id: String(user.id || member.userId || member.humanId || '').trim(),
+    userId: String(user.id || member.userId || '').trim(),
+    humanId: String(member.humanId || user.humanId || user.id || '').trim(),
+    email: String(user.email || member.email || '').trim(),
+    role: String(member.role || '').trim(),
+  };
+}
+
+function editorMatchesCreator(identity = {}, share = {}) {
+  const creator = share.creator || {};
+  const ids = new Set([identity.id, identity.userId, identity.humanId].map((value) => String(value || '').trim()).filter(Boolean));
+  const creatorIds = [creator.id, share.createdBy, share.createdById].map((value) => String(value || '').trim()).filter(Boolean);
+  if (creatorIds.some((id) => ids.has(id))) return true;
+  const email = String(identity.email || '').trim().toLowerCase();
+  const creatorEmail = String(creator.email || '').trim().toLowerCase();
+  return Boolean(email && creatorEmail && email === creatorEmail);
+}
+
+function editorMemberForShare(state = {}, identity = {}, share = {}, actor = null) {
+  const workspaceId = String(share.workspaceId || '').trim();
+  if (actor?.member && String(actor.member.workspaceId || '').trim() === workspaceId) return actor.member;
+  return activeWorkspaceMemberForIdentity(state, identity, workspaceId);
+}
+
+function roleCanEditShare(role = '') {
+  return ['owner', 'admin'].includes(String(role || '').trim().toLowerCase());
+}
+
+function shareEditAccess(req, { actor, currentUser, teamSharingState, share, state } = {}) {
+  const access = shareAccess(req, { actor, currentUser, teamSharingState, share, state });
+  if (!access.ok) return access;
+  const tokenRecord = actor ? null : tokenRecordForRequest(teamSharingState, req);
+  const identity = identityForEditor({ actor, currentUser, tokenRecord });
+  if (editorMatchesCreator(identity, share)) return { ...access, canEdit: true, editorId: identity.humanId || identity.id, editVia: 'creator' };
+  const member = editorMemberForShare(state, identity, share, actor);
+  if (member && roleCanEditShare(member.role)) {
+    return { ...access, canEdit: true, editorId: member.humanId || identity.humanId || identity.id, editVia: 'admin', member };
+  }
+  return {
+    ok: false,
+    status: 403,
+    workspaceId: share.workspaceId || '',
+    actorId: identity.humanId || identity.id || access.actorId || '',
+    error: 'Only the share creator, workspace owner, or workspace admin can edit this shared page.',
+  };
+}
+
+function assetFilePath(asset = {}, attachmentStorageDir = '') {
+  const fromStorage = attachmentPathWithinStorage(asset, attachmentStorageDir);
+  if (fromStorage) return fromStorage;
+  return String(asset.path || '').trim();
+}
+
+async function optimizeInlineShareAssets({
+  req,
+  content = '',
+  workspaceId = '',
+  teamSharingState,
+  state,
+  saveAttachmentBuffer,
+  makeId,
+  now,
+  actorId = '',
+} = {}) {
+  const text = String(content || '');
+  const pattern = /\b(src|href)=(["'])data:((?:image|video|audio)\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)\2/gi;
+  let output = '';
+  let lastIndex = 0;
+  let match;
+  const assetIds = [];
+  const assets = [];
+  while ((match = pattern.exec(text))) {
+    output += text.slice(lastIndex, match.index);
+    lastIndex = pattern.lastIndex;
+    const [full, attr, quote, mimeType, base64Body] = match;
+    let replacement = full;
+    try {
+      const buffer = Buffer.from(String(base64Body || '').replace(/\s+/g, ''), 'base64');
+      if (buffer.length >= TEAM_SHARING_INLINE_ASSET_THRESHOLD_BYTES) {
+        const checksum = sha256Buffer(buffer);
+        const filename = `team-sharing-${checksum.slice(0, 16)}.${mimeExtension(mimeType)}`;
+        const { asset } = await upsertTeamSharingAsset({
+          teamSharingState,
+          state,
+          saveAttachmentBuffer,
+          makeId,
+          now,
+          workspaceId,
+          filename,
+          mimeType,
+          buffer,
+          actorId,
+        });
+        assetIds.push(asset.id);
+        assets.push(asset);
+        replacement = `${attr}=${quote}${teamSharingAssetPath(asset)}${quote}`;
+      }
+    } catch (error) {
+      addInlineAssetOptimizationError(state, error, req);
+    }
+    output += replacement;
+  }
+  output += text.slice(lastIndex);
+  return {
+    content: output,
+    assetIds: Array.from(new Set(assetIds)),
+    assets,
+    optimized: assetIds.length > 0,
+  };
+}
+
+function addInlineAssetOptimizationError(state = {}, error = null, req = null) {
+  state.teamSharing = state.teamSharing || {};
+  state.teamSharing.assetOptimizationWarnings = Array.isArray(state.teamSharing.assetOptimizationWarnings)
+    ? state.teamSharing.assetOptimizationWarnings
+    : [];
+  state.teamSharing.assetOptimizationWarnings.push({
+    message: error?.message || 'Team Sharing inline asset optimization failed.',
+    path: req?.url || '',
+    createdAt: new Date().toISOString(),
+  });
+  if (state.teamSharing.assetOptimizationWarnings.length > 20) {
+    state.teamSharing.assetOptimizationWarnings = state.teamSharing.assetOptimizationWarnings.slice(-20);
+  }
+}
+
+function operationTargetSection(operation = {}, sections = []) {
+  const sectionId = String(operation.sectionId || operation.section_id || '').trim();
+  const selector = String(operation.selector || '').trim();
+  return sections.find((section) => (
+    (sectionId && section.sectionId === sectionId)
+    || (selector && section.selector === selector)
+  )) || null;
+}
+
+function applyReplaceSectionOperation(content = '', contentType = '', operation = {}) {
+  const sections = extractShareSections(content, contentType);
+  const section = operationTargetSection(operation, sections);
+  if (!section) {
+    const error = new Error(`Section not found: ${operation.sectionId || operation.selector || ''}`);
+    error.status = 404;
+    throw error;
+  }
+  const expectedHash = String(operation.expectedHash || operation.expected_hash || '').trim();
+  if (!expectedHash) {
+    const error = new Error('expectedHash is required for replace_section.');
+    error.status = 400;
+    throw error;
+  }
+  if (expectedHash !== section.hash) {
+    const error = new Error('Section hash does not match the latest version.');
+    error.status = 409;
+    error.reason = 'version_conflict';
+    error.section = { sectionId: section.sectionId, expectedHash, actualHash: section.hash };
+    throw error;
+  }
+  const replacement = String(operation.content ?? operation.html ?? operation.markdown ?? operation.replacement ?? '');
+  if (!replacement.trim()) {
+    const error = new Error('Replacement content is required.');
+    error.status = 400;
+    throw error;
+  }
+  const before = content.slice(0, section.startOffset);
+  const after = content.slice(section.endOffset);
+  const nextContent = `${before}${replacement}${after}`;
+  return {
+    content: nextContent,
+    changed: {
+      type: 'replace_section',
+      sectionId: section.sectionId,
+      title: section.title,
+      previousHash: section.hash,
+      nextHash: sha256Text(replacement),
+    },
+  };
+}
+
+function applyReplaceSelectorTextOperation(content = '', operation = {}) {
+  const selector = String(operation.selector || '').trim();
+  const idMatch = selector.match(/#([a-zA-Z0-9_.:-]+)/);
+  if (!idMatch) {
+    const error = new Error('replace_selector_text currently requires an id selector.');
+    error.status = 400;
+    throw error;
+  }
+  const id = idMatch[1].replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const pattern = new RegExp(`(<([a-zA-Z0-9:-]+)\\b[^>]*\\bid=(["'])${id}\\3[^>]*>)([\\s\\S]*?)(<\\/\\2>)`, 'i');
+  const match = content.match(pattern);
+  if (!match) {
+    const error = new Error(`Selector not found: ${selector}`);
+    error.status = 404;
+    throw error;
+  }
+  const expectedHash = String(operation.expectedHash || operation.expected_hash || '').trim();
+  const currentHash = sha256Text(match[0]);
+  if (expectedHash && expectedHash !== currentHash) {
+    const error = new Error('Selector hash does not match the latest version.');
+    error.status = 409;
+    error.reason = 'version_conflict';
+    error.section = { selector, expectedHash, actualHash: currentHash };
+    throw error;
+  }
+  const text = htmlEscape(String(operation.text ?? operation.replacement ?? ''));
+  const replacement = `${match[1]}${text}${match[5]}`;
+  return {
+    content: content.replace(match[0], replacement),
+    changed: {
+      type: 'replace_selector_text',
+      selector,
+      previousHash: currentHash,
+      nextHash: sha256Text(replacement),
+    },
+  };
+}
+
+function applySharePatchOperations(content = '', contentType = '', operations = []) {
+  let nextContent = String(content || '');
+  const changedSections = [];
+  for (const operation of operations) {
+    const type = String(operation?.op || operation?.type || '').trim();
+    if (type === 'replace_section') {
+      const result = applyReplaceSectionOperation(nextContent, contentType, operation);
+      nextContent = result.content;
+      changedSections.push(result.changed);
+      continue;
+    }
+    if (type === 'replace_selector_text') {
+      const result = applyReplaceSelectorTextOperation(nextContent, operation);
+      nextContent = result.content;
+      changedSections.push(result.changed);
+      continue;
+    }
+    if (type === 'replace_asset_ref') {
+      const from = String(operation.from || operation.previousUrl || '').trim();
+      const to = String(operation.to || operation.nextUrl || '').trim();
+      if (!from || !to) {
+        const error = new Error('replace_asset_ref requires from and to.');
+        error.status = 400;
+        throw error;
+      }
+      nextContent = nextContent.split(from).join(to);
+      changedSections.push({ type, previousHash: sha256Text(from), nextHash: sha256Text(to) });
+      continue;
+    }
+    if (type === 'set_metadata') continue;
+    const error = new Error(`Unsupported share patch operation: ${type || 'unknown'}`);
+    error.status = 400;
+    throw error;
+  }
+  return { content: nextContent, changedSections };
 }
 
 function creatorFromActor(actor = {}, tokenRecord = null) {
@@ -323,10 +1029,12 @@ function shareChromeHtml(share = {}, innerHtml = '') {
 </html>`;
 }
 
-function renderShareHtml(share = {}) {
+function renderShareHtml(share = {}, teamSharingState = {}) {
   const title = htmlEscape(share.title || 'Shared page');
-  const content = String(share.content || '');
-  if (share.contentType === 'html') {
+  const record = shareContentRecord(teamSharingState, share);
+  const content = String(record.content || '');
+  const contentType = record.contentType || share.contentType;
+  if (contentType === 'html') {
     const footer = shareFooterHtml(share);
     if (/^<!doctype html/i.test(content.trim()) || /^<html[\s>]/i.test(content.trim())) {
       return /<\/body>/i.test(content)
@@ -335,11 +1043,11 @@ function renderShareHtml(share = {}) {
     }
     return shareChromeHtml(share, `<h1>${title}</h1>\n${content}`);
   }
-  if (share.contentType === 'svg') {
+  if (contentType === 'svg') {
     const svg = content.trim().startsWith('<svg') ? content : `<pre><code>${htmlEscape(content)}</code></pre>`;
     return shareChromeHtml(share, `<h1>${title}</h1>\n${svg}`);
   }
-  if (share.contentType === 'mermaid') {
+  if (contentType === 'mermaid') {
     return shareChromeHtml(share, `<h1>${title}</h1>
 <pre class="mermaid">${htmlEscape(content.replace(/^```mermaid\s*/i, '').replace(/```$/i, '').trim())}</pre>
 <script type="module">
@@ -374,22 +1082,22 @@ function displayShareChannelName(value = '') {
   return parts.at(-1) || raw;
 }
 
-function renderShareIndexHtml(shares = []) {
+function renderShareIndexHtml(shares = [], teamSharingState = {}) {
   const grouped = new Map();
   for (const share of shares.slice().reverse()) {
     const channel = displayShareChannelName(shareChannelFolderLabel(share));
     if (!grouped.has(channel)) grouped.set(channel, []);
-    grouped.get(channel).push(share);
+    grouped.get(channel).push({ share, record: shareContentRecord(teamSharingState, share) });
   }
   const folders = [...grouped.entries()].map(([channel, items]) => `
     <details class="share-channel" open>
       <summary><span class="share-channel-caret">▸</span><span># ${htmlEscape(channel)}</span><span class="share-channel-count">${items.length}</span></summary>
       <div class="share-channel-content">
-        ${items.map((share) => `
+        ${items.map(({ share, record }) => `
           <a class="share-entry" href="/s/${encodeURIComponent(share.id)}">
             <h2>${htmlEscape(share.title || share.id)}</h2>
-            <p>${htmlEscape(compactText(share.description || share.content || '', 180))}</p>
-            <small>${htmlEscape(share.contentType || 'artifact')} · 创建者 ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(formatChinaDateTime(share.createdAt || ''))}</small>
+            <p>${htmlEscape(compactText(share.description || record.content || '', 180))}</p>
+            <small>${htmlEscape(record.contentType || share.contentType || 'artifact')} · 创建者 ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(formatChinaDateTime(share.updatedAt || share.createdAt || ''))}</small>
           </a>
         `).join('')}
       </div>
@@ -3109,9 +3817,11 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     readJson,
     rerank = null,
     rerankReady = null,
+    saveAttachmentBuffer = null,
     sendError,
     sendJson,
     summarizeSession = null,
+    attachmentStorageDir = '',
     teamSharingAuthRequired = null,
     upsertChannelMember = null,
     validTeamSharingToken = null,
@@ -3478,7 +4188,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
-    sendShareHtml(res, renderShareHtml(share));
+    sendShareHtml(res, renderShareHtml(share, teamSharingState));
     return true;
   }
 
@@ -3517,8 +4227,327 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
-    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(teamSharingState, access.workspaceId)));
+    sendShareHtml(res, renderShareIndexHtml(sharesForShareRoot(teamSharingState, access.workspaceId), teamSharingState));
     return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/assets/resolve') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const body = await readJson(req);
+    const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
+    const access = assetWorkspaceAccess(req, {
+      actor,
+      currentUser: browserUser,
+      teamSharingState,
+      state,
+      asset: { workspaceId: effectiveWorkspaceId },
+    });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'server_membership_required',
+        error: access.error || 'Join this server before resolving Team Sharing assets.',
+      });
+      return true;
+    }
+    const asset = findTeamSharingAsset(teamSharingState, {
+      workspaceId: effectiveWorkspaceId,
+      checksumSha256: body.sha256 || body.checksumSha256 || body.checksum_sha256 || '',
+      bytes: body.bytes || body.sizeBytes || body.size || 0,
+      mimeType: body.mimeType || body.type || '',
+    });
+    sendJson(res, 200, {
+      ok: true,
+      found: Boolean(asset),
+      asset: asset ? publicTeamSharingAsset(req, asset) : null,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/team-sharing/assets') {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const body = await readJson(req);
+    const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
+    const access = assetWorkspaceAccess(req, {
+      actor,
+      currentUser: browserUser,
+      teamSharingState,
+      state,
+      asset: { workspaceId: effectiveWorkspaceId },
+    });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'server_membership_required',
+        error: access.error || 'Join this server before uploading Team Sharing assets.',
+      });
+      return true;
+    }
+    const decoded = decodeDataUrl(body.dataUrl || body.data_url || '');
+    const mimeType = String(body.mimeType || body.type || decoded?.mimeType || '').trim();
+    const buffer = decoded?.buffer || (body.base64 || body.contentBase64
+      ? Buffer.from(String(body.base64 || body.contentBase64 || '').replace(/\s+/g, ''), 'base64')
+      : null);
+    if (!Buffer.isBuffer(buffer) || !buffer.length) {
+      sendError(res, 400, 'Asset content is required.');
+      return true;
+    }
+    const expectedHash = String(body.sha256 || body.checksumSha256 || body.checksum_sha256 || '').trim().toLowerCase();
+    const actualHash = sha256Buffer(buffer);
+    if (expectedHash && expectedHash !== actualHash) {
+      sendError(res, 400, 'Asset checksum does not match the uploaded content.');
+      return true;
+    }
+    try {
+      const actorId = actorHumanId(actor) || tokenRecord?.user?.id || '';
+      const { asset, reused } = await upsertTeamSharingAsset({
+        teamSharingState,
+        state,
+        saveAttachmentBuffer,
+        makeId,
+        now,
+        workspaceId: effectiveWorkspaceId,
+        filename: body.filename || body.name || '',
+        mimeType: mimeType || decoded?.mimeType || 'application/octet-stream',
+        buffer,
+        actorId,
+      });
+      addSystemEvent(reused ? 'team_sharing_asset_reused' : 'team_sharing_asset_uploaded', reused ? 'Team Sharing asset reused.' : 'Team Sharing asset uploaded.', {
+        workspaceId: asset.workspaceId,
+        assetId: asset.id,
+        bytes: asset.bytes,
+        mimeType: asset.mimeType,
+      });
+      await persistState({ workspaceId: asset.workspaceId || workspaceId, reason: reused ? 'team_sharing_asset_reused' : 'team_sharing_asset_uploaded' });
+      broadcastState();
+      sendJson(res, reused ? 200 : 201, {
+        ok: true,
+        reused,
+        asset: publicTeamSharingAsset(req, asset),
+      });
+      return true;
+    } catch (error) {
+      sendError(res, error.status || 500, error.message || 'Team Sharing asset upload failed.');
+      return true;
+    }
+  }
+
+  const assetReadMatch = url.pathname.match(/^\/api\/team-sharing\/assets\/([^/]+)\/(.+)$/);
+  if (req.method === 'GET' && assetReadMatch) {
+    const assetId = decodeURIComponent(assetReadMatch[1] || '');
+    const asset = findTeamSharingAsset(teamSharingState, { assetId });
+    if (!asset) {
+      sendError(res, 404, 'Team Sharing asset not found.');
+      return true;
+    }
+    const access = assetWorkspaceAccess(req, { actor, currentUser: browserUser, teamSharingState, asset, state });
+    if (!access.ok) {
+      sendError(res, access.status || 403, access.error || 'Join this server before opening this asset.');
+      return true;
+    }
+    const filePath = assetFilePath(asset, attachmentStorageDir);
+    let fileStat;
+    try {
+      fileStat = await stat(filePath);
+    } catch {
+      sendError(res, 404, 'Team Sharing asset file is unavailable.');
+      return true;
+    }
+    const size = Number(fileStat.size || asset.bytes || 0);
+    const etag = `"${String(asset.checksumSha256 || '').trim() || sha256Text(`${asset.id}:${size}`)}"`;
+    const baseHeaders = {
+      'content-type': asset.mimeType || 'application/octet-stream',
+      'accept-ranges': 'bytes',
+      'cache-control': 'private, max-age=31536000, immutable',
+      etag,
+    };
+    if (String(req.headers?.['if-none-match'] || '').trim() === etag) {
+      res.writeHead?.(304, baseHeaders);
+      res.end?.();
+      return true;
+    }
+    const range = parseAttachmentRange(req.headers?.range, size);
+    if (range?.unsatisfiable) {
+      res.writeHead?.(416, { ...baseHeaders, 'content-range': `bytes */${size}` });
+      res.end?.();
+      return true;
+    }
+    if (range) {
+      const contentLength = range.end - range.start + 1;
+      res.writeHead?.(206, {
+        ...baseHeaders,
+        'content-length': contentLength,
+        'content-range': `bytes ${range.start}-${range.end}/${size}`,
+      });
+      createReadStream(filePath, { start: range.start, end: range.end }).pipe(res);
+      return true;
+    }
+    res.writeHead?.(200, { ...baseHeaders, 'content-length': size });
+    createReadStream(filePath).pipe(res);
+    return true;
+  }
+
+  const shareSectionsMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)\/sections$/);
+  if (req.method === 'GET' && shareSectionsMatch) {
+    const shareId = decodeURIComponent(shareSectionsMatch[1] || '');
+    const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
+    if (!share) {
+      sendJson(res, 404, { ok: false, reason: 'not_found', error: 'Shared page not found.' });
+      return true;
+    }
+    const access = shareAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'server_membership_required',
+        error: access.error || 'Join this server before reading the shared page sections.',
+      });
+      return true;
+    }
+    const hadVersion = Boolean(share.currentVersionId);
+    ensureShareVersionModel(teamSharingState, share, { makeId, now });
+    if (!hadVersion) await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_migrated' });
+    sendJson(res, 200, shareSectionsPayload(req, share, teamSharingState));
+    return true;
+  }
+
+  const sharePatchMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)$/);
+  if (req.method === 'PATCH' && sharePatchMatch) {
+    const shareId = decodeURIComponent(sharePatchMatch[1] || '');
+    const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === shareId && item.revokedAt == null);
+    if (!share) {
+      sendJson(res, 404, { ok: false, reason: 'not_found', error: 'Shared page not found.' });
+      return true;
+    }
+    const access = shareEditAccess(req, { actor, currentUser: browserUser, teamSharingState, share, state });
+    if (!access.ok) {
+      sendJson(res, access.status || 403, {
+        ok: false,
+        reason: access.status === 401 ? 'login_required' : 'share_edit_forbidden',
+        error: access.error || 'Only the creator, owner, or admin can edit this shared page.',
+      });
+      return true;
+    }
+    const body = await readJson(req);
+    const operations = Array.isArray(body.operations) ? body.operations : [];
+    if (!operations.length) {
+      sendError(res, 400, 'At least one share patch operation is required.');
+      return true;
+    }
+    ensureShareVersionModel(teamSharingState, share, { makeId, now });
+    const current = shareContentRecord(teamSharingState, share);
+    const baseVersionId = String(body.baseVersionId || body.base_version_id || '').trim();
+    if (!baseVersionId) {
+      sendJson(res, 400, { ok: false, reason: 'base_version_required', error: 'baseVersionId is required.' });
+      return true;
+    }
+    if (baseVersionId !== String(current.version?.id || '').trim()) {
+      sendJson(res, 409, {
+        ok: false,
+        reason: 'version_conflict',
+        error: 'Shared page has changed since this patch was prepared.',
+        currentVersionId: current.version?.id || '',
+      });
+      return true;
+    }
+    try {
+      const contentType = current.contentType || normalizeShareContentType(share.contentType, current.content);
+      const patched = applySharePatchOperations(current.content, contentType, operations);
+      const metadataOperation = operations.find((operation) => String(operation?.op || operation?.type || '') === 'set_metadata') || {};
+      const nextTitle = compactText(body.title || metadataOperation.title || share.title || 'MagClaw shared page', 140);
+      const nextDescription = compactText(body.description || metadataOperation.description || share.description || patched.content, 260);
+      const optimized = await optimizeInlineShareAssets({
+        req,
+        content: patched.content,
+        workspaceId: share.workspaceId || workspaceId,
+        teamSharingState,
+        state,
+        saveAttachmentBuffer,
+        makeId,
+        now,
+        actorId: access.editorId || access.actorId || '',
+      });
+      if (optimized.content.length > MAX_SHARE_CONTENT_LENGTH) {
+        sendError(res, 413, 'Share content is too large.');
+        return true;
+      }
+      const assetIds = Array.from(new Set([
+        ...current.assetIds,
+        ...asArray(body.assetIds).map(String).filter(Boolean),
+        ...optimized.assetIds,
+      ]));
+      const blob = upsertShareContentBlob(teamSharingState, {
+        workspaceId: share.workspaceId || workspaceId,
+        contentType,
+        content: optimized.content,
+        assetIds,
+        now,
+        makeId,
+      });
+      const updatedAt = now();
+      const version = {
+        id: typeof makeId === 'function' ? makeId('shv') : `shv_${blob.contentHash.slice(0, 16)}`,
+        shareId: share.id,
+        title: nextTitle,
+        description: nextDescription,
+        contentType,
+        contentHash: blob.contentHash,
+        contentBlobId: blob.id,
+        assetIds,
+        baseVersionId,
+        operations: operations.map((operation) => ({
+          type: String(operation?.op || operation?.type || '').trim(),
+          sectionId: String(operation?.sectionId || operation?.section_id || '').trim(),
+          selector: String(operation?.selector || '').trim(),
+        })),
+        changedSections: patched.changedSections,
+        createdAt: updatedAt,
+        createdBy: access.editorId || access.actorId || '',
+      };
+      share.versions.push(version);
+      share.currentVersionId = version.id;
+      share.title = nextTitle;
+      share.description = nextDescription;
+      share.contentType = contentType;
+      share.contentHash = blob.contentHash;
+      share.assetIds = assetIds;
+      share.updatedAt = updatedAt;
+      share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
+      delete share.content;
+      addSystemEvent('team_sharing_share_updated', `Team sharing share updated: ${share.title}`, {
+        workspaceId: share.workspaceId,
+        shareId,
+        versionId: version.id,
+        changedSections: patched.changedSections.map((section) => section.sectionId || section.selector || section.type).filter(Boolean),
+      });
+      await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_updated' });
+      broadcastState();
+      sendJson(res, 200, {
+        ok: true,
+        shareId,
+        url: shareUrl(req, shareId),
+        versionId: version.id,
+        previousVersionId: baseVersionId,
+        contentHash: blob.contentHash,
+        changedSections: patched.changedSections,
+        assetRefs: shareAssetRefs(req, teamSharingState, assetIds),
+      });
+      return true;
+    } catch (error) {
+      if (error.status === 409 || error.reason === 'version_conflict') {
+        sendJson(res, 409, {
+          ok: false,
+          reason: 'version_conflict',
+          error: error.message || 'Shared page has changed since this patch was prepared.',
+          section: error.section || null,
+        });
+        return true;
+      }
+      sendError(res, error.status || 500, error.message || 'Failed to patch shared page.');
+      return true;
+    }
   }
 
   const shareApiReadMatch = url.pathname.match(/^\/api\/team-sharing\/shares\/([^/]+)$/);
@@ -3548,12 +4577,15 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       });
       return true;
     }
+    const hadVersion = Boolean(share.currentVersionId);
+    ensureShareVersionModel(teamSharingState, share, { makeId, now });
+    if (!hadVersion) await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_migrated' });
     addSystemEvent('team_sharing_share_api_read', `Team sharing share read: ${compactText(share.title || shareId, 90)}`, {
       workspaceId: share.workspaceId || workspaceId,
       shareId,
       actorId: access.actorId || '',
     });
-    sendJson(res, 200, shareReadPayload(req, share));
+    sendJson(res, 200, shareReadPayload(req, share, teamSharingState));
     return true;
   }
 
@@ -3562,28 +4594,74 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const tokenRecord = tokenRecordForRequest(teamSharingState, req);
     const body = await readJson(req);
     const effectiveWorkspaceId = requestWorkspaceId({ actor, tokenRecord, state, fallback: body.workspaceId || workspaceId });
-    const content = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
-    if (!content.trim()) {
+    const rawContent = String(body.content || body.markdown || body.html || body.svg || body.mermaid || '');
+    if (!rawContent.trim()) {
       sendError(res, 400, 'Share content is required.');
       return true;
     }
+    const rawContentType = normalizeShareContentType(body.contentType || body.type, rawContent);
+    const optimizeAssets = body.optimizeAssets !== false && body.optimize_assets !== false;
+    const creator = creatorFromActor(actor, tokenRecord);
+    const optimized = optimizeAssets
+      ? await optimizeInlineShareAssets({
+          req,
+          content: rawContent,
+          workspaceId: effectiveWorkspaceId,
+          teamSharingState,
+          state,
+          saveAttachmentBuffer,
+          makeId,
+          now,
+          actorId: creator.id,
+        })
+      : { content: rawContent, assetIds: [], optimized: false };
+    const content = optimized.content;
     if (content.length > MAX_SHARE_CONTENT_LENGTH) {
       sendError(res, 413, 'Share content is too large.');
       return true;
     }
     const createdAt = now();
     const shareId = typeof makeId === 'function' ? makeId('share') : randomToken('share');
+    const assetIds = Array.from(new Set([
+      ...asArray(body.assetIds).map(String).filter(Boolean),
+      ...optimized.assetIds,
+    ]));
+    const blob = upsertShareContentBlob(teamSharingState, {
+      workspaceId: effectiveWorkspaceId,
+      contentType: rawContentType,
+      content,
+      assetIds,
+      now,
+      makeId,
+    });
+    const version = {
+      id: typeof makeId === 'function' ? makeId('shv') : `shv_${blob.contentHash.slice(0, 16)}`,
+      shareId,
+      title: compactText(body.title || body.name || 'MagClaw shared page', 140),
+      description: compactText(body.description || content, 260),
+      contentType: rawContentType,
+      contentHash: blob.contentHash,
+      contentBlobId: blob.id,
+      assetIds,
+      createdAt,
+      createdBy: creator.id,
+      reason: 'create',
+    };
     const share = {
       id: shareId,
       workspaceId: effectiveWorkspaceId,
       channelId: String(body.channelId || '').trim(),
       channelPath: String(body.channelPath || '').trim(),
       projectKey: String(body.projectKey || '').trim(),
-      title: compactText(body.title || body.name || 'MagClaw shared page', 140),
-      description: compactText(body.description || content, 260),
-      contentType: normalizeShareContentType(body.contentType || body.type, content),
-      content,
-      creator: creatorFromActor(actor, tokenRecord),
+      title: version.title,
+      description: version.description,
+      contentType: rawContentType,
+      contentHash: blob.contentHash,
+      contentBlobId: blob.id,
+      assetIds,
+      versions: [version],
+      currentVersionId: version.id,
+      creator,
       source: body.source && typeof body.source === 'object' ? body.source : {},
       public: true,
       createdAt,
@@ -3596,6 +4674,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       channelId: share.channelId,
       projectKey: share.projectKey,
       contentType: share.contentType,
+      assetCount: assetIds.length,
     });
     await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_created' });
     broadcastState();
@@ -3607,6 +4686,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         id: share.id,
         title: share.title,
         contentType: share.contentType,
+        versionId: share.currentVersionId,
+        contentHash: share.contentHash,
+        assetRefs: shareAssetRefs(req, teamSharingState, assetIds),
         creator: share.creator,
         createdAt: share.createdAt,
         channelId: share.channelId,
