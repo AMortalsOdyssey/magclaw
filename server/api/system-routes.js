@@ -147,6 +147,7 @@ export async function handleSystemApi(req, res, url, deps) {
     packageVersionSnapshot,
     publicBootstrapState,
     publicDirectoryState,
+    publicDirectorySearchState,
     publicState,
     readJson,
     sendError,
@@ -287,6 +288,20 @@ export async function handleSystemApi(req, res, url, deps) {
     if (hydration) req.magclawBootstrapHydration = hydration;
     const bootstrapOptions = hydration ? { ...options, hydration } : options;
     sendJson(res, 200, (publicBootstrapState || publicState)(req, bootstrapOptions));
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/directory/search') {
+    const options = {};
+    const directoryFormat = url.searchParams.get('directoryFormat') || '';
+    if (directoryFormat) options.directoryFormat = directoryFormat;
+    const query = url.searchParams.get('query') || '';
+    if (query) options.query = query;
+    const limit = url.searchParams.get('limit') || '';
+    if (limit) options.limit = limit;
+    const types = url.searchParams.get('types') || '';
+    if (types) options.types = types;
+    sendJson(res, 200, (publicDirectorySearchState || publicDirectoryState || publicState)(req, options));
     return true;
   }
 

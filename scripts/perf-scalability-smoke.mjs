@@ -69,6 +69,8 @@ const BUDGETS = Object.freeze({
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
   directoryTotalBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_TOTAL_BYTES || 280_000),
   directoryPages: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGES || 4),
+  directorySearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_BYTES || 20_000),
+  directorySearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
@@ -205,6 +207,62 @@ function measureDirectoryHydration(services) {
     hasMemberChurnFields: allAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || allHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
     hasInternalFields,
+  };
+}
+
+function measureDirectorySearch() {
+  const sourceState = makeSyntheticState({
+    humans: 10_000,
+    agents: 10_000,
+    messages: 0,
+    replies: 0,
+    tasks: 0,
+  });
+  const services = makeSystemServices(sourceState);
+  const started = performance.now();
+  const snapshot = services.publicDirectorySearchState({
+    url: '/api/directory/search?directoryFormat=tuple-v1&query=9999&limit=5',
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+  const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+  const decodedMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+  return {
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    sourceAgents: sourceState.agents.length,
+    sourceHumans: sourceState.humans.length,
+    mode: snapshot.bootstrap?.mode || '',
+    directoryFormat: snapshot.bootstrap?.directoryFormat || '',
+    directoryScope: snapshot.bootstrap?.directory?.scope || '',
+    query: snapshot.bootstrap?.directorySearch?.query || '',
+    limit: snapshot.bootstrap?.directorySearch?.limit || 0,
+    agents: snapshot.agents.length,
+    humans: snapshot.humans.length,
+    cloudMembers: snapshot.cloud?.members?.length || 0,
+    agentIds: decodedAgents.map((agent) => agent.id),
+    humanIds: decodedHumans.map((human) => human.id),
+    memberIds: decodedMembers.map((member) => member.id),
+    agentTotal: snapshot.bootstrap?.directory?.agents?.total || 0,
+    humanTotal: snapshot.bootstrap?.directory?.humans?.total || 0,
+    memberTotal: snapshot.bootstrap?.directory?.members?.total || 0,
+    hasDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
+      && (snapshot.humans || []).some(Array.isArray)
+      && (snapshot.cloud?.members || []).some(Array.isArray),
+    hasInternalFields: body.includes('promptCache')
+      || body.includes('runtimeSession')
+      || body.includes('sourceAnchor'),
+    hasCloudMemberDuplication: decodedMembers.some((member) => (
+      member.human
+      || member.workspaceId
+      || member.updatedAt
+      || member.createdAt
+      || member.status === 'active'
+      || member.role === 'member'
+      || member.user?.id
+      || member.user?.name
+    )),
   };
 }
 
@@ -969,6 +1027,7 @@ async function main() {
   });
   const body = JSON.stringify(snapshot);
   const directory = measureDirectoryHydration(services);
+  const directorySearch = measureDirectorySearch();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -1074,6 +1133,24 @@ async function main() {
   assertBudget(!directory.hasCloudMemberDuplication, 'directory leaked duplicate cloud member human payloads');
   assertBudget(!directory.hasMemberChurnFields, 'directory leaked member churn fields');
   assertBudget(!directory.hasInternalFields, 'directory leaked internal payload fields');
+  assertBudget(directorySearch.sourceAgents === 10_000 && directorySearch.sourceHumans === 10_000, 'directory search smoke did not use the 10000-member fixture');
+  assertBudget(directorySearch.ms <= BUDGETS.directorySearchMs, `directory search ${directorySearch.ms}ms exceeds ${BUDGETS.directorySearchMs}ms`);
+  assertBudget(directorySearch.bytes <= BUDGETS.directorySearchBytes, `directory search ${directorySearch.bytes} bytes exceeds ${BUDGETS.directorySearchBytes}`);
+  assertBudget(directorySearch.mode === 'directory-search', `directory search mode expected directory-search but got ${directorySearch.mode || '[none]'}`);
+  assertBudget(directorySearch.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `directory search format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${directorySearch.directoryFormat || '[none]'}`);
+  assertBudget(directorySearch.directoryScope === 'search', `directory search scope expected search but got ${directorySearch.directoryScope || '[none]'}`);
+  assertBudget(directorySearch.query === '9999', `directory search query expected 9999 but got ${directorySearch.query || '[none]'}`);
+  assertBudget(directorySearch.limit === 5, `directory search limit expected 5 but got ${directorySearch.limit}`);
+  assertBudget(directorySearch.agents === 1, `directory search expected 1 agent but got ${directorySearch.agents}`);
+  assertBudget(directorySearch.humans === 1, `directory search expected 1 human but got ${directorySearch.humans}`);
+  assertBudget(directorySearch.cloudMembers === 1, `directory search expected 1 member but got ${directorySearch.cloudMembers}`);
+  assertBudget(directorySearch.agentIds.includes('agt_9999'), 'directory search did not return the matching Agent');
+  assertBudget(directorySearch.humanIds.includes('hum_9999'), 'directory search did not return the matching Human');
+  assertBudget(directorySearch.memberIds.includes('mem_9999'), 'directory search did not return the matching member');
+  assertBudget(directorySearch.agentTotal === 1 && directorySearch.humanTotal === 1 && directorySearch.memberTotal === 1, 'directory search metadata did not preserve match totals');
+  assertBudget(directorySearch.hasDirectoryTuples, 'directory search did not compact member directories into tuple rows');
+  assertBudget(!directorySearch.hasCloudMemberDuplication, 'directory search leaked duplicate cloud member human payloads');
+  assertBudget(!directorySearch.hasInternalFields, 'directory search leaked internal payload fields');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
@@ -1109,7 +1186,7 @@ async function main() {
   assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
   assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
 }
 
 main().catch((error) => {

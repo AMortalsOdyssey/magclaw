@@ -689,6 +689,21 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.deepEqual(secondPage.agents.map((agent) => agent[0]), ['agt_hidden']);
   assert.deepEqual(secondPage.humans.map((human) => human[0]), ['hum_hidden']);
   assert.deepEqual(secondPage.cloud.members.map((member) => member[0]), ['mem_hidden']);
+
+  const search = services.publicDirectorySearchState({
+    url: '/api/directory/search?directoryFormat=tuple-v1&query=hidden&limit=1',
+    headers: {},
+  });
+  assert.equal(search.bootstrap.mode, 'directory-search');
+  assert.equal(search.bootstrap.directory.scope, 'search');
+  assert.equal(search.bootstrap.directorySearch.query, 'hidden');
+  assert.equal(search.bootstrap.directorySearch.limit, 1);
+  assert.deepEqual(search.agents.map((agent) => agent[0]), ['agt_hidden']);
+  assert.deepEqual(search.humans.map((human) => human[0]), ['hum_hidden']);
+  assert.deepEqual(search.cloud.members.map((member) => member[0]), ['mem_hidden']);
+  assert.equal(search.bootstrap.directory.agents.loaded, 1);
+  assert.equal(search.bootstrap.directory.humans.loaded, 1);
+  assert.equal(search.bootstrap.directory.members.loaded, 1);
 });
 
 test('public state exposes configured public URL for share exports', () => {

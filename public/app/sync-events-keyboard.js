@@ -2777,7 +2777,14 @@ document.addEventListener('input', async (event) => {
       const threadRoot = isThread ? byId(appState.messages, threadMessageId) : null;
       const spaceType = threadRoot?.spaceType || selectedSpaceType;
       const spaceId = threadRoot?.spaceId || selectedSpaceId;
-      const peopleItems = getMentionCandidates(query, spaceType, spaceId);
+      let peopleItems = getMentionCandidates(query, spaceType, spaceId);
+      try {
+        const remotePeopleItems = await getDirectoryMentionCandidates(query, spaceType, spaceId);
+        if (lookupSeq !== mentionLookupSeq) return;
+        peopleItems = mergeMentionCandidateItems(peopleItems, remotePeopleItems);
+      } catch (error) {
+        console.warn('Directory mention search failed', error);
+      }
       let projectItems = [];
       try {
         projectItems = await getProjectMentionCandidates(query, spaceType, spaceId);

@@ -1434,6 +1434,76 @@ test('mention popup differentiates humans and agents without the channel heading
   assert.equal(context.getMentionCandidates('codex', 'channel', 'chan_all')[0].id, 'agt_codex');
 });
 
+test('mention search queries server directory only while local directory is partial', async () => {
+  const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  const requests = [];
+  const appState = {
+    bootstrap: {
+      directory: {
+        scope: 'visible',
+        agents: { loaded: 1, total: 2, hasMore: true },
+        humans: { loaded: 1, total: 2, hasMore: true },
+        members: { loaded: 0, total: 2, hasMore: true },
+      },
+    },
+    agents: [{ id: 'agt_local', name: 'Local Agent', status: 'idle' }],
+    humans: [{ id: 'hum_local', name: 'Local Human', status: 'online' }],
+    cloud: { members: [] },
+    channels: [{ id: 'chan_all', name: 'all' }],
+    dms: [],
+    messages: [],
+    replies: [],
+  };
+  const context = {
+    BRAND_LOGO_SRC: '',
+    URLSearchParams,
+    appState,
+    selectedSpaceType: 'channel',
+    selectedSpaceId: 'chan_all',
+    byId(items, id) { return (items || []).find((item) => item.id === id) || null; },
+    isAllChannel(channel) { return channel?.id === 'chan_all'; },
+    getChannelMembers() { return { agents: appState.agents, humans: appState.humans }; },
+    directorySnapshotIsFull(state) {
+      const directory = state?.bootstrap?.directory;
+      return Boolean(
+        directory?.agents?.loaded >= directory?.agents?.total
+        && directory?.humans?.loaded >= directory?.humans?.total
+        && directory?.members?.loaded >= directory?.members?.total
+      );
+    },
+    async api(path) {
+      requests.push(path);
+      return {
+        bootstrap: { mode: 'directory-search' },
+        agents: [{ id: 'agt_hidden', name: 'Hidden Agent', runtime: 'codex', status: 'idle' }],
+        humans: [{ id: 'hum_hidden', name: 'Hidden Human', email: 'hidden@example.test', status: 'offline' }],
+        cloud: { members: [] },
+      };
+    },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+
+  const partialResults = await context.getDirectoryMentionCandidates('hidden', 'channel', 'chan_all');
+
+  assert.equal(requests.length, 1);
+  assert.match(requests[0], /\/api\/directory\/search\?/);
+  assert.match(requests[0], /query=hidden/);
+  assert.deepEqual(Array.from(partialResults, (item) => item.id), ['agt_hidden', 'hum_hidden']);
+  assert.deepEqual(Array.from(partialResults, (item) => item.group), ['in', 'in']);
+
+  appState.bootstrap.directory = {
+    scope: 'full',
+    agents: { loaded: 2, total: 2, hasMore: false },
+    humans: { loaded: 2, total: 2, hasMore: false },
+    members: { loaded: 2, total: 2, hasMore: false },
+  };
+  requests.length = 0;
+
+  assert.equal((await context.getDirectoryMentionCandidates('hidden', 'channel', 'chan_all')).length, 0);
+  assert.equal(requests.length, 0);
+});
+
 test('team sharing legacy hum_local records render the stored uploader identity instead of the current viewer', async () => {
   const source = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
   const appState = {

@@ -52,6 +52,9 @@ membership fanout visible in the budget. It currently enforces:
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
   280 KB total transfer.
+- Directory search is server-backed for very large rosters: a 10000 Human /
+  10000 Agent fixture must find a unique Agent/Human/member without hydrating
+  the whole roster, returning at most 20 KB in at most 250 ms.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -168,8 +171,8 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Add server-side directory search/filter endpoints so very large workspaces do
-  not need to hydrate every member before search and picker interactions.
+- Move the Members directory page itself to server-backed pagination/filtering
+  so admin browsing does not require the browser to keep every member row.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,

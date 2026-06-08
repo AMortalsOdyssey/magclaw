@@ -1391,6 +1391,112 @@ function mentionWorkspaceAgents() {
     ));
 }
 
+const DIRECTORY_MENTION_SEARCH_LIMIT = 25;
+
+function mentionCandidateGroupForId(id, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  const target = String(id || '');
+  if (!target) return 'out';
+  if (spaceType === 'channel') {
+    const channel = byId(appState?.channels, spaceId);
+    if (typeof isAllChannel === 'function' && isAllChannel(channel)) return 'in';
+    const members = typeof getChannelMembers === 'function'
+      ? getChannelMembers(spaceId)
+      : { agents: [], humans: [] };
+    const inIds = new Set([...members.agents.map((agent) => agent.id), ...members.humans.map((human) => human.id)]);
+    return inIds.has(target) ? 'in' : 'out';
+  }
+  const participantIds = new Set((byId(appState?.dms, spaceId)?.participantIds || []).map(String));
+  return participantIds.has(target) ? 'in' : 'out';
+}
+
+function mentionItemFromAgent(agent = {}, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    type: 'agent',
+    avatar: agent.avatar,
+    status: agent.status || 'offline',
+    runtime: agent.runtime || agent.runtimeId || '',
+    runtimeId: agent.runtimeId || '',
+    description: agent.description || '',
+    createdAt: agent.createdAt || '',
+    group: mentionCandidateGroupForId(agent.id, spaceType, spaceId),
+  };
+}
+
+function mentionItemFromHuman(human = {}, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  return {
+    id: human.id,
+    name: human.name,
+    thirdPartyName: typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '',
+    type: 'human',
+    avatar: human.avatar || human.avatarUrl || '',
+    status: human.status || 'offline',
+    handle: human.email ? human.email.split('@')[0] : String(human.id || '').replace(/^hum_/, ''),
+    description: human.description || human.role || 'Human',
+    joinedAt: human.joinedAt || human.createdAt || '',
+    createdAt: human.createdAt || '',
+    group: mentionCandidateGroupForId(human.id, spaceType, spaceId),
+  };
+}
+
+function mergeMentionCandidateItems(...groups) {
+  const seen = new Set();
+  const merged = [];
+  for (const group of groups) {
+    for (const item of group || []) {
+      const key = `${item?.type || ''}:${item?.id || ''}`;
+      if (!item?.id || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
+function mergeDirectoryMentionHumans(humans = [], memberHumans = []) {
+  if (typeof mergeDirectoryRecords === 'function') return mergeDirectoryRecords(humans, memberHumans);
+  const seen = new Set();
+  const merged = [];
+  for (const human of [...(humans || []), ...(memberHumans || [])]) {
+    const id = String(human?.id || '');
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(human);
+  }
+  return merged;
+}
+
+function shouldUseRemoteMentionDirectory(query) {
+  if (!String(query || '').trim()) return false;
+  if (typeof api !== 'function') return false;
+  if (typeof directorySnapshotIsFull === 'function') return !directorySnapshotIsFull(appState);
+  return appState?.bootstrap?.directory?.scope !== 'full';
+}
+
+async function getDirectoryMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
+  if (!shouldUseRemoteMentionDirectory(query)) return [];
+  const params = new URLSearchParams();
+  params.set('directoryFormat', 'tuple-v1');
+  params.set('query', String(query || '').trim());
+  params.set('limit', String(DIRECTORY_MENTION_SEARCH_LIMIT));
+  params.set('types', 'agents,humans,members');
+  const snapshot = typeof normalizeStateDirectorySnapshot === 'function'
+    ? normalizeStateDirectorySnapshot(await api(`/api/directory/search?${params.toString()}`))
+    : await api(`/api/directory/search?${params.toString()}`);
+  const humansById = new Map((snapshot.humans || []).map((human) => [String(human?.id || ''), human]).filter(([id]) => id));
+  const memberHumans = (snapshot.cloud?.members || [])
+    .map((member) => humansById.get(String(member?.humanId || ''))
+      || (typeof humanFromCloudMember === 'function' ? humanFromCloudMember(member) : null)
+      || null)
+    .filter(Boolean);
+  const humans = mergeDirectoryMentionHumans(snapshot.humans || [], memberHumans);
+  return mergeMentionCandidateItems(
+    (snapshot.agents || []).map((agent) => mentionItemFromAgent(agent, spaceType, spaceId)),
+    humans.map((human) => mentionItemFromHuman(human, spaceType, spaceId)),
+  );
+}
+
 function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = selectedSpaceId) {
   const inMembers = spaceType === 'channel'
     ? getChannelMembers(spaceId)
@@ -1400,31 +1506,8 @@ function getMentionCandidates(query, spaceType = selectedSpaceType, spaceId = se
     };
   const inIds = new Set([...inMembers.agents.map((a) => a.id), ...inMembers.humans.map((h) => h.id)]);
   const allItems = [
-    ...mentionWorkspaceAgents().map((agent) => ({
-      id: agent.id,
-      name: agent.name,
-      type: 'agent',
-      avatar: agent.avatar,
-      status: agent.status || 'offline',
-      runtime: agent.runtime || agent.runtimeId || '',
-      runtimeId: agent.runtimeId || '',
-      description: agent.description || '',
-      createdAt: agent.createdAt || '',
-      group: inIds.has(agent.id) ? 'in' : 'out',
-    })),
-    ...mentionWorkspaceHumans().map((human) => ({
-      id: human.id,
-      name: human.name,
-      thirdPartyName: typeof thirdPartyNameForHuman === 'function' ? thirdPartyNameForHuman(human) : '',
-      type: 'human',
-      avatar: human.avatar || human.avatarUrl || '',
-      status: human.status || 'offline',
-      handle: human.email ? human.email.split('@')[0] : human.id.replace(/^hum_/, ''),
-      description: human.description || human.role || 'Human',
-      joinedAt: human.joinedAt || human.createdAt || '',
-      createdAt: human.createdAt || '',
-      group: inIds.has(human.id) ? 'in' : 'out',
-    })),
+    ...mentionWorkspaceAgents().map((agent) => ({ ...mentionItemFromAgent(agent, spaceType, spaceId), group: inIds.has(agent.id) ? 'in' : 'out' })),
+    ...mentionWorkspaceHumans().map((human) => ({ ...mentionItemFromHuman(human, spaceType, spaceId), group: inIds.has(human.id) ? 'in' : 'out' })),
   ];
   const q = String(query || '').toLowerCase();
   const filtered = allItems.filter((item) => !q || mentionSearchValue(item).includes(q));

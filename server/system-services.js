@@ -21,6 +21,8 @@ const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
 const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
 const DIRECTORY_PAGE_LIMIT_MAX = 500;
+const DIRECTORY_SEARCH_LIMIT_DEFAULT = 25;
+const DIRECTORY_SEARCH_LIMIT_MAX = 100;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -820,6 +822,12 @@ export function createSystemServices(deps) {
     return Math.min(DIRECTORY_PAGE_LIMIT_MAX, Math.max(1, parsed));
   }
 
+  function directorySearchLimit(value) {
+    const parsed = Math.floor(Number(value) || 0);
+    if (parsed <= 0) return DIRECTORY_SEARCH_LIMIT_DEFAULT;
+    return Math.min(DIRECTORY_SEARCH_LIMIT_MAX, Math.max(1, parsed));
+  }
+
   function directoryPage(records, offset, limit) {
     const items = Array.isArray(records) ? records : [];
     if (!limit) return { records: items, nextOffset: items.length, hasMore: false };
@@ -854,6 +862,111 @@ export function createSystemServices(deps) {
             })
           : '',
         hasMore,
+      },
+    };
+  }
+
+  function normalizeDirectorySearchQuery(value = '') {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function directorySearchText(values = []) {
+    return records(values)
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  function directorySearchMatches(text, query) {
+    if (!query) return true;
+    return String(text || '').includes(query);
+  }
+
+  function agentDirectorySearchText(agent = {}) {
+    return directorySearchText([
+      agent.id,
+      agent.name,
+      agent.description,
+      agent.runtime,
+      agent.runtimeId,
+      agent.model,
+      agent.creatorName,
+      agent.creatorEmail,
+    ]);
+  }
+
+  function humanDirectorySearchText(human = {}) {
+    return directorySearchText([
+      human.id,
+      human.name,
+      human.email,
+      human.authUserId,
+      human.userId,
+      human.identityReference,
+      human.role,
+      human.thirdPartyName,
+      human.third_party_name,
+    ]);
+  }
+
+  function memberDirectorySearchText(member = {}, human = null) {
+    return directorySearchText([
+      member.id,
+      member.userId,
+      member.humanId,
+      member.email,
+      member.role,
+      member.user?.id,
+      member.user?.name,
+      member.user?.email,
+      member.user?.thirdPartyName,
+      member.user?.third_party_name,
+      member.human?.name,
+      member.human?.email,
+      human?.name,
+      human?.email,
+      human?.authUserId,
+      human?.userId,
+      human?.thirdPartyName,
+      human?.third_party_name,
+    ]);
+  }
+
+  function directorySearchTypes(value = '') {
+    const raw = String(value || 'agents,humans,members')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    const allowed = new Set(['agents', 'humans', 'members']);
+    const selected = raw.filter((item) => allowed.has(item));
+    return selected.length ? new Set(selected) : allowed;
+  }
+
+  function directorySearchSnapshot({ agents = [], humans = [], cloud = null, query = '', limit = DIRECTORY_SEARCH_LIMIT_DEFAULT, types = null } = {}) {
+    const selectedTypes = types instanceof Set ? types : directorySearchTypes();
+    const humansById = new Map(records(humans).map((human) => [String(human?.id || ''), human]).filter(([id]) => id));
+    const allMatchedAgents = selectedTypes.has('agents')
+      ? records(agents).filter((agent) => directorySearchMatches(agentDirectorySearchText(agent), query))
+      : [];
+    const allMatchedHumans = selectedTypes.has('humans')
+      ? records(humans).filter((human) => directorySearchMatches(humanDirectorySearchText(human), query))
+      : [];
+    const allMatchedMembers = selectedTypes.has('members')
+      ? records(cloud?.members).filter((member) => (
+          directorySearchMatches(memberDirectorySearchText(member, humansById.get(String(member?.humanId || ''))), query)
+        ))
+      : [];
+    const matchedAgents = allMatchedAgents.slice(0, limit);
+    const matchedHumans = allMatchedHumans.slice(0, limit);
+    const matchedMembers = allMatchedMembers.slice(0, limit);
+    return {
+      agents: matchedAgents,
+      humans: matchedHumans,
+      cloud: cloud && typeof cloud === 'object' ? { ...cloud, members: matchedMembers } : cloud,
+      totals: {
+        agents: allMatchedAgents.length,
+        humans: allMatchedHumans.length,
+        members: allMatchedMembers.length,
       },
     };
   }
@@ -944,6 +1057,10 @@ export function createSystemServices(deps) {
       if (limit) options.limit = limit;
       const cursor = url.searchParams.get('cursor') || '';
       if (cursor) options.cursor = cursor;
+      const query = url.searchParams.get('query') || '';
+      if (query) options.query = query;
+      const types = url.searchParams.get('types') || '';
+      if (types) options.types = types;
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
       return options;
     } catch {
@@ -1412,6 +1529,85 @@ export function createSystemServices(deps) {
         mode: 'directory',
         fullState: false,
         directory,
+      },
+    };
+    return encodeBootstrapDirectories(snapshot, effectiveOptions);
+  }
+
+  function publicDirectorySearchState(req = null, options = {}) {
+    const scope = publicStateScope(req);
+    const {
+      currentState,
+      cloud,
+      scopedRecords,
+      scopedAgents,
+    } = scope;
+    const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
+    const query = normalizeDirectorySearchQuery(effectiveOptions.query);
+    const limit = directorySearchLimit(effectiveOptions.limit);
+    const types = directorySearchTypes(effectiveOptions.types);
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
+      return encodeBootstrapDirectories({
+        ...publicStateBase(currentState),
+        agents: [],
+        humans: [],
+        cloud: { ...(cloud || {}), members: [] },
+        bootstrap: {
+          mode: 'directory-search',
+          fullState: false,
+          directory: directoryMetadata({ scope: 'search', agents: [], humans: [], cloud: { members: [] } }),
+          directorySearch: { query, limit, types: [...types], total: 0 },
+        },
+      }, effectiveOptions);
+    }
+    const scopedHumans = scopedRecords('humans');
+    const rawAgents = scopedAgents.map(publicAgentRecord);
+    const rawCloud = cloud && typeof cloud === 'object' ? {
+      ...cloud,
+      members: records(cloud.members).filter((member) => (
+        !member?.workspaceId
+        || !cloud?.workspace?.id
+        || String(member.workspaceId) === String(cloud.workspace.id)
+      )),
+    } : cloud;
+    const search = directorySearchSnapshot({
+      agents: rawAgents,
+      humans: scopedHumans,
+      cloud: rawCloud,
+      query,
+      limit,
+      types,
+    });
+    const publicAgents = search.agents.map(compactBootstrapAgentRecord);
+    const publicHumans = search.humans.map(compactBootstrapHumanRecord);
+    const publicCloud = compactBootstrapCloudState(search.cloud, {
+      humansById: new Map(scopedHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+    });
+    const directory = directoryMetadata({
+      scope: 'search',
+      agents: publicAgents,
+      humans: publicHumans,
+      cloud: publicCloud,
+      totals: search.totals,
+    });
+    const total = Number(directory.agents.loaded || 0)
+      + Number(directory.humans.loaded || 0)
+      + Number(directory.members.loaded || 0);
+    const snapshot = {
+      ...publicStateBase(currentState),
+      agents: publicAgents,
+      humans: publicHumans,
+      cloud: publicCloud,
+      bootstrap: {
+        mode: 'directory-search',
+        fullState: false,
+        directory,
+        directorySearch: {
+          query,
+          limit,
+          types: [...types],
+          total,
+        },
       },
     };
     return encodeBootstrapDirectories(snapshot, effectiveOptions);
@@ -2273,6 +2469,7 @@ export function createSystemServices(deps) {
     publicSettings,
     publicBootstrapState,
     publicDirectoryState,
+    publicDirectorySearchState,
     publicState,
     runtimeSnapshot,
     startPackageVersionPolling,
