@@ -875,10 +875,28 @@ export function createSystemServices(deps) {
     return record;
   }
 
-  function compactBootstrapAgentRecord(agent = {}) {
+  function compactBootstrapAgentRecord(agent = {}, options = {}) {
     const record = { ...agent };
     for (const key of ['workspaceId', 'role', 'statusReason', 'statusUpdatedAt', 'heartbeatAt', 'updatedAt']) {
       if (Object.hasOwn(record, key)) delete record[key];
+    }
+    if (options.profileDetails === false) {
+      for (const key of [
+        'workspace',
+        'envVars',
+        'createdBy',
+        'createdByHumanId',
+        'ownerHumanId',
+        'createdByUserId',
+        'creatorName',
+        'creatorEmail',
+        'reasoningEffort',
+        'runtimeActivity',
+        'activitySeq',
+        'activityAt',
+      ]) {
+        if (Object.hasOwn(record, key)) delete record[key];
+      }
     }
     if (Array.isArray(record.activeWorkItemIds) && record.activeWorkItemIds.length === 0) {
       delete record.activeWorkItemIds;
@@ -2074,8 +2092,17 @@ export function createSystemServices(deps) {
       ids: visibleDirectoryIds,
     });
     const directoryHumans = records(rawDirectory.humans);
+    const selectedAgentId = String(effectiveOptions.selectedAgentId || '');
+    const keepAgentProfileDetails = (agent) => (
+      directoryScope !== BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE
+      || (selectedAgentId && String(agent?.id || '') === selectedAgentId)
+    );
     const directory = {
-      agents: records(rawDirectory.agents).map(publicAgentRecord).map(compactBootstrapAgentRecord),
+      agents: records(rawDirectory.agents)
+        .map(publicAgentRecord)
+        .map((agent) => compactBootstrapAgentRecord(agent, {
+          profileDetails: keepAgentProfileDetails(agent),
+        })),
       humans: directoryHumans.map(compactBootstrapHumanRecord),
       cloud: compactBootstrapCloudState(rawDirectory.cloud, {
         humansById: new Map(directoryHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),

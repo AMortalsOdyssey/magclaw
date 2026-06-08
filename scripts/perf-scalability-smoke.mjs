@@ -114,6 +114,7 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
 ]);
 const BUDGETS = Object.freeze({
   bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 220_000),
+  bootstrapProfileHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROFILE_HEAVY_BYTES || 120_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 80),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -471,6 +472,73 @@ async function measureMembersRailWindow() {
     includesSelectedHuman: model.visibleHumans.some((human) => human.id === 'hum_9999'),
     agentCount: model.agents.length,
     humanCount: model.humans.length,
+  };
+}
+
+function measureProfileHeavyBootstrapAgents() {
+  const state = makeSyntheticState({
+    humans: 20,
+    agents: 300,
+    messages: 300,
+    replies: 0,
+    tasks: 0,
+  });
+  for (const [index, agent] of state.agents.entries()) {
+    agent.workspace = `/Users/tt/private/workspaces/agent-${index}`;
+    agent.envVars = [
+      { key: 'CONFIG_KEY', value: `placeholder-${String(index).padStart(4, '0')}` },
+      { key: 'LONG_CONTEXT', value: 'x'.repeat(160) },
+    ];
+    agent.createdBy = 'usr_0000';
+    agent.createdByHumanId = 'hum_0000';
+    agent.ownerHumanId = 'hum_0000';
+    agent.createdByUserId = 'usr_0000';
+    agent.creatorName = 'Synthetic Owner';
+    agent.creatorEmail = 'owner@example.test';
+    agent.reasoningEffort = 'high';
+    agent.runtimeActivity = {
+      detail: `profile-heavy activity ${index}`,
+      tool: 'synthetic-tool',
+      raw: 'activity'.repeat(40),
+    };
+    agent.activitySeq = index + 1;
+    agent.activityAt = NOW;
+  }
+  const services = makeSystemServices(state);
+  const started = performance.now();
+  const snapshot = services.publicBootstrapState({
+    url: `/api/bootstrap?${BOOTSTRAP_QUERY}&selectedAgentId=agt_0000`,
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+  const selectedAgent = decodedAgents.find((agent) => agent.id === 'agt_0000') || {};
+  const backgroundAgents = decodedAgents.filter((agent) => agent.id !== 'agt_0000');
+  const profileFieldLeaked = backgroundAgents.some((agent) => (
+    agent.workspace
+    || agent.envVars
+    || agent.createdBy
+    || agent.createdByHumanId
+    || agent.ownerHumanId
+    || agent.createdByUserId
+    || agent.creatorName
+    || agent.creatorEmail
+    || agent.reasoningEffort
+    || agent.runtimeActivity
+    || agent.activitySeq
+    || agent.activityAt
+  ));
+  return {
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    agents: snapshot.agents.length,
+    selectedHasProfileDetails: Boolean(
+      selectedAgent.envVars
+      && selectedAgent.workspace
+      && selectedAgent.creatorEmail
+      && selectedAgent.runtimeActivity
+    ),
+    backgroundProfileFieldLeaked: profileFieldLeaked,
   };
 }
 
@@ -1462,6 +1530,7 @@ async function main() {
   const directoryBroadSearch = measureDirectorySearch({ query: 'agent', limit: 5 });
   const membersDirectoryPage = measureMembersDirectoryPage();
   const membersRailWindow = await measureMembersRailWindow();
+  const bootstrapProfileHeavyAgents = measureProfileHeavyBootstrapAgents();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -1565,6 +1634,9 @@ async function main() {
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
+  assertBudget(bootstrapProfileHeavyAgents.bytes <= BUDGETS.bootstrapProfileHeavyBytes, `profile-heavy bootstrap ${bootstrapProfileHeavyAgents.bytes} bytes exceeds ${BUDGETS.bootstrapProfileHeavyBytes}`);
+  assertBudget(bootstrapProfileHeavyAgents.selectedHasProfileDetails, 'profile-heavy bootstrap dropped selected Agent profile details');
+  assertBudget(!bootstrapProfileHeavyAgents.backgroundProfileFieldLeaked, 'profile-heavy bootstrap leaked non-selected Agent profile details');
   assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
   assertBudget(bootstrap.conversationFormat === BOOTSTRAP_CONVERSATION_FORMAT, `bootstrap conversation format expected ${BOOTSTRAP_CONVERSATION_FORMAT} but got ${bootstrap.conversationFormat || '[none]'}`);
   assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
@@ -1736,6 +1808,7 @@ async function main() {
     directoryBroadSearch,
     membersDirectoryPage,
     membersRailWindow,
+    bootstrapProfileHeavyAgents,
     heartbeat,
     repeatedHeartbeat,
     humanHeartbeatChurn,

@@ -656,6 +656,103 @@ test('bootstrap visible directory selects agents without materializing the full 
   assert.equal(fullAgentFilterCalls, 0);
 });
 
+test('bootstrap visible directory keeps profile-heavy agent fields only for the selected agent', () => {
+  const createdAt = '2026-05-18T00:00:00.000Z';
+  const heavyFields = {
+    workspace: '/Users/tt/projects/private-agent-workspace',
+    envVars: [{ key: 'CONFIG_FLAG', value: 'enabled' }],
+    creatorName: 'Creator',
+    creatorEmail: 'creator@example.test',
+    reasoningEffort: 'high',
+    runtimeActivity: { detail: 'deep runtime trace', tool: 'long-running-tool' },
+    activitySeq: 42,
+    activityAt: createdAt,
+  };
+  const services = makeServices((state) => {
+    state.agents = [
+      {
+        id: 'agt_selected',
+        workspaceId: 'local',
+        name: 'Selected Agent',
+        status: 'working',
+        runtime: 'codex',
+        model: 'gpt-test',
+        computerId: 'cmp_local',
+        activeWorkItemIds: ['wi_selected'],
+        createdAt,
+        updatedAt: createdAt,
+        ...heavyFields,
+      },
+      {
+        id: 'agt_background',
+        workspaceId: 'local',
+        name: 'Background Agent',
+        status: 'warming',
+        runtime: 'codex',
+        model: 'gpt-background',
+        computerId: 'cmp_local',
+        activeWorkItemIds: ['wi_background'],
+        runtimeLastStartedAt: createdAt,
+        runtimeWarmAt: createdAt,
+        createdAt,
+        updatedAt: createdAt,
+        ...heavyFields,
+      },
+    ];
+    state.messages = [
+      {
+        id: 'msg_selected_agent',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_selected',
+        body: 'selected agent is visible',
+        createdAt,
+        updatedAt: createdAt,
+      },
+      {
+        id: 'msg_background_agent',
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_background',
+        body: 'background agent is visible',
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ];
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&directoryScope=visible&selectedAgentId=agt_selected',
+    headers: {},
+  });
+  const selected = snapshot.agents.find((agent) => agent.id === 'agt_selected');
+  const background = snapshot.agents.find((agent) => agent.id === 'agt_background');
+
+  assert.equal(selected.envVars?.[0]?.key, 'CONFIG_FLAG');
+  assert.equal(selected.workspace, '/Users/tt/projects/private-agent-workspace');
+  assert.equal(selected.creatorEmail, 'creator@example.test');
+  assert.equal(selected.runtimeActivity?.detail, 'deep runtime trace');
+  assert.equal(background.status, 'warming');
+  assert.equal(background.runtime, 'codex');
+  assert.equal(background.model, 'gpt-background');
+  assert.equal(background.computerId, 'cmp_local');
+  assert.deepEqual(background.activeWorkItemIds, ['wi_background']);
+  assert.equal(background.runtimeLastStartedAt, createdAt);
+  assert.equal(background.runtimeWarmAt, createdAt);
+  assert.equal(background.envVars, undefined);
+  assert.equal(background.workspace, undefined);
+  assert.equal(background.creatorName, undefined);
+  assert.equal(background.creatorEmail, undefined);
+  assert.equal(background.reasoningEffort, undefined);
+  assert.equal(background.runtimeActivity, undefined);
+  assert.equal(background.activitySeq, undefined);
+  assert.equal(background.activityAt, undefined);
+});
+
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
   const services = makeServices((state) => {
     state.messages = [
