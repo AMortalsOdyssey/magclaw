@@ -302,6 +302,7 @@ test('system route group returns package versions for computers page caching', a
         packages: {
           '@magclaw/daemon': { packageName: '@magclaw/daemon', latest: '0.1.70', source: 'db' },
           '@magclaw/computer': { packageName: '@magclaw/computer', latest: '0.1.71', source: 'db' },
+          '@magclaw/team-sharing': { packageName: '@magclaw/team-sharing', latest: '0.1.72', source: 'db' },
         },
       };
     },
@@ -319,6 +320,43 @@ test('system route group returns package versions for computers page caching', a
   assert.equal(res.statusCode, 200);
   assert.equal(res.data.cacheTtlMs, 10 * 60_000);
   assert.equal(res.data.packages['@magclaw/daemon'].latest, '0.1.70');
+  assert.equal(res.data.packages['@magclaw/team-sharing'].latest, '0.1.72');
+});
+
+test('system route group returns package-specific update notes', async () => {
+  const deps = routeDeps({
+    packageUpdateSnapshot: async (options) => ({
+      ok: true,
+      package: {
+        name: options.packageName,
+        currentVersion: options.currentVersion,
+        latestVersion: '0.1.56',
+        updateAvailable: true,
+        updateMode: 'silent',
+        cacheTtlSeconds: 43200,
+      },
+      releaseNotesMarkdown: '- Team Sharing can now update registered projects silently.',
+      releaseNotes: {
+        version: '0.1.56',
+        new: ['Team Sharing can now update registered projects silently.'],
+        bugFix: [],
+        approval: [],
+      },
+    }),
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', on: () => {} },
+    res,
+    new URL('http://local/api/package-updates?packageName=%40magclaw%2Fteam-sharing&currentVersion=0.1.55'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.package.name, '@magclaw/team-sharing');
+  assert.equal(res.data.package.cacheTtlSeconds, 43200);
+  assert.match(res.data.releaseNotesMarkdown, /registered projects silently/);
 });
 
 test('system settings route updates runtime settings through injected state', async () => {

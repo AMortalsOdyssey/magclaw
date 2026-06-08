@@ -20,6 +20,7 @@ import {
   installTeamSharingHooks,
   installTeamSharingSkill,
   initTeamSharingProject,
+  listTeamSharingProjects,
   listTeamSharingLinks,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
@@ -38,6 +39,7 @@ import {
   statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
+  updateTeamSharingPackage,
   getTeamSharingSessionReporting,
   setTeamSharingSessionReporting,
   teamSharingMachineFingerprint,
@@ -791,6 +793,38 @@ test('team sharing init writes editable yaml config and user project registry', 
   assert.doesNotMatch(yaml, /token|api_key|secret/i);
   assert.match(registry, /magclaw/);
   assert.match(registry, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('team sharing project registry keeps same-name projects as distinct entries', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-registry-root-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-registry-home-'));
+  const left = path.join(root, 'left', 'app');
+  const right = path.join(root, 'right', 'app');
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await mkdir(left, { recursive: true });
+  await mkdir(right, { recursive: true });
+
+  await initTeamSharingProject({
+    cwd: left,
+    channel: 'chan_left',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'app',
+  }, env);
+  await initTeamSharingProject({
+    cwd: right,
+    channel: 'chan_right',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'app',
+  }, env);
+
+  const listed = await listTeamSharingProjects({}, env);
+  const projects = Object.values(listed.projects);
+  assert.equal(projects.length, 2);
+  assert.deepEqual(projects.map((item) => item.path).sort(), [left, right].sort());
+  assert.equal(new Set(Object.keys(listed.projects)).size, 2);
+  assert.ok(Object.keys(listed.projects).every((key) => /^app-[a-f0-9]{8,16}$/.test(key)));
 });
 
 test('team sharing browser login caches scoped token, whoami reads it, and logout removes it', async () => {
@@ -1762,7 +1796,9 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.ok(result.feedback.sections.some((section) => section.title === '数据查看'));
   assert.deepEqual(result.feedback.commands, []);
   assert.equal(result.shim.installed, true);
-  assert.match(shim, /@magclaw\/team-sharing@latest/);
+  assert.match(shim, /updates\/active\.json|active\.json/);
+  assert.match(shim, /versions/);
+  assert.doesNotMatch(shim, /^exec npm exec --yes --package '@magclaw\/team-sharing@latest'/m);
   assert.match(cmdShim, /team-sharing %\*/);
   assert.match(ps1Shim, /team-sharing @args/);
   assert.equal(hooks.codex.installed.length, 3);
@@ -1919,7 +1955,7 @@ test('team sharing upgrade check uses npm cache ttl and reports newer versions',
   try {
     const first = await checkTeamSharingUpgrade({ nowMs: () => nowMs }, env);
     const second = await checkTeamSharingUpgrade({ nowMs: () => nowMs + 60_000 }, env);
-    const third = await checkTeamSharingUpgrade({ nowMs: () => nowMs + 25 * 60 * 60 * 1000 }, env);
+    const third = await checkTeamSharingUpgrade({ nowMs: () => nowMs + 13 * 60 * 60 * 1000 }, env);
     assert.equal(first.upgradeAvailable, true);
     assert.equal(first.latestVersion, '0.1.38');
     assert.equal(second.fromCache, true);
@@ -1928,6 +1964,100 @@ test('team sharing upgrade check uses npm cache ttl and reports newer versions',
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('team sharing update check prefers server package update API and records compact notes', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-api-home-'));
+  const env = {
+    HOME: home,
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+    MAGCLAW_PUBLIC_URL: 'https://magclaw.example',
+  };
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    assert.match(String(url), /\/api\/package-updates\?/);
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true,
+        package: {
+          name: '@magclaw/team-sharing',
+          currentVersion: '0.1.55',
+          latestVersion: '0.1.56',
+          updateAvailable: true,
+          updateMode: 'silent',
+          cacheTtlSeconds: 43200,
+        },
+        releaseNotesMarkdown: '- Team Sharing can now silently update registered projects.',
+      }),
+    };
+  };
+  try {
+    const result = await checkTeamSharingUpgrade({ nowMs: () => 1000, serverUrl: 'https://magclaw.example' }, env);
+    assert.equal(result.ok, true);
+    assert.equal(result.latestVersion, '0.1.56');
+    assert.equal(result.upgradeAvailable, true);
+    assert.match(result.releaseNotesMarkdown, /registered projects/);
+    assert.equal(calls.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing update stages a source package, activates it, and syncs registered projects best-effort', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-project-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-source-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-home-'));
+  const binDir = path.join(home, 'bin');
+  const env = {
+    HOME: home,
+    CODEX_HOME: path.join(home, '.codex'),
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+  };
+  await mkdir(path.join(source, 'bin'), { recursive: true });
+  await mkdir(path.join(source, 'src'), { recursive: true });
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: '@magclaw/team-sharing', version: '0.1.56', type: 'module', bin: { 'team-sharing': 'bin/team-sharing.js' } }));
+  await writeFile(path.join(source, 'bin', 'team-sharing.js'), [
+    '#!/usr/bin/env node',
+    'if (process.argv.includes("-V") || process.argv.includes("--version")) { console.log("0.1.56"); process.exit(0); }',
+    'console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));',
+  ].join('\n'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-update-fixture"}\n');
+  await loginTeamSharingProfile({ token: 'tm_secret', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team' }, env);
+  await setupTeamSharing({
+    cwd,
+    yes: true,
+    target: 'codex',
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'fixture',
+    noLogin: true,
+    binDir,
+  }, env);
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    all: true,
+    yes: true,
+    target: 'codex',
+    binDir,
+  }, env);
+  const paths = teamSharingPaths({ cwd, env });
+  const state = JSON.parse(await readFile(paths.updateState, 'utf8'));
+  const skill = await readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.activated, true);
+  assert.equal(result.syncedProjects.length, 1);
+  assert.equal(state.active.version, '0.1.56');
+  assert.match(state.active.bin, /versions/);
+  assert.match(skill, /@magclaw\/team-sharing@0\.1\.56/);
 });
 
 test('team sharing cli search and context use configured profile token', async () => {
@@ -2628,6 +2758,9 @@ test('team sharing cli installs a local skill without writing token into skill f
   assert.equal(result.feedback.status, 'ready');
   assert.match(result.feedback.sections.map((section) => section.title).join(','), /Skill 说明/);
   assert.match(skill, /team-sharing read-link "<url>" --format json/);
+  assert.match(skill, /current project/i);
+  assert.match(skill, /语义|intent|说法/);
+  assert.match(skill, /接入 Team Sharing|团队共享|hooks|同步到 MagClaw/);
   assert.match(skill, /reason.*access.*action/);
   assert.match(skill, /CLI login state and machine fingerprint/);
   assert.match(skill, /not browser cookies/);

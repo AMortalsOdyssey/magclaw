@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-export const RELEASE_COMPONENTS = ['web', 'daemon', 'computer'];
+export const RELEASE_COMPONENTS = ['web', 'daemon', 'computer', 'cliCore', 'teamSharing'];
 
 export const RELEASE_CATEGORY_KEYS = ['new', 'bugFix', 'approval', 'features', 'fixes', 'improved'];
 
@@ -339,6 +339,79 @@ const COMPUTER_RELEASES = [
   },
 ];
 
+const CLI_CORE_RELEASES = [
+  {
+    version: '0.1.40',
+    date: '2026-05-25',
+    title: 'Shared CLI core package',
+    new: [
+      'Daemon and Computer commands now share the same local MagClaw CLI implementation.',
+    ],
+    bugFix: [],
+    approval: [],
+  },
+];
+
+const TEAM_SHARING_RELEASES = [
+  {
+    version: '0.1.56',
+    date: '2026-06-08',
+    title: 'Project lifecycle updates',
+    new: [
+      'Registered projects now stay distinct even when multiple folders have the same project name.',
+      'Team Sharing updates can stage a local package, activate it, and sync registered project hooks and skills.',
+      'Agents can treat flexible Team Sharing onboarding wording as a current project setup intent.',
+    ],
+    bugFix: [
+      'The Team Sharing update cache now checks at most once every 12 hours by default.',
+    ],
+    approval: [],
+  },
+];
+
+const RELEASE_COMPONENT_CONFIG = {
+  web: {
+    component: 'web',
+    packageName: '@magclaw/web',
+    packagePath: 'web',
+    versionEnv: 'MAGCLAW_WEB_VERSION',
+    latestEnv: 'MAGCLAW_WEB_LATEST_VERSION',
+    fallbackReleases: WEB_RELEASES,
+  },
+  daemon: {
+    component: 'daemon',
+    packageName: '@magclaw/daemon',
+    packagePath: 'daemon',
+    versionEnv: 'MAGCLAW_DAEMON_VERSION',
+    latestEnv: 'MAGCLAW_DAEMON_LATEST_VERSION',
+    fallbackReleases: DAEMON_RELEASES,
+  },
+  computer: {
+    component: 'computer',
+    packageName: '@magclaw/computer',
+    packagePath: 'computer',
+    versionEnv: 'MAGCLAW_COMPUTER_VERSION',
+    latestEnv: 'MAGCLAW_COMPUTER_LATEST_VERSION',
+    fallbackReleases: COMPUTER_RELEASES,
+  },
+  cliCore: {
+    component: 'cliCore',
+    packageName: '@magclaw/cli-core',
+    packagePath: 'cli-core',
+    versionEnv: 'MAGCLAW_CLI_CORE_VERSION',
+    latestEnv: 'MAGCLAW_CLI_CORE_LATEST_VERSION',
+    fallbackReleases: CLI_CORE_RELEASES,
+  },
+  teamSharing: {
+    component: 'teamSharing',
+    packageName: '@magclaw/team-sharing',
+    packagePath: 'team-sharing',
+    versionEnv: 'MAGCLAW_TEAM_SHARING_VERSION',
+    latestEnv: 'MAGCLAW_TEAM_SHARING_LATEST_VERSION',
+    fallbackReleases: TEAM_SHARING_RELEASES,
+  },
+};
+
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -361,6 +434,84 @@ function normalizeDate(value) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10);
+}
+
+function blankReleaseItem(version = '', date = '', title = '') {
+  return {
+    version,
+    date,
+    title,
+    new: [],
+    bugFix: [],
+    approval: [],
+    features: [],
+    fixes: [],
+    improved: [],
+  };
+}
+
+function normalizeCategoryLabel(value = '') {
+  const clean = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  if (['new', 'added', 'additions', 'new features'].includes(clean)) return 'new';
+  if (['bug fix', 'bug fixes', 'bugfix', 'bugfixes', 'bug'].includes(clean)) return 'bugFix';
+  if (['approval', 'approvals', 'permission', 'permissions'].includes(clean)) return 'approval';
+  if (['feature', 'features'].includes(clean)) return 'features';
+  if (['fix', 'fixes'].includes(clean)) return 'fixes';
+  if (['improved', 'improve', 'improvements', 'changed', 'changes'].includes(clean)) return 'improved';
+  return RELEASE_CATEGORY_KEYS.includes(clean) ? clean : '';
+}
+
+function parseMarkdownReleaseHeading(value = '') {
+  const text = String(value || '').trim();
+  const match = text.match(/^v?([0-9][A-Za-z0-9._-]*)\s*(?:[-–—]\s*([0-9]{4}-[0-9]{2}-[0-9]{2}))?\s*(?:[-–—]\s*(.+))?$/);
+  if (!match) return null;
+  return {
+    version: normalizeVersion(match[1]),
+    date: normalizeDate(match[2] || ''),
+    title: String(match[3] || '').trim(),
+  };
+}
+
+function parseReleaseNotesMarkdown(text = '') {
+  const releases = [];
+  let current = null;
+  let category = '';
+  for (const rawLine of String(text || '').split(/\r?\n/g)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const releaseHeading = line.match(/^##\s+(.+)$/);
+    if (releaseHeading) {
+      const parsed = parseMarkdownReleaseHeading(releaseHeading[1]);
+      if (parsed?.version) {
+        current = blankReleaseItem(parsed.version, parsed.date, parsed.title);
+        releases.push(current);
+        category = '';
+      }
+      continue;
+    }
+    const categoryHeading = line.match(/^###\s+(.+)$/);
+    if (categoryHeading) {
+      category = normalizeCategoryLabel(categoryHeading[1]);
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (current && category && bullet) {
+      current[category].push(bullet[1].trim());
+    }
+  }
+  return releases;
+}
+
+function packageMarkdownReleases(root, packagePath) {
+  try {
+    return parseReleaseNotesMarkdown(readFileSync(path.join(root, packagePath, 'RELEASE_NOTES.md'), 'utf8'));
+  } catch {
+    return [];
+  }
 }
 
 function normalizeReleaseItem(item, index = 0) {
@@ -399,6 +550,21 @@ function normalizeReleaseItems(items) {
     .sort((a, b) => Date.parse(b.date) - Date.parse(a.date) || compareVersionsDescending(a.version, b.version));
 }
 
+function mergeCatalogReleaseItems(markdownItems, fallbackItems) {
+  const merged = [];
+  const seen = new Set();
+  for (const item of normalizeReleaseItems(markdownItems)) {
+    merged.push(item);
+    seen.add(item.version);
+  }
+  for (const item of normalizeReleaseItems(fallbackItems)) {
+    if (seen.has(item.version)) continue;
+    merged.push(item);
+    seen.add(item.version);
+  }
+  return normalizeReleaseItems(merged);
+}
+
 function mergeReleaseItems(existingItems, defaultItems) {
   const defaults = normalizeReleaseItems(defaultItems);
   return defaults.length ? defaults : normalizeReleaseItems(existingItems);
@@ -420,39 +586,29 @@ function normalizeComponent(component, defaults = {}) {
 }
 
 export function defaultReleaseNotes({ root = process.cwd(), env = process.env } = {}) {
-  const webVersion = normalizeVersion(env.MAGCLAW_WEB_VERSION || readPackageVersion(root, 'web') || WEB_RELEASES[0].version);
-  const daemonVersion = normalizeVersion(env.MAGCLAW_DAEMON_VERSION || readPackageVersion(root, 'daemon') || DAEMON_RELEASES[0].version);
-  const computerVersion = normalizeVersion(env.MAGCLAW_COMPUTER_VERSION || readPackageVersion(root, 'computer') || COMPUTER_RELEASES[0].version);
-  return {
-    web: normalizeComponent({
-      component: 'web',
-      packageName: '@magclaw/web',
-      currentVersion: webVersion,
-      latestVersion: normalizeVersion(env.MAGCLAW_WEB_LATEST_VERSION || webVersion || WEB_RELEASES[0].version),
-      releases: WEB_RELEASES,
-    }),
-    daemon: normalizeComponent({
-      component: 'daemon',
-      packageName: '@magclaw/daemon',
-      currentVersion: daemonVersion,
-      latestVersion: normalizeVersion(env.MAGCLAW_DAEMON_LATEST_VERSION || daemonVersion || DAEMON_RELEASES[0].version),
-      releases: DAEMON_RELEASES,
-    }),
-    computer: normalizeComponent({
-      component: 'computer',
-      packageName: '@magclaw/computer',
-      currentVersion: computerVersion,
-      latestVersion: normalizeVersion(env.MAGCLAW_COMPUTER_LATEST_VERSION || computerVersion || COMPUTER_RELEASES[0].version),
-      releases: COMPUTER_RELEASES,
-    }),
-  };
+  const notes = {};
+  for (const component of RELEASE_COMPONENTS) {
+    const config = RELEASE_COMPONENT_CONFIG[component];
+    const releases = mergeCatalogReleaseItems(packageMarkdownReleases(root, config.packagePath), config.fallbackReleases);
+    const firstVersion = releases[0]?.version || '';
+    const currentVersion = normalizeVersion(env[config.versionEnv] || readPackageVersion(root, config.packagePath) || firstVersion);
+    notes[component] = normalizeComponent({
+      component: config.component,
+      packageName: config.packageName,
+      currentVersion,
+      latestVersion: normalizeVersion(env[config.latestEnv] || currentVersion || firstVersion),
+      releases,
+    });
+  }
+  return notes;
 }
 
 export function normalizeReleaseNotes(value = {}, defaults = {}) {
-  const defaultNotes = defaults.web && defaults.daemon && defaults.computer ? defaults : defaultReleaseNotes();
-  return {
-    web: normalizeComponent(value?.web, defaultNotes.web),
-    daemon: normalizeComponent(value?.daemon, defaultNotes.daemon),
-    computer: normalizeComponent(value?.computer, defaultNotes.computer),
-  };
+  const hasAllDefaults = RELEASE_COMPONENTS.every((component) => defaults?.[component]);
+  const defaultNotes = hasAllDefaults ? defaults : defaultReleaseNotes();
+  const notes = {};
+  for (const component of RELEASE_COMPONENTS) {
+    notes[component] = normalizeComponent(value?.[component], defaultNotes[component]);
+  }
+  return notes;
 }

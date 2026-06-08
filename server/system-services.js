@@ -11,9 +11,17 @@ import { teamSharingDisplayBodyForRecord } from './team-sharing.js';
 // System/runtime and local-project services.
 // HTTP route modules use this for public state shaping, installed-runtime
 // detection, the native folder picker, and project folder registration.
-const RUNTIME_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer']);
+const RUNTIME_PACKAGE_NAMES = Object.freeze(['@magclaw/daemon', '@magclaw/computer', '@magclaw/cli-core', '@magclaw/team-sharing']);
 const DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS = 10 * 60_000;
+const PACKAGE_UPDATE_CACHE_TTL_SECONDS = 12 * 60 * 60;
 const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
+const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
+  '@magclaw/web': 'web',
+  '@magclaw/daemon': 'daemon',
+  '@magclaw/computer': 'computer',
+  '@magclaw/cli-core': 'cliCore',
+  '@magclaw/team-sharing': 'teamSharing',
+});
 
 export function createSystemServices(deps) {
   const {
@@ -767,6 +775,8 @@ export function createSystemServices(deps) {
   function runtimeSnapshot() {
     const daemonPackageVersion = localDaemonPackageVersion();
     const computerPackageVersion = localComputerPackageVersion();
+    const cliCorePackageVersion = localCliCorePackageVersion();
+    const teamSharingPackageVersion = localTeamSharingPackageVersion();
     scheduleNpmPackageVersionRefresh();
     return {
       node: process.version,
@@ -782,13 +792,31 @@ export function createSystemServices(deps) {
       computerPackageName: '@magclaw/computer',
       computerPackageVersion,
       computerLatestVersion: latestComputerPackageVersion(computerPackageVersion),
+      cliCorePackageName: '@magclaw/cli-core',
+      cliCorePackageVersion,
+      cliCoreLatestVersion: latestCliCorePackageVersion(cliCorePackageVersion),
+      teamSharingPackageName: '@magclaw/team-sharing',
+      teamSharingPackageVersion,
+      teamSharingLatestVersion: latestTeamSharingPackageVersion(teamSharingPackageVersion),
     };
   }
 
   function localPackageVersionForName(packageName) {
     if (packageName === '@magclaw/daemon') return localDaemonPackageVersion();
     if (packageName === '@magclaw/computer') return localComputerPackageVersion();
+    if (packageName === '@magclaw/cli-core') return localCliCorePackageVersion();
+    if (packageName === '@magclaw/team-sharing') return localTeamSharingPackageVersion();
+    if (packageName === '@magclaw/web') return localWebPackageVersion();
     return '';
+  }
+
+  function latestPackageVersionForName(packageName, fallback = '') {
+    if (packageName === '@magclaw/web') return latestWebPackageVersion(fallback);
+    if (packageName === '@magclaw/daemon') return latestDaemonPackageVersion(fallback);
+    if (packageName === '@magclaw/computer') return latestComputerPackageVersion(fallback);
+    if (packageName === '@magclaw/cli-core') return latestCliCorePackageVersion(fallback);
+    if (packageName === '@magclaw/team-sharing') return latestTeamSharingPackageVersion(fallback);
+    return String(fallback || '').trim();
   }
 
   function currentNpmPackageVersions() {
@@ -904,6 +932,10 @@ export function createSystemServices(deps) {
     normalized.daemon.latestVersion = latestDaemonPackageVersion(normalized.daemon.currentVersion);
     normalized.computer.currentVersion = localComputerPackageVersion() || normalized.computer.currentVersion;
     normalized.computer.latestVersion = latestComputerPackageVersion(normalized.computer.currentVersion);
+    normalized.cliCore.currentVersion = localCliCorePackageVersion() || normalized.cliCore.currentVersion;
+    normalized.cliCore.latestVersion = latestCliCorePackageVersion(normalized.cliCore.currentVersion);
+    normalized.teamSharing.currentVersion = localTeamSharingPackageVersion() || normalized.teamSharing.currentVersion;
+    normalized.teamSharing.latestVersion = latestTeamSharingPackageVersion(normalized.teamSharing.currentVersion);
     return normalized;
   }
 
@@ -968,6 +1000,137 @@ export function createSystemServices(deps) {
       || fallback
       || '',
     ).trim();
+  }
+
+  function localCliCorePackageVersion() {
+    const envVersion = String(process.env.MAGCLAW_CLI_CORE_VERSION || '').trim();
+    if (envVersion) return envVersion;
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(ROOT, 'cli-core', 'package.json'), 'utf8'));
+      return String(pkg.version || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function latestCliCorePackageVersion(fallback = '') {
+    return String(
+      process.env.MAGCLAW_CLI_CORE_LATEST_VERSION
+      || npmPackageVersions?.latest?.('@magclaw/cli-core', '')
+      || state?.settings?.cliCoreVersionControl?.latestVersion
+      || state?.settings?.cliCoreLatestVersion
+      || fallback
+      || '',
+    ).trim();
+  }
+
+  function localTeamSharingPackageVersion() {
+    const envVersion = String(process.env.MAGCLAW_TEAM_SHARING_VERSION || '').trim();
+    if (envVersion) return envVersion;
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(ROOT, 'team-sharing', 'package.json'), 'utf8'));
+      return String(pkg.version || '');
+    } catch {
+      return '';
+    }
+  }
+
+  function latestTeamSharingPackageVersion(fallback = '') {
+    return String(
+      process.env.MAGCLAW_TEAM_SHARING_LATEST_VERSION
+      || npmPackageVersions?.latest?.('@magclaw/team-sharing', '')
+      || state?.settings?.teamSharingVersionControl?.latestVersion
+      || state?.settings?.teamSharingLatestVersion
+      || fallback
+      || '',
+    ).trim();
+  }
+
+  function semverParts(value = '') {
+    return String(value || '').replace(/^[^\d]*/, '').split(/[.-]/).slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  }
+
+  function semverGreater(left = '', right = '') {
+    const a = semverParts(left);
+    const b = semverParts(right);
+    for (let index = 0; index < 3; index += 1) {
+      if (a[index] > b[index]) return true;
+      if (a[index] < b[index]) return false;
+    }
+    return false;
+  }
+
+  function releaseWithinVersionWindow(release, currentVersion, latestVersion) {
+    const version = String(release?.version || '').trim();
+    if (!version) return false;
+    if (currentVersion && !semverGreater(version, currentVersion)) return false;
+    if (latestVersion && semverGreater(version, latestVersion)) return false;
+    return true;
+  }
+
+  function packageReleaseNotes(componentNotes, currentVersion, latestVersion) {
+    const releases = Array.isArray(componentNotes?.releases) ? componentNotes.releases : [];
+    const scoped = releases.filter((release) => releaseWithinVersionWindow(release, currentVersion, latestVersion));
+    return {
+      component: componentNotes?.component || '',
+      packageName: componentNotes?.packageName || '',
+      currentVersion: String(currentVersion || componentNotes?.currentVersion || ''),
+      latestVersion: String(latestVersion || componentNotes?.latestVersion || ''),
+      releases: scoped.length ? scoped : releases.slice(0, latestVersion && currentVersion === latestVersion ? 1 : 0),
+    };
+  }
+
+  function compactReleaseNotesMarkdown(releaseNotes) {
+    const lines = [];
+    const categories = ['new', 'bugFix', 'approval', 'features', 'fixes', 'improved'];
+    for (const release of releaseNotes?.releases || []) {
+      for (const category of categories) {
+        for (const item of release[category] || []) {
+          const text = String(item || '').replace(/\s+/g, ' ').trim();
+          if (!text) continue;
+          lines.push(`- ${text}`);
+          if (lines.length >= 5) return lines.join('\n');
+        }
+      }
+    }
+    return lines.join('\n');
+  }
+
+  async function packageUpdateSnapshot(options = {}) {
+    const packageName = String(options.packageName || '').trim();
+    if (!packageName) return { ok: false, error: 'packageName is required' };
+    const component = PACKAGE_RELEASE_COMPONENTS[packageName] || '';
+    const packageVersions = await packageVersionSnapshot({ force: Boolean(options.force) });
+    const notes = publicReleaseNotes();
+    const componentNotes = component ? notes[component] : null;
+    const currentVersion = String(
+      options.currentVersion
+      || localPackageVersionForName(packageName)
+      || componentNotes?.currentVersion
+      || '',
+    ).trim();
+    const latestVersion = String(
+      packageVersions?.packages?.[packageName]?.latest
+      || latestPackageVersionForName(packageName, componentNotes?.latestVersion || currentVersion)
+      || componentNotes?.latestVersion
+      || currentVersion
+      || '',
+    ).trim();
+    const releaseNotes = packageReleaseNotes(componentNotes, currentVersion, latestVersion);
+    return {
+      ok: true,
+      package: {
+        name: packageName,
+        packageName,
+        currentVersion,
+        latestVersion,
+        updateAvailable: semverGreater(latestVersion, currentVersion),
+        updateMode: packageName === '@magclaw/team-sharing' ? 'silent' : 'manual',
+        cacheTtlSeconds: PACKAGE_UPDATE_CACHE_TTL_SECONDS,
+      },
+      releaseNotesMarkdown: compactReleaseNotesMarkdown(releaseNotes),
+      releaseNotes,
+    };
   }
 
   async function getRuntimeInfo() {
@@ -1389,6 +1552,7 @@ export function createSystemServices(deps) {
     execText,
     getRuntimeInfo,
     pickFolderPath,
+    packageUpdateSnapshot,
     packageVersionSnapshot,
     publicConnection,
     publicSettings,

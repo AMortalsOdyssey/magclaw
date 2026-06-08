@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -864,11 +864,21 @@ function defaultTeamSharingHookCommand(flags = {}, env = process.env) {
 function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_PACKAGE_NAME}@latest` } = {}) {
   const cleanNpmPath = String(npmPath || 'npm').trim() || 'npm';
   const cleanPackageSpec = String(packageSpec || `${TEAM_SHARING_PACKAGE_NAME}@latest`).trim() || `${TEAM_SHARING_PACKAGE_NAME}@latest`;
+  const activeBinScript = "try{const fs=require('fs');const data=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write((data.active&&data.active.bin)||data.bin||'')}catch(e){}";
   return [
     {
       name: 'team-sharing',
       content: [
         '#!/bin/sh',
+        'TEAM_SHARING_HOME="${MAGCLAW_TEAM_SHARING_HOME:-$HOME/.magclaw/team-sharing}"',
+        'ACTIVE_JSON="$TEAM_SHARING_HOME/updates/active.json"',
+        '# Active packages live under "$TEAM_SHARING_HOME/versions/<version>/".',
+        'if [ -f "$ACTIVE_JSON" ]; then',
+        `  ACTIVE_BIN="$(node -e ${shellQuote(activeBinScript)} "$ACTIVE_JSON" 2>/dev/null || true)"`,
+        '  if [ -n "$ACTIVE_BIN" ] && [ -f "$ACTIVE_BIN" ]; then',
+        '    exec node "$ACTIVE_BIN" "$@"',
+        '  fi',
+        'fi',
         `exec ${shellQuote(cleanNpmPath)} exec --yes --package ${shellQuote(cleanPackageSpec)} -- team-sharing "$@"`,
         '',
       ].join('\n'),
@@ -877,6 +887,17 @@ function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_P
       name: 'team-sharing.cmd',
       content: [
         '@echo off',
+        'set "TEAM_SHARING_HOME=%MAGCLAW_TEAM_SHARING_HOME%"',
+        'if "%TEAM_SHARING_HOME%"=="" set "TEAM_SHARING_HOME=%USERPROFILE%\\.magclaw\\team-sharing"',
+        'set "ACTIVE_JSON=%TEAM_SHARING_HOME%\\updates\\active.json"',
+        'set "ACTIVE_BIN="',
+        'if exist "%ACTIVE_JSON%" (',
+        `  for /f "usebackq delims=" %%i in (\`node -e ${cmdQuote(activeBinScript)} "%ACTIVE_JSON%"\`) do set "ACTIVE_BIN=%%i"`,
+        ')',
+        'if not "%ACTIVE_BIN%"=="" if exist "%ACTIVE_BIN%" (',
+        '  node "%ACTIVE_BIN%" %*',
+        '  exit /b %ERRORLEVEL%',
+        ')',
         `${cmdQuote(cleanNpmPath)} exec --yes --package ${cmdQuote(cleanPackageSpec)} -- team-sharing %*`,
         '',
       ].join('\r\n'),
@@ -885,6 +906,16 @@ function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_P
       name: 'team-sharing.ps1',
       content: [
         '$ErrorActionPreference = "Stop"',
+        '$teamSharingHome = if ($env:MAGCLAW_TEAM_SHARING_HOME) { $env:MAGCLAW_TEAM_SHARING_HOME } else { Join-Path $HOME ".magclaw/team-sharing" }',
+        '$activeJson = Join-Path $teamSharingHome "updates/active.json"',
+        '$activeBin = ""',
+        'if (Test-Path $activeJson) {',
+        `  $activeBin = & node -e ${powershellQuote(activeBinScript)} $activeJson`,
+        '}',
+        'if ($activeBin -and (Test-Path $activeBin)) {',
+        '  & node $activeBin @args',
+        '  exit $LASTEXITCODE',
+        '}',
         `& ${powershellQuote(cleanNpmPath)} exec --yes --package ${powershellQuote(cleanPackageSpec)} -- team-sharing @args`,
         'exit $LASTEXITCODE',
         '',
@@ -937,6 +968,7 @@ export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(
   const sharingHome = path.resolve(env.MAGCLAW_TEAM_SHARING_HOME || path.join(home, '.magclaw', 'team-sharing'));
   const projectDir = path.resolve(cwd || process.cwd());
   const cleanProfile = safeProfileName(profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE);
+  const updatesDir = path.join(sharingHome, 'updates');
   return {
     profile: cleanProfile,
     sharingHome,
@@ -944,6 +976,12 @@ export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(
     sessionOverrides: path.join(sharingHome, 'session-overrides.json'),
     projectsConfig: path.join(sharingHome, 'projects.yaml'),
     versionCache: path.join(sharingHome, 'version-cache.json'),
+    updatesDir,
+    updateState: path.join(updatesDir, 'state.json'),
+    updateActive: path.join(updatesDir, 'active.json'),
+    updateNotifications: path.join(updatesDir, 'notifications.json'),
+    updateLock: path.join(updatesDir, 'lock'),
+    versionsDir: path.join(sharingHome, 'versions'),
     projectConfig: path.join(projectDir, '.magclaw', 'team-sharing.yaml'),
     projectCursor: path.join(projectDir, '.magclaw', 'team-sharing-cursor.json'),
     projectAuditLog: path.join(projectDir, '.magclaw', 'team-sharing-audit.jsonl'),
@@ -1002,16 +1040,30 @@ async function registerTeamSharingProject(paths, config) {
   const registry = await readYamlFile(paths.projectsConfig, {});
   registry.version = 1;
   registry.projects = registry.projects && typeof registry.projects === 'object' ? registry.projects : {};
-  const key = String(config.project_key || config.projectKey || path.basename(path.dirname(path.dirname(paths.projectConfig)))).replace(/[^a-zA-Z0-9._-]+/g, '-');
-  registry.projects[key || 'default'] = {
-    path: path.dirname(path.dirname(paths.projectConfig)),
-    project_key: config.project_key || key || 'default',
+  const projectPath = path.dirname(path.dirname(paths.projectConfig));
+  const readableKey = String(config.project_key || config.projectKey || path.basename(projectPath))
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'default';
+  const key = `${readableKey}-${stableHash(projectPath)}`;
+  for (const [existingKey, existingProject] of Object.entries(registry.projects)) {
+    const existingPath = String(existingProject?.path || '').trim();
+    if (existingPath && path.resolve(existingPath) === projectPath && existingKey !== key) {
+      delete registry.projects[existingKey];
+    }
+  }
+  registry.projects[key] = {
+    path: projectPath,
+    project_key: config.project_key || readableKey,
+    projectKey: config.project_key || readableKey,
     channel_path: config.channel?.path || '',
     channel_id: config.channel?.id || '',
     profile: config.profile || DEFAULT_PROFILE,
+    registry_key: key,
     updated_at: now(),
   };
   await writeYamlFile(paths.projectsConfig, registry, { privateFile: true });
+  return key;
 }
 
 export async function initTeamSharingProject(flags = {}, env = process.env) {
@@ -1054,7 +1106,7 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
     updated_at: now(),
   };
   await writeYamlFile(paths.projectConfig, config);
-  await registerTeamSharingProject(paths, config);
+  const registryKey = await registerTeamSharingProject(paths, config);
   return {
     ok: true,
     projectConfig: paths.projectConfig,
@@ -1065,13 +1117,28 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
     channelId: config.channel.id,
     channelPath: config.channel.path,
     projectKey,
+    registryKey,
   };
 }
 
 export async function listTeamSharingProjects(flags = {}, env = process.env) {
   const paths = teamSharingPaths({ profile: flags.profile || env.MAGCLAW_TEAM_SHARING_PROFILE || DEFAULT_PROFILE, env });
   const registry = await readYamlFile(paths.projectsConfig, { version: 1, projects: {} });
-  return { ok: true, projectsConfig: paths.projectsConfig, projects: registry.projects || {} };
+  const projects = registry.projects || {};
+  if (!flags.status) return { ok: true, projectsConfig: paths.projectsConfig, projects };
+  return {
+    ok: true,
+    projectsConfig: paths.projectsConfig,
+    projects: Object.fromEntries(Object.entries(projects).map(([key, item]) => {
+      const projectPath = String(item?.path || '').trim();
+      return [key, {
+        ...item,
+        exists: Boolean(projectPath && existsSync(projectPath)),
+        projectConfig: projectPath ? path.join(projectPath, '.magclaw', 'team-sharing.yaml') : '',
+        configured: Boolean(projectPath && existsSync(path.join(projectPath, '.magclaw', 'team-sharing.yaml'))),
+      }];
+    })),
+  };
 }
 
 export async function statusTeamSharingProject(flags = {}, env = process.env) {
@@ -3368,35 +3435,383 @@ function semverGreater(left = '', right = '') {
   return false;
 }
 
+const TEAM_SHARING_UPDATE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+
+function teamSharingUpdateServerUrl(options = {}, env = process.env) {
+  const explicit = String(
+    options.serverUrl
+      || env.MAGCLAW_TEAM_SHARING_UPDATE_SERVER_URL
+      || env.MAGCLAW_PUBLIC_URL
+      || '',
+  ).trim();
+  return explicit ? normalizeServerUrl(explicit) : '';
+}
+
+function teamSharingPackageUpdateUrl(serverUrl = '', currentVersion = '', force = false) {
+  const url = new URL('/api/package-updates', normalizeServerUrl(serverUrl));
+  url.searchParams.set('packageName', TEAM_SHARING_PACKAGE_NAME);
+  url.searchParams.set('currentVersion', currentVersion);
+  if (force) url.searchParams.set('refresh', '1');
+  return url.toString();
+}
+
+async function checkTeamSharingUpgradeFromServer(options = {}, env = process.env) {
+  const serverUrl = teamSharingUpdateServerUrl(options, env);
+  if (!serverUrl) return null;
+  const currentVersion = String(options.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
+  const response = await fetch(teamSharingPackageUpdateUrl(serverUrl, currentVersion, Boolean(options.force)));
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.ok === false) throw new Error(data?.error || `package update API returned ${response.status}`);
+  const packageInfo = data.package || {};
+  const latestVersion = String(packageInfo.latestVersion || packageInfo.version || currentVersion);
+  return {
+    ok: true,
+    fromCache: false,
+    source: 'server',
+    currentVersion: String(packageInfo.currentVersion || currentVersion),
+    latestVersion,
+    upgradeAvailable: packageInfo.updateAvailable === undefined
+      ? semverGreater(latestVersion, currentVersion)
+      : Boolean(packageInfo.updateAvailable),
+    updateMode: String(packageInfo.updateMode || 'silent'),
+    cacheTtlSeconds: Number(packageInfo.cacheTtlSeconds || TEAM_SHARING_UPDATE_CACHE_TTL_MS / 1000),
+    releaseNotesMarkdown: String(data.releaseNotesMarkdown || ''),
+    releaseNotes: data.releaseNotes || null,
+    packageUpdate: data,
+  };
+}
+
+async function checkTeamSharingUpgradeFromNpm(options = {}, env = process.env) {
+  const currentVersion = String(options.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
+  const encodedPackageName = encodeURIComponent(TEAM_SHARING_PACKAGE_NAME);
+  const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `npm registry returned ${response.status}`);
+  const latestVersion = String(data?.['dist-tags']?.latest || currentVersion);
+  return {
+    ok: true,
+    fromCache: false,
+    source: 'npm',
+    currentVersion,
+    latestVersion,
+    upgradeAvailable: semverGreater(latestVersion, currentVersion),
+    releaseNotesMarkdown: '',
+    releaseNotes: null,
+  };
+}
+
 export async function checkTeamSharingUpgrade(options = {}, env = process.env) {
   const paths = teamSharingPaths({ env });
   const nowMs = typeof options.nowMs === 'function' ? options.nowMs() : Date.now();
-  const ttlMs = Math.max(60_000, Number(options.ttlMs || env.MAGCLAW_TEAM_SHARING_UPGRADE_TTL_MS || 24 * 60 * 60 * 1000) || 24 * 60 * 60 * 1000);
+  const ttlMs = Math.max(60_000, Number(options.ttlMs || env.MAGCLAW_TEAM_SHARING_UPGRADE_TTL_MS || TEAM_SHARING_UPDATE_CACHE_TTL_MS) || TEAM_SHARING_UPDATE_CACHE_TTL_MS);
   const currentVersion = String(options.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
   const cached = await readJsonFile(paths.versionCache, null);
   if (!options.force && cached?.checkedAtMs && nowMs - Number(cached.checkedAtMs) < ttlMs) {
     return {
       ok: true,
       fromCache: true,
+      source: cached.source || 'cache',
       currentVersion,
       latestVersion: cached.latestVersion || currentVersion,
       upgradeAvailable: semverGreater(cached.latestVersion || currentVersion, currentVersion),
+      updateMode: cached.updateMode || '',
+      cacheTtlSeconds: cached.cacheTtlSeconds || Math.ceil(ttlMs / 1000),
+      releaseNotesMarkdown: cached.releaseNotesMarkdown || '',
+      releaseNotes: cached.releaseNotes || null,
+      packageUpdate: cached.packageUpdate || null,
       checkedAtMs: cached.checkedAtMs,
     };
   }
-  const encodedPackageName = encodeURIComponent(TEAM_SHARING_PACKAGE_NAME);
-  const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `npm registry returned ${response.status}`);
-  const latestVersion = String(data?.['dist-tags']?.latest || currentVersion);
-  const result = {
-    ok: true,
-    fromCache: false,
-    currentVersion,
-    latestVersion,
-    upgradeAvailable: semverGreater(latestVersion, currentVersion),
-    checkedAtMs: nowMs,
-  };
+  let result = null;
+  try {
+    result = await checkTeamSharingUpgradeFromServer({ ...options, currentVersion }, env);
+  } catch {
+    result = null;
+  }
+  if (!result) result = await checkTeamSharingUpgradeFromNpm({ ...options, currentVersion }, env);
+  result.checkedAtMs = nowMs;
   await writeJsonFile(paths.versionCache, result);
   return result;
+}
+
+async function acquireTeamSharingUpdateLock(paths) {
+  await mkdir(paths.updatesDir, { recursive: true });
+  try {
+    await mkdir(paths.updateLock);
+    await writeJsonFile(path.join(paths.updateLock, 'owner.json'), {
+      pid: process.pid,
+      acquiredAt: now(),
+    }, { privateFile: true });
+    return {
+      acquired: true,
+      async release() {
+        await rm(paths.updateLock, { recursive: true, force: true }).catch(() => {});
+      },
+    };
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      return { acquired: false, reason: 'update_in_progress', release: async () => {} };
+    }
+    throw error;
+  }
+}
+
+async function stageTeamSharingPackage(flags = {}, env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const version = cleanTemplateVersion(flags.latestVersion || flags.targetVersion || flags.version || '');
+  if (!version || version === '0.0.0') throw new Error('A target Team Sharing version is required.');
+  const versionDir = path.join(paths.versionsDir, version);
+  await rm(versionDir, { recursive: true, force: true });
+  await mkdir(versionDir, { recursive: true });
+  if (flags.sourceDir) {
+    const packageRoot = path.join(versionDir, 'package');
+    await cp(path.resolve(flags.sourceDir), packageRoot, { recursive: true, force: true });
+    const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
+    await chmod(bin, 0o755).catch(() => {});
+    return { version, versionDir, packageRoot, bin, source: 'sourceDir' };
+  }
+  const npmPath = String(flags.npmPath || env.MAGCLAW_TEAM_SHARING_NPM_PATH || 'npm').trim() || 'npm';
+  const install = spawnSync(npmPath, [
+    'install',
+    '--prefix',
+    versionDir,
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    '--no-save',
+    `${TEAM_SHARING_PACKAGE_NAME}@${version}`,
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  if (install.status !== 0) {
+    throw new Error(String(install.stderr || install.stdout || `npm install exited ${install.status}`).trim());
+  }
+  const packageRoot = path.join(versionDir, 'node_modules', '@magclaw', 'team-sharing');
+  const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
+  await chmod(bin, 0o755).catch(() => {});
+  return { version, versionDir, packageRoot, bin, source: 'npm' };
+}
+
+function verifyStagedTeamSharingPackage(stage, env = process.env) {
+  if (!existsSync(stage.bin)) throw new Error(`Staged Team Sharing binary is missing: ${stage.bin}`);
+  const result = spawnSync(process.execPath, [stage.bin, '-V'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ...env,
+      MAGCLAW_TEAM_SHARING_VERSION: stage.version,
+    },
+  });
+  if (result.status !== 0) {
+    throw new Error(String(result.stderr || result.stdout || `Team Sharing verify exited ${result.status}`).trim());
+  }
+  const stdout = String(result.stdout || '').trim();
+  if (stdout && stdout !== stage.version) {
+    throw new Error(`Team Sharing verify returned ${stdout}, expected ${stage.version}.`);
+  }
+  return { ok: true, stdout };
+}
+
+async function writeTeamSharingUpdateState(paths, nextState) {
+  await writeJsonFile(paths.updateState, nextState, { privateFile: true });
+  await writeJsonFile(paths.updateActive, nextState, { privateFile: true });
+}
+
+async function activateTeamSharingPackage(stage, verify, metadata = {}, env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const previousState = await readJsonFile(paths.updateState, {});
+  const active = {
+    version: stage.version,
+    bin: stage.bin,
+    packageRoot: stage.packageRoot,
+    versionDir: stage.versionDir,
+    source: stage.source,
+    activatedAt: now(),
+    verifiedAt: now(),
+    lastHealthyAt: now(),
+    verify,
+  };
+  const state = {
+    version: 1,
+    active,
+    previousActive: previousState.active || null,
+    lastUpdate: {
+      ok: true,
+      version: stage.version,
+      source: stage.source,
+      releaseNotesMarkdown: metadata.releaseNotesMarkdown || '',
+      updatedAt: now(),
+    },
+  };
+  await writeTeamSharingUpdateState(paths, state);
+  return state;
+}
+
+async function recordTeamSharingUpdateNotification(paths, notification) {
+  const existing = await readJsonFile(paths.updateNotifications, { version: 1, notifications: [] });
+  const notifications = [
+    {
+      id: `team-sharing-update-${stableHash(`${notification.version || ''}:${notification.createdAt || now()}`)}`,
+      createdAt: now(),
+      ...notification,
+    },
+    ...(Array.isArray(existing.notifications) ? existing.notifications : []),
+  ].slice(0, 20);
+  await writeJsonFile(paths.updateNotifications, { version: 1, notifications }, { privateFile: true });
+}
+
+async function restorePreviousTeamSharingActive(paths, previousActive, error) {
+  const rollbackAvailable = Boolean(previousActive?.bin && existsSync(previousActive.bin));
+  const state = {
+    version: 1,
+    active: rollbackAvailable ? previousActive : null,
+    previousActive: rollbackAvailable ? null : previousActive || null,
+    lastUpdate: {
+      ok: false,
+      error: error?.message || String(error),
+      failedAt: now(),
+      rolledBack: rollbackAvailable,
+    },
+  };
+  await writeTeamSharingUpdateState(paths, state);
+  return { rolledBack: rollbackAvailable, state };
+}
+
+async function syncRegisteredTeamSharingProjectsForUpdate(flags = {}, env = process.env, stage) {
+  const listed = await listTeamSharingProjects({ ...flags, status: true }, env);
+  const syncedProjects = [];
+  const failedProjects = [];
+  const skippedProjects = [];
+  const projectEnv = {
+    ...env,
+    MAGCLAW_TEAM_SHARING_VERSION: stage.version,
+    MAGCLAW_TEAM_SHARING_PACKAGE_SPEC: `${TEAM_SHARING_PACKAGE_NAME}@${stage.version}`,
+  };
+  for (const [key, project] of Object.entries(listed.projects || {})) {
+    const projectPath = String(project?.path || '').trim();
+    if (!projectPath || !existsSync(projectPath)) {
+      skippedProjects.push({ key, path: projectPath, reason: 'missing_project' });
+      continue;
+    }
+    const projectFlags = {
+      ...flags,
+      cwd: projectPath,
+      projectDir: projectPath,
+      installScope: 'project',
+      target: flags.target || 'all',
+      yes: true,
+      nonInteractive: true,
+      noLogin: true,
+      packageSpec: `${TEAM_SHARING_PACKAGE_NAME}@${stage.version}`,
+    };
+    try {
+      const shim = await installTeamSharingShim(projectFlags, projectEnv);
+      const hooks = await installTeamSharingHooks({
+        ...projectFlags,
+        teamSharingCommand: shim.path || projectFlags.teamSharingCommand,
+      }, projectEnv);
+      const skill = await installTeamSharingSkill(projectFlags, projectEnv);
+      syncedProjects.push({
+        key,
+        path: projectPath,
+        ok: Boolean(shim.ok && hooks.ok && skill.ok),
+        shim,
+        hooks,
+        skill,
+      });
+    } catch (error) {
+      failedProjects.push({
+        key,
+        path: projectPath,
+        ok: false,
+        error: error?.message || String(error),
+      });
+    }
+  }
+  return { syncedProjects, failedProjects, skippedProjects };
+}
+
+export async function updateTeamSharingPackage(flags = {}, env = process.env) {
+  const manual = Boolean(flags.manual || flags.yes || flags.force || flags.check || flags.checkOnly);
+  if (env.MAGCLAW_TEAM_SHARING_AUTO_UPDATE === '0' && !manual) {
+    return { ok: true, skipped: true, reason: 'auto_update_disabled' };
+  }
+  const currentVersion = String(flags.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
+  const check = flags.latestVersion
+    ? {
+      ok: true,
+      currentVersion,
+      latestVersion: String(flags.latestVersion),
+      upgradeAvailable: semverGreater(flags.latestVersion, currentVersion),
+      releaseNotesMarkdown: flags.releaseNotesMarkdown || '',
+    }
+    : await checkTeamSharingUpgrade({
+      force: Boolean(flags.force),
+      currentVersion,
+      serverUrl: flags.serverUrl,
+      nowMs: flags.nowMs,
+    }, env);
+  if (flags.check || flags.checkOnly) return check;
+  if (!check.latestVersion || !semverGreater(check.latestVersion, currentVersion)) {
+    return {
+      ok: true,
+      updated: false,
+      currentVersion,
+      latestVersion: check.latestVersion || currentVersion,
+      upgradeAvailable: false,
+      releaseNotesMarkdown: check.releaseNotesMarkdown || '',
+    };
+  }
+  const paths = teamSharingPaths({ env });
+  const lock = await acquireTeamSharingUpdateLock(paths);
+  if (!lock.acquired) return { ok: true, skipped: true, reason: lock.reason || 'update_in_progress' };
+  let stage = null;
+  try {
+    stage = await stageTeamSharingPackage({ ...flags, latestVersion: check.latestVersion }, env);
+    const previousState = await readJsonFile(paths.updateState, {});
+    let verify = null;
+    try {
+      verify = verifyStagedTeamSharingPackage(stage, env);
+    } catch (error) {
+      const rollback = await restorePreviousTeamSharingActive(paths, previousState.active, error);
+      return {
+        ok: false,
+        activated: false,
+        currentVersion,
+        latestVersion: check.latestVersion,
+        error: error?.message || String(error),
+        ...rollback,
+      };
+    }
+    const state = await activateTeamSharingPackage(stage, verify, {
+      releaseNotesMarkdown: check.releaseNotesMarkdown || '',
+    }, env);
+    const sync = flags.all ? await syncRegisteredTeamSharingProjectsForUpdate(flags, env, stage) : {
+      syncedProjects: [],
+      failedProjects: [],
+      skippedProjects: [],
+    };
+    await recordTeamSharingUpdateNotification(paths, {
+      packageName: TEAM_SHARING_PACKAGE_NAME,
+      version: stage.version,
+      releaseNotesMarkdown: check.releaseNotesMarkdown || '',
+      syncedProjectCount: sync.syncedProjects.length,
+      failedProjectCount: sync.failedProjects.length,
+    });
+    return {
+      ok: true,
+      activated: true,
+      updated: true,
+      currentVersion,
+      latestVersion: stage.version,
+      statePath: paths.updateState,
+      activePath: paths.updateActive,
+      active: state.active,
+      releaseNotesMarkdown: check.releaseNotesMarkdown || '',
+      ...sync,
+    };
+  } finally {
+    await lock.release();
+  }
 }

@@ -143,6 +143,7 @@ export async function handleSystemApi(req, res, url, deps) {
     isDraining,
     persistState,
     presenceHeartbeat,
+    packageUpdateSnapshot,
     packageVersionSnapshot,
     publicBootstrapState,
     publicState,
@@ -285,6 +286,36 @@ export async function handleSystemApi(req, res, url, deps) {
       ? await packageVersionSnapshot({ force: url.searchParams.get('refresh') === '1' })
       : { ok: true, cacheTtlMs: 0, packages: {} };
     sendJson(res, 200, snapshot);
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/package-updates') {
+    const packageName = String(url.searchParams.get('packageName') || '').trim();
+    if (!packageName) {
+      sendError(res, 400, 'packageName is required.');
+      return true;
+    }
+    const snapshot = typeof packageUpdateSnapshot === 'function'
+      ? await packageUpdateSnapshot({
+        packageName,
+        currentVersion: String(url.searchParams.get('currentVersion') || '').trim(),
+        force: url.searchParams.get('refresh') === '1',
+      })
+      : {
+        ok: true,
+        package: {
+          name: packageName,
+          packageName,
+          currentVersion: String(url.searchParams.get('currentVersion') || '').trim(),
+          latestVersion: String(url.searchParams.get('currentVersion') || '').trim(),
+          updateAvailable: false,
+          updateMode: 'manual',
+          cacheTtlSeconds: 0,
+        },
+        releaseNotesMarkdown: '',
+        releaseNotes: { releases: [] },
+      };
+    sendJson(res, snapshot.ok === false ? 400 : 200, snapshot);
     return true;
   }
 

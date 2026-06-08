@@ -1,4 +1,4 @@
-const DEFAULT_PACKAGE_NAMES = ['@magclaw/daemon', '@magclaw/computer'];
+const DEFAULT_PACKAGE_NAMES = ['@magclaw/daemon', '@magclaw/computer', '@magclaw/cli-core', '@magclaw/team-sharing'];
 const DEFAULT_TTL_MS = 10 * 60_000;
 const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org';
 

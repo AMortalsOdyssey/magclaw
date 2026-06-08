@@ -30,6 +30,7 @@ import {
   statusTeamSharingProject,
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
+  updateTeamSharingPackage,
   getTeamSharingSessionReporting,
   setTeamSharingSessionReporting,
   unsetTeamSharingProject,
@@ -166,7 +167,8 @@ function renderTeamSharingHelp() {
     '  disable  Disable this project sync',
     '  status   Show project/login/hook/skill status',
     '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
-    '  upgrade  Check npm latest version for team-sharing',
+    '  upgrade  Compatibility alias for update --check --force',
+    '  update   Check, stage, activate, and sync Team Sharing package updates',
     '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic)',
     '  context  Read original context around an anchor',
     '  read-link Read a protected MagClaw share/context URL with the Team Sharing CLI login',
@@ -231,7 +233,7 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       printJson(await whoamiTeamSharingProfile(flags, env));
       break;
     case 'projects':
-      printJson(await listTeamSharingProjects(flags, env));
+      printJson(await listTeamSharingProjects({ ...flags, status: flags._?.[1] === 'status' || flags.status }, env));
       break;
     case 'init':
       printJson(await initTeamSharingProject(flags, env));
@@ -290,7 +292,14 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       }
       break;
     case 'upgrade':
-      printJson(await checkTeamSharingUpgrade({ force: true }, env));
+      printJson(await updateTeamSharingPackage({ ...flags, check: true, force: true, manual: true }, env));
+      break;
+    case 'update':
+      printJson(await updateTeamSharingPackage({
+        ...flags,
+        check: Boolean(flags.check || flags._?.[1] === 'check'),
+        manual: true,
+      }, env));
       break;
     case 'search':
       printJson(await searchTeamSharing(flags, env));

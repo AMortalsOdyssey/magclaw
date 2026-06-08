@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/team-sharing",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "description": "One-command MagClaw Team Sharing setup for Codex and Claude Code: npx @magclaw/team-sharing@latest setup --server-url https://magclaw.multiego.me --channel <channel-path>.",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
     "hooks/",
     "skills/",
     "src/",
+    "RELEASE_NOTES.md",
     "README.md"
   ],
   "engines": {
