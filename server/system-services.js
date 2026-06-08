@@ -19,6 +19,8 @@ const BOOTSTRAP_UNREAD_RECORD_LIMIT = 80;
 const BOOTSTRAP_UNREAD_CANDIDATE_LIMIT = BOOTSTRAP_UNREAD_RECORD_LIMIT * 2;
 const BOOTSTRAP_DIRECTORY_FORMAT_TUPLE = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE_VISIBLE = 'visible';
+const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
+const DIRECTORY_PAGE_LIMIT_MAX = 500;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -793,6 +795,69 @@ export function createSystemServices(deps) {
     };
   }
 
+  function parseDirectoryCursor(value = '') {
+    const [agentOffset, humanOffset, memberOffset] = String(value || '')
+      .split(':')
+      .map((part) => Math.max(0, Math.floor(Number(part) || 0)));
+    return {
+      agentOffset: agentOffset || 0,
+      humanOffset: humanOffset || 0,
+      memberOffset: memberOffset || 0,
+    };
+  }
+
+  function directoryCursorValue(cursor = {}) {
+    return [
+      Math.max(0, Math.floor(Number(cursor.agentOffset) || 0)),
+      Math.max(0, Math.floor(Number(cursor.humanOffset) || 0)),
+      Math.max(0, Math.floor(Number(cursor.memberOffset) || 0)),
+    ].join(':');
+  }
+
+  function directoryPageLimit(value) {
+    const parsed = Math.floor(Number(value) || 0);
+    if (parsed <= 0) return DIRECTORY_PAGE_LIMIT_DEFAULT;
+    return Math.min(DIRECTORY_PAGE_LIMIT_MAX, Math.max(1, parsed));
+  }
+
+  function directoryPage(records, offset, limit) {
+    const items = Array.isArray(records) ? records : [];
+    if (!limit) return { records: items, nextOffset: items.length, hasMore: false };
+    const start = Math.min(items.length, Math.max(0, Math.floor(Number(offset) || 0)));
+    const end = Math.min(items.length, start + limit);
+    return {
+      records: items.slice(start, end),
+      nextOffset: end,
+      hasMore: end < items.length,
+    };
+  }
+
+  function applyDirectoryPagination({ agents = [], humans = [], cloud = null, limit = 0, cursor = {} } = {}) {
+    const nextCloud = cloud && typeof cloud === 'object' ? { ...cloud } : cloud;
+    const agentPage = directoryPage(agents, cursor.agentOffset, limit);
+    const humanPage = directoryPage(humans, cursor.humanOffset, limit);
+    const memberPage = directoryPage(nextCloud?.members || [], cursor.memberOffset, limit);
+    if (nextCloud && Array.isArray(nextCloud.members)) nextCloud.members = memberPage.records;
+    const hasMore = agentPage.hasMore || humanPage.hasMore || memberPage.hasMore;
+    return {
+      agents: agentPage.records,
+      humans: humanPage.records,
+      cloud: nextCloud,
+      page: {
+        limit,
+        cursor: directoryCursorValue(cursor),
+        nextCursor: hasMore
+          ? directoryCursorValue({
+              agentOffset: agentPage.nextOffset,
+              humanOffset: humanPage.nextOffset,
+              memberOffset: memberPage.nextOffset,
+            })
+          : '',
+        hasMore,
+      },
+    };
+  }
+
   function compactTuple(values = []) {
     let lastIndex = values.length - 1;
     while (lastIndex >= 0) {
@@ -875,6 +940,10 @@ export function createSystemServices(deps) {
       if (selectedAgentId) options.selectedAgentId = selectedAgentId;
       const selectedHumanId = url.searchParams.get('selectedHumanId') || '';
       if (selectedHumanId) options.selectedHumanId = selectedHumanId;
+      const limit = url.searchParams.get('limit') || '';
+      if (limit) options.limit = limit;
+      const cursor = url.searchParams.get('cursor') || '';
+      if (cursor) options.cursor = cursor;
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
       return options;
     } catch {
@@ -1311,25 +1380,38 @@ export function createSystemServices(deps) {
     const publicCloud = compactBootstrapCloudState(cloud, {
       humansById: new Map(scopedRecords('humans').map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
     });
-    const snapshot = {
-      ...publicStateBase(currentState),
+    const pageLimit = directoryPageLimit(effectiveOptions.limit);
+    const pageCursor = parseDirectoryCursor(effectiveOptions.cursor);
+    const directoryPageSnapshot = applyDirectoryPagination({
       agents: publicAgents,
       humans: publicHumans,
       cloud: publicCloud,
+      limit: pageLimit,
+      cursor: pageCursor,
+    });
+    const directory = {
+      ...directoryMetadata({
+        scope: pageLimit ? 'page' : 'full',
+        agents: directoryPageSnapshot.agents,
+        humans: directoryPageSnapshot.humans,
+        cloud: directoryPageSnapshot.cloud,
+        totals: {
+          agents: publicAgents.length,
+          humans: publicHumans.length,
+          members: publicCloud?.members?.length || 0,
+        },
+      }),
+      page: directoryPageSnapshot.page,
+    };
+    const snapshot = {
+      ...publicStateBase(currentState),
+      agents: directoryPageSnapshot.agents,
+      humans: directoryPageSnapshot.humans,
+      cloud: directoryPageSnapshot.cloud,
       bootstrap: {
         mode: 'directory',
         fullState: false,
-        directory: directoryMetadata({
-          scope: 'full',
-          agents: publicAgents,
-          humans: publicHumans,
-          cloud: publicCloud,
-          totals: {
-            agents: publicAgents.length,
-            humans: publicHumans.length,
-            members: publicCloud?.members?.length || 0,
-          },
-        }),
+        directory,
       },
     };
     return encodeBootstrapDirectories(snapshot, effectiveOptions);

@@ -668,6 +668,27 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.deepEqual(directory.agents.map((agent) => agent[0]), ['agt_visible', 'agt_hidden']);
   assert.deepEqual(directory.humans.map((human) => human[0]), ['hum_1', 'hum_hidden']);
   assert.deepEqual(directory.cloud.members.map((member) => member[0]), ['mem_1', 'mem_hidden']);
+
+  const firstPage = services.publicDirectoryState({
+    url: '/api/directory?directoryFormat=tuple-v1&limit=1',
+    headers: {},
+  });
+  assert.equal(firstPage.bootstrap.directory.scope, 'page');
+  assert.equal(firstPage.bootstrap.directory.page.hasMore, true);
+  assert.equal(firstPage.bootstrap.directory.page.nextCursor, '1:1:1');
+  assert.deepEqual(firstPage.agents.map((agent) => agent[0]), ['agt_visible']);
+  assert.deepEqual(firstPage.humans.map((human) => human[0]), ['hum_1']);
+  assert.deepEqual(firstPage.cloud.members.map((member) => member[0]), ['mem_1']);
+
+  const secondPage = services.publicDirectoryState({
+    url: '/api/directory?directoryFormat=tuple-v1&limit=1&cursor=1:1:1',
+    headers: {},
+  });
+  assert.equal(secondPage.bootstrap.directory.scope, 'page');
+  assert.equal(secondPage.bootstrap.directory.page.hasMore, false);
+  assert.deepEqual(secondPage.agents.map((agent) => agent[0]), ['agt_hidden']);
+  assert.deepEqual(secondPage.humans.map((human) => human[0]), ['hum_hidden']);
+  assert.deepEqual(secondPage.cloud.members.map((member) => member[0]), ['mem_hidden']);
 });
 
 test('public state exposes configured public URL for share exports', () => {

@@ -294,6 +294,10 @@ export async function handleSystemApi(req, res, url, deps) {
     const options = {};
     const directoryFormat = url.searchParams.get('directoryFormat') || '';
     if (directoryFormat) options.directoryFormat = directoryFormat;
+    const limit = url.searchParams.get('limit') || '';
+    if (limit) options.limit = limit;
+    const cursor = url.searchParams.get('cursor') || '';
+    if (cursor) options.cursor = cursor;
     sendJson(res, 200, (publicDirectoryState || publicState)(req, options));
     return true;
   }

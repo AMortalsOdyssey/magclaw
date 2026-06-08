@@ -101,10 +101,10 @@ function normalizeStateDirectorySnapshot(stateSnapshot = {}) {
 
 function directorySnapshotIsFull(stateSnapshot = {}) {
   const directory = stateSnapshot?.bootstrap?.directory;
-  if (directory?.scope === 'full') return true;
   const agents = directory?.agents;
   const humans = directory?.humans;
   const members = directory?.members;
+  if (directory?.scope === 'full' && !agents && !humans && !members && !directory?.page?.hasMore) return true;
   return Boolean(
     agents && humans && members
     && Number(agents.loaded || 0) >= Number(agents.total || 0)
@@ -115,6 +115,8 @@ function directorySnapshotIsFull(stateSnapshot = {}) {
 
 function directorySnapshotIsPartial(stateSnapshot = {}) {
   return stateSnapshot?.bootstrap?.directory?.scope === 'visible'
+    || stateSnapshot?.bootstrap?.directory?.scope === 'page'
+    || stateSnapshot?.bootstrap?.directory?.page?.hasMore
     || stateSnapshot?.bootstrap?.directory?.agents?.hasMore
     || stateSnapshot?.bootstrap?.directory?.humans?.hasMore
     || stateSnapshot?.bootstrap?.directory?.members?.hasMore;
@@ -151,9 +153,26 @@ function mergeStateDirectorySnapshot(baseState = {}, directorySnapshot = {}) {
     }
   }
   if (directorySnapshot.bootstrap?.directory) {
+    const incomingDirectory = directorySnapshot.bootstrap.directory;
+    const agentTotal = Number(incomingDirectory.agents?.total || next.agents?.length || 0);
+    const humanTotal = Number(incomingDirectory.humans?.total || next.humans?.length || 0);
+    const memberTotal = Number(incomingDirectory.members?.total || next.cloud?.members?.length || 0);
+    const agentLoaded = Array.isArray(next.agents) ? next.agents.length : 0;
+    const humanLoaded = Array.isArray(next.humans) ? next.humans.length : 0;
+    const memberLoaded = Array.isArray(next.cloud?.members) ? next.cloud.members.length : 0;
+    const hasMore = Boolean(incomingDirectory.page?.hasMore)
+      || agentLoaded < agentTotal
+      || humanLoaded < humanTotal
+      || memberLoaded < memberTotal;
     next.bootstrap = {
       ...(baseState.bootstrap || {}),
-      directory: directorySnapshot.bootstrap.directory,
+      directory: {
+        ...incomingDirectory,
+        scope: hasMore ? incomingDirectory.scope || 'page' : 'full',
+        agents: { loaded: agentLoaded, total: Math.max(agentLoaded, agentTotal), hasMore: agentLoaded < agentTotal },
+        humans: { loaded: humanLoaded, total: Math.max(humanLoaded, humanTotal), hasMore: humanLoaded < humanTotal },
+        members: { loaded: memberLoaded, total: Math.max(memberLoaded, memberTotal), hasMore: memberLoaded < memberTotal },
+      },
     };
   }
   return next;

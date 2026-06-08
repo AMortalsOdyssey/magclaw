@@ -187,6 +187,66 @@ test('state sync preserves hydrated full directory across partial bootstrap refr
   ]);
 });
 
+test('state sync merges paged directory snapshots and marks complete after final page', async () => {
+  const { context } = await createHarness({
+    bootstrap: {
+      directory: {
+        scope: 'visible',
+        agents: { loaded: 1, total: 2, hasMore: true },
+        humans: { loaded: 1, total: 2, hasMore: true },
+        members: { loaded: 1, total: 2, hasMore: true },
+      },
+    },
+    agents: [{ id: 'agt_visible', name: 'Visible Agent' }],
+    humans: [{ id: 'hum_1', name: 'Current Human' }],
+    cloud: { members: [{ id: 'mem_1', humanId: 'hum_1', userId: 'usr_1' }] },
+  });
+
+  context.appState = context.mergeStateDirectorySnapshot(context.appState, {
+    bootstrap: {
+      directoryFormat: 'tuple-v1',
+      directory: {
+        scope: 'page',
+        agents: { loaded: 1, total: 2, hasMore: true },
+        humans: { loaded: 1, total: 2, hasMore: true },
+        members: { loaded: 1, total: 2, hasMore: true },
+        page: { limit: 1, cursor: '', nextCursor: '1:1:1', hasMore: true },
+      },
+    },
+    agents: [['agt_visible', 'Visible Agent Updated']],
+    humans: [['hum_1', 'Current Human Updated']],
+    cloud: { members: [['mem_1', 'usr_1', 'hum_1']] },
+  });
+  assert.equal(context.appState.bootstrap.directory.scope, 'page');
+  assert.equal(context.appState.bootstrap.directory.agents.loaded, 1);
+  assert.equal(context.directorySnapshotIsFull(context.appState), false);
+
+  context.appState = context.mergeStateDirectorySnapshot(context.appState, {
+    bootstrap: {
+      directoryFormat: 'tuple-v1',
+      directory: {
+        scope: 'page',
+        agents: { loaded: 1, total: 2, hasMore: false },
+        humans: { loaded: 1, total: 2, hasMore: false },
+        members: { loaded: 1, total: 2, hasMore: false },
+        page: { limit: 1, cursor: '1:1:1', nextCursor: '', hasMore: false },
+      },
+    },
+    agents: [['agt_hidden', 'Hidden Agent']],
+    humans: [['hum_hidden', 'Hidden Human']],
+    cloud: { members: [['mem_hidden', 'usr_hidden', 'hum_hidden']] },
+  });
+
+  assert.equal(context.appState.bootstrap.directory.scope, 'full');
+  assert.equal(context.appState.bootstrap.directory.agents.loaded, 2);
+  assert.equal(context.appState.bootstrap.directory.humans.loaded, 2);
+  assert.equal(context.appState.bootstrap.directory.members.loaded, 2);
+  assert.equal(context.directorySnapshotIsFull(context.appState), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.agents.map((agent) => agent.id))), ['agt_visible', 'agt_hidden']);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.humans.map((human) => human.id))), ['hum_1', 'hum_hidden']);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.appState.cloud.members.map((member) => member.id))), ['mem_1', 'mem_hidden']);
+});
+
 test('submitted conversation merge replaces optimistic messages and replies without double counts', async () => {
   const { context, updates } = await createHarness({
     messages: [{

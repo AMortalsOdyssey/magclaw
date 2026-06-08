@@ -117,13 +117,17 @@ test('directory route forwards compact directory options', async () => {
   assert.equal(await handleSystemApi(
     { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
     res,
-    new URL('http://local/api/directory?directoryFormat=tuple-v1'),
+    new URL('http://local/api/directory?directoryFormat=tuple-v1&limit=250&cursor=250:250:250'),
     deps,
   ), true);
 
   assert.equal(res.statusCode, 200);
   assert.equal(res.data.bootstrap.mode, 'directory');
-  assert.deepEqual(res.data.bootstrap.options, { directoryFormat: 'tuple-v1' });
+  assert.deepEqual(res.data.bootstrap.options, {
+    directoryFormat: 'tuple-v1',
+    limit: '250',
+    cursor: '250:250:250',
+  });
 });
 
 test('share image save route rejects non-loopback callers', async () => {

@@ -13,9 +13,13 @@ function bootstrapStatePath() {
   return `/api/bootstrap?${params.toString()}`;
 }
 
-function directoryStatePath() {
+const DIRECTORY_HYDRATION_PAGE_LIMIT = 250;
+
+function directoryStatePath(cursor = '') {
   const params = new URLSearchParams();
   params.set('directoryFormat', 'tuple-v1');
+  params.set('limit', String(DIRECTORY_HYDRATION_PAGE_LIMIT));
+  if (cursor) params.set('cursor', cursor);
   return `/api/directory?${params.toString()}`;
 }
 
@@ -56,12 +60,34 @@ function applyDirectorySnapshot(directorySnapshot, { renderAfter = true } = {}) 
   return true;
 }
 
+function waitForDirectoryHydrationTurn() {
+  return new Promise((resolve) => {
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => resolve(), { timeout: 500 });
+    } else {
+      window.setTimeout(resolve, 50);
+    }
+  });
+}
+
 async function ensureFullDirectory({ renderAfter = true } = {}) {
   if (!appState || currentDirectoryIsFull()) return false;
   if (directoryHydrationInFlight) return directoryHydrationInFlight;
   directoryHydrationInFlight = (async () => {
-    const snapshot = await api(directoryStatePath());
-    return applyDirectorySnapshot(normalizeIncomingStateSnapshot(snapshot), { renderAfter });
+    let cursor = '';
+    let changed = false;
+    const seenCursors = new Set();
+    while (appState && !currentDirectoryIsFull()) {
+      const snapshot = normalizeIncomingStateSnapshot(await api(directoryStatePath(cursor)));
+      changed = applyDirectorySnapshot(snapshot, { renderAfter }) || changed;
+      const page = snapshot?.bootstrap?.directory?.page || {};
+      const nextCursor = String(page.nextCursor || '');
+      if (!page.hasMore || !nextCursor || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+      await waitForDirectoryHydrationTurn();
+    }
+    return changed;
   })().catch((error) => {
     console.warn('Failed to hydrate member directory:', error);
     return false;

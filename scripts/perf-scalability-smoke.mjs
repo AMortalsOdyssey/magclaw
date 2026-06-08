@@ -8,6 +8,7 @@ const NOW = '2026-06-08T00:00:00.000Z';
 const BOOTSTRAP_DIRECTORY_FORMAT = 'tuple-v1';
 const BOOTSTRAP_DIRECTORY_SCOPE = 'visible';
 const BOOTSTRAP_QUERY = 'spaceType=channel&spaceId=chan_all&messageLimit=80&threadRootLimit=160&directoryFormat=tuple-v1&directoryScope=visible';
+const DIRECTORY_PAGE_LIMIT = 250;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -64,8 +65,10 @@ const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
 const BUDGETS = Object.freeze({
   bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 500_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
-  directoryBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_BYTES || 450_000),
-  directoryMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_MS || 250),
+  directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
+  directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
+  directoryTotalBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_TOTAL_BYTES || 280_000),
+  directoryPages: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGES || 4),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
@@ -111,6 +114,98 @@ function tupleRecordToObject(entry, fields = []) {
 
 function decodeTupleRecords(entries = [], fields = []) {
   return (entries || []).map((entry) => tupleRecordToObject(entry, fields));
+}
+
+function directoryPagePath(cursor = '') {
+  const params = new URLSearchParams();
+  params.set('directoryFormat', BOOTSTRAP_DIRECTORY_FORMAT);
+  params.set('limit', String(DIRECTORY_PAGE_LIMIT));
+  if (cursor) params.set('cursor', cursor);
+  return `/api/directory?${params.toString()}`;
+}
+
+function measureDirectoryHydration(services) {
+  let cursor = '';
+  const seenCursors = new Set();
+  const pages = [];
+  const allAgents = [];
+  const allHumans = [];
+  const allMembers = [];
+  let totalBytes = 0;
+  let totalMs = 0;
+  let hasDirectoryTuples = true;
+  let hasInternalFields = false;
+  let lastPage = null;
+  for (let index = 0; index < 20; index += 1) {
+    const started = performance.now();
+    const snapshot = services.publicDirectoryState({
+      url: directoryPagePath(cursor),
+      headers: {},
+    });
+    const body = JSON.stringify(snapshot);
+    const ms = Math.round(performance.now() - started);
+    const bytes = Buffer.byteLength(body, 'utf8');
+    const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
+    const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+    const decodedMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+    allAgents.push(...decodedAgents);
+    allHumans.push(...decodedHumans);
+    allMembers.push(...decodedMembers);
+    totalBytes += bytes;
+    totalMs += ms;
+    hasDirectoryTuples = hasDirectoryTuples
+      && (snapshot.agents || []).some(Array.isArray)
+      && (snapshot.humans || []).some(Array.isArray)
+      && (snapshot.cloud?.members || []).some(Array.isArray);
+    hasInternalFields = hasInternalFields
+      || body.includes('promptCache')
+      || body.includes('runtimeSession');
+    const page = snapshot.bootstrap?.directory?.page || {};
+    lastPage = page;
+    pages.push({
+      ms,
+      bytes,
+      cursor: page.cursor || '',
+      nextCursor: page.nextCursor || '',
+      hasMore: Boolean(page.hasMore),
+      agents: snapshot.agents.length,
+      humans: snapshot.humans.length,
+      cloudMembers: snapshot.cloud?.members?.length || 0,
+      scope: snapshot.bootstrap?.directory?.scope || '',
+    });
+    if (!page.hasMore || !page.nextCursor) break;
+    if (seenCursors.has(page.nextCursor)) throw new Error(`directory cursor loop at ${page.nextCursor}`);
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+  return {
+    pages,
+    totalMs,
+    totalBytes,
+    maxPageMs: Math.max(0, ...pages.map((page) => page.ms)),
+    maxPageBytes: Math.max(0, ...pages.map((page) => page.bytes)),
+    pageLimit: DIRECTORY_PAGE_LIMIT,
+    directoryFormat: BOOTSTRAP_DIRECTORY_FORMAT,
+    directoryScope: 'paged',
+    agents: allAgents.length,
+    humans: allHumans.length,
+    cloudMembers: allMembers.length,
+    hasMoreAfterLastPage: Boolean(lastPage?.hasMore),
+    hasDirectoryTuples,
+    hasCloudMemberDuplication: allMembers.some((member) => (
+      member.human
+      || member.workspaceId
+      || member.updatedAt
+      || member.createdAt
+      || member.status === 'active'
+      || member.role === 'member'
+      || member.user?.id
+      || member.user?.name
+    )),
+    hasMemberChurnFields: allAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
+      || allHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
+    hasInternalFields,
+  };
 }
 
 function timestamp(offsetMs = 0) {
@@ -873,12 +968,7 @@ async function main() {
     headers: {},
   });
   const body = JSON.stringify(snapshot);
-  const directoryStarted = performance.now();
-  const directorySnapshot = services.publicDirectoryState({
-    url: '/api/directory?directoryFormat=tuple-v1',
-    headers: {},
-  });
-  const directoryBody = JSON.stringify(directorySnapshot);
+  const directory = measureDirectoryHydration(services);
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -886,9 +976,6 @@ async function main() {
   const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
   const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
   const decodedCloudMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
-  const decodedDirectoryAgents = decodeTupleRecords(directorySnapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
-  const decodedDirectoryHumans = decodeTupleRecords(directorySnapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
-  const decodedDirectoryCloudMembers = decodeTupleRecords(directorySnapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
   const bootstrap = {
     ms: Math.round(performance.now() - started),
     bytes: Buffer.byteLength(body, 'utf8'),
@@ -939,32 +1026,6 @@ async function main() {
       || body.includes('runtimeSession')
       || body.includes('sourceAnchor'),
   };
-  const directory = {
-    ms: Math.round(performance.now() - directoryStarted),
-    bytes: Buffer.byteLength(directoryBody, 'utf8'),
-    directoryFormat: directorySnapshot.bootstrap?.directoryFormat || '',
-    directoryScope: directorySnapshot.bootstrap?.directory?.scope || '',
-    agents: directorySnapshot.agents.length,
-    humans: directorySnapshot.humans.length,
-    cloudMembers: directorySnapshot.cloud?.members?.length || 0,
-    hasDirectoryTuples: (directorySnapshot.agents || []).some(Array.isArray)
-      && (directorySnapshot.humans || []).some(Array.isArray)
-      && (directorySnapshot.cloud?.members || []).some(Array.isArray),
-    hasCloudMemberDuplication: decodedDirectoryCloudMembers.some((member) => (
-      member.human
-      || member.workspaceId
-      || member.updatedAt
-      || member.createdAt
-      || member.status === 'active'
-      || member.role === 'member'
-      || member.user?.id
-      || member.user?.name
-    )),
-    hasMemberChurnFields: decodedDirectoryAgents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
-      || decodedDirectoryHumans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
-    hasInternalFields: directoryBody.includes('promptCache')
-      || directoryBody.includes('runtimeSession'),
-  };
   const heartbeat = await measureHeartbeat(state);
   const repeatedHeartbeat = await measureRepeatedHeartbeatFanout(state);
   const humanHeartbeatChurn = await measureHumanHeartbeatChurnFanout(state);
@@ -998,10 +1059,14 @@ async function main() {
   assertBudget(bootstrap.taskHydration?.space?.hasMore === true, 'bootstrap task hydration did not expose selected-space pagination');
   assertBudget(bootstrap.taskHydration?.global?.hasMore === true, 'bootstrap task hydration did not expose global pagination');
   assertBudget(bootstrap.unreadHydration?.included <= BUDGETS.unreadHydrationRecords, 'bootstrap unread hydration is unbounded');
-  assertBudget(directory.ms <= BUDGETS.directoryMs, `directory ${directory.ms}ms exceeds ${BUDGETS.directoryMs}ms`);
-  assertBudget(directory.bytes <= BUDGETS.directoryBytes, `directory ${directory.bytes} bytes exceeds ${BUDGETS.directoryBytes}`);
+  assertBudget(directory.maxPageMs <= BUDGETS.directoryPageMs, `directory max page ${directory.maxPageMs}ms exceeds ${BUDGETS.directoryPageMs}ms`);
+  assertBudget(directory.maxPageBytes <= BUDGETS.directoryPageBytes, `directory max page ${directory.maxPageBytes} bytes exceeds ${BUDGETS.directoryPageBytes}`);
+  assertBudget(directory.totalBytes <= BUDGETS.directoryTotalBytes, `directory total ${directory.totalBytes} bytes exceeds ${BUDGETS.directoryTotalBytes}`);
+  assertBudget(directory.pages.length <= BUDGETS.directoryPages, `directory ${directory.pages.length} pages exceeds ${BUDGETS.directoryPages}`);
   assertBudget(directory.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${directory.directoryFormat || '[none]'}`);
-  assertBudget(directory.directoryScope === 'full', `directory scope expected full but got ${directory.directoryScope || '[none]'}`);
+  assertBudget(directory.directoryScope === 'paged', `directory scope expected paged but got ${directory.directoryScope || '[none]'}`);
+  assertBudget(directory.pageLimit === DIRECTORY_PAGE_LIMIT, `directory page limit expected ${DIRECTORY_PAGE_LIMIT} but got ${directory.pageLimit}`);
+  assertBudget(!directory.hasMoreAfterLastPage, 'directory pagination did not reach the final page');
   assertBudget(directory.hasDirectoryTuples, 'directory did not compact member directories into tuple rows');
   assertBudget(directory.agents === state.agents.length, `directory expected ${state.agents.length} agents but got ${directory.agents}`);
   assertBudget(directory.humans === state.humans.length, `directory expected ${state.humans.length} humans but got ${directory.humans}`);

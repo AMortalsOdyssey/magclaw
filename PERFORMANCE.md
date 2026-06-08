@@ -48,8 +48,10 @@ synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
 - Browser bootstrap JSON is at most 500 KB and generated in at most 250 ms.
-- Full member directory hydration is isolated from bootstrap and is at most
-  450 KB / 250 ms for the synthetic company-scale roster.
+- Full member directory hydration is isolated from bootstrap and paged at 250
+  records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
+  with the synthetic company-scale roster completing in at most 4 pages and
+  280 KB total transfer.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -71,9 +73,9 @@ membership fanout visible in the budget. It currently enforces:
   frontend state boundary so rendering code keeps the same object UX contract.
 - Browser bootstrap requests also use `directoryScope=visible`, keeping only
   current-view identities in the first paint. The full Agents/Humans/Members
-  directory is hydrated through `/api/directory` after first render or when the
-  Members surface is opened, and later partial bootstraps preserve that hydrated
-  roster.
+  directory is hydrated through paged `/api/directory` requests after first
+  render or when the Members surface is opened, and later partial bootstraps
+  preserve that hydrated roster.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.
@@ -166,8 +168,8 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Move `/api/directory` toward cursor hydration for very large workspaces where
-  loading the entire roster after first paint is still too much work.
+- Add server-side directory search/filter endpoints so very large workspaces do
+  not need to hydrate every member before search and picker interactions.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,
