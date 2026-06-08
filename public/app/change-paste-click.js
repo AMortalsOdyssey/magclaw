@@ -1797,7 +1797,6 @@ document.addEventListener('click', async (event) => {
       requestComposerFocus(composerIdFor('thread', threadMessageId));
       render();
       refreshThreadSelection(threadMessageId);
-      scrollToMessage(threadMessageId);
     }
     if (action === 'open-search-result') {
       const record = conversationRecord(target.dataset.id);
@@ -2395,7 +2394,6 @@ document.addEventListener('click', async (event) => {
       await refreshStateOrAuthGate().catch(() => {});
     }
     finishClickLoading(clickLoadingToken, target);
-    if (action === 'open-thread') scrollToMessage(threadMessageId);
     if (action === 'view-in-channel') scrollToMessage(target.dataset.id);
     if (action === 'back-to-bottom') {
       const targetPane = target.dataset.target === 'thread' ? '#thread-context' : '#message-list';

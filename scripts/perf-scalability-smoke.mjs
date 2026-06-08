@@ -6,7 +6,7 @@ import { createSystemServices } from '../server/system-services.js';
 
 const NOW = '2026-06-08T00:00:00.000Z';
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 900_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 850_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 400_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
@@ -574,6 +574,12 @@ async function main() {
     unreadHydration: snapshot.bootstrap?.unreadHydration || null,
     hasBootstrapMemberChurnFields: snapshot.agents.some((agent) => agent.workspaceId || agent.role || agent.statusUpdatedAt || agent.heartbeatAt || agent.updatedAt)
       || snapshot.humans.some((human) => human.workspaceId || human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt),
+    hasBootstrapConversationChurnFields: [...snapshot.messages, ...snapshot.replies].some((record) => (
+      record.workspaceId || (record.updatedAt && record.createdAt && record.updatedAt === record.createdAt)
+    )),
+    hasBootstrapEmptyAgentWorkItems: snapshot.agents.some((agent) => (
+      Array.isArray(agent.activeWorkItemIds) && agent.activeWorkItemIds.length === 0
+    )),
     hasBootstrapCloudMemberDuplication: (snapshot.cloud?.members || []).some((member) => (
       member.human
       || member.workspaceId
@@ -599,6 +605,8 @@ async function main() {
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
   assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
+  assertBudget(!bootstrap.hasBootstrapConversationChurnFields, 'bootstrap leaked conversation churn fields');
+  assertBudget(!bootstrap.hasBootstrapEmptyAgentWorkItems, 'bootstrap leaked empty agent work item arrays');
   assertBudget(bootstrap.cloudMembers === state.humans.length, `bootstrap cloud member fixture expected ${state.humans.length} members but got ${bootstrap.cloudMembers}`);
   assertBudget(!bootstrap.hasBootstrapCloudMemberDuplication, 'bootstrap leaked duplicate cloud member human payloads');
   assertBudget(bootstrap.tasks <= BUDGETS.bootstrapTasks, `bootstrap ${bootstrap.tasks} tasks exceeds ${BUDGETS.bootstrapTasks}`);

@@ -702,6 +702,14 @@ test('bootstrap state compacts member directory churn fields without changing fu
       heartbeatAt: updatedAt,
       createdAt,
       updatedAt,
+    }, {
+      id: 'agt_idle',
+      workspaceId: 'local',
+      name: 'Idle Agent',
+      status: 'idle',
+      activeWorkItemIds: [],
+      createdAt,
+      updatedAt,
     }];
     state.humans = [{
       id: 'hum_1',
@@ -714,6 +722,33 @@ test('bootstrap state compacts member directory churn fields without changing fu
       createdAt,
       updatedAt,
     }];
+    state.messages.push({
+      id: 'msg_redundant_update',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'same timestamp',
+      createdAt,
+      updatedAt: createdAt,
+    }, {
+      id: 'msg_edited',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'edited timestamp',
+      createdAt,
+      updatedAt,
+    });
+    state.replies.push({
+      id: 'rep_redundant_update',
+      workspaceId: 'local',
+      parentMessageId: 'msg_channel',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      body: 'same reply timestamp',
+      createdAt,
+      updatedAt: createdAt,
+    });
   }, {
     publicCloudState: () => ({
       auth: {
@@ -755,7 +790,10 @@ test('bootstrap state compacts member directory churn fields without changing fu
 
   assert.equal(full.agents[0].workspaceId, 'local');
   assert.equal(full.agents[0].statusUpdatedAt, updatedAt);
+  assert.deepEqual(full.agents[1].activeWorkItemIds, []);
   assert.equal(full.humans[0].lastSeenAt, updatedAt);
+  assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, 'local');
+  assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, createdAt);
 
   assert.equal(bootstrap.agents[0].workspaceId, undefined);
   assert.equal(bootstrap.agents[0].role, undefined);
@@ -766,6 +804,8 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.agents[0].runtime, 'codex');
   assert.equal(bootstrap.agents[0].model, 'gpt-test');
   assert.equal(bootstrap.agents[0].createdAt, createdAt);
+  assert.deepEqual(bootstrap.agents[0].activeWorkItemIds, ['wi_1']);
+  assert.equal(bootstrap.agents[1].activeWorkItemIds, undefined);
 
   assert.equal(bootstrap.humans[0].workspaceId, undefined);
   assert.equal(bootstrap.humans[0].lastSeenAt, undefined);
@@ -780,6 +820,11 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.cloud.members[0].updatedAt, undefined);
   assert.equal(bootstrap.cloud.members[0].status, undefined);
   assert.deepEqual(bootstrap.cloud.members[0].user, { email: 'owner@example.test' });
+  assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, undefined);
+  assert.equal(bootstrap.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, undefined);
+  assert.equal(bootstrap.messages.find((message) => message.id === 'msg_edited').updatedAt, updatedAt);
+  assert.equal(bootstrap.replies.find((reply) => reply.id === 'rep_redundant_update').workspaceId, undefined);
+  assert.equal(bootstrap.replies.find((reply) => reply.id === 'rep_redundant_update').updatedAt, undefined);
 });
 
 test('public state for signed-in non-members keeps empty collection fields stable', () => {

@@ -516,7 +516,8 @@ test('opening a thread refreshes scoped replies instead of relying on preview st
   assert.match(app, /\/api\/messages\/\$\{encodeURIComponent\(messageId\)\}\/replies\?limit=\$\{CONVERSATION_HISTORY_PAGE_SIZE\}/);
   assert.match(app, /function refreshThreadSelection\(messageId = threadMessageId, \{ loadReplies = true \} = \{\}\)/);
   assert.match(app, /if \(typeof connectEvents === 'function'\) connectEvents\(\)/);
-  assert.match(threadOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);\s*scrollToMessage\(threadMessageId\)/);
+  assert.match(threadOpenSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);/);
+  assert.doesNotMatch(threadOpenSource, /scrollToMessage\(threadMessageId\)/);
   assert.match(threadCloseSource, /render\(\);\s*refreshThreadSelection\(null, \{ loadReplies: false \}\)/);
   assert.match(searchOpenSource, /activeView = 'search'/);
   assert.match(searchOpenSource, /threadMessageId = root\.id/);
@@ -972,6 +973,7 @@ test('task clicks merge returned task updates before falling back to full refres
   assert.match(messageTaskSource, /const result = await api\(`\/api\/messages\/\$\{target\.dataset\.id\}\/task`/);
   assert.match(messageTaskSource, /if \(applySubmittedConversationResult\(result\)\) skipFinalRefresh = true/);
   assert.match(finallySource, /if \(!localOnlyActions\.has\(action\) && !skipFinalRefresh\) \{[\s\S]*await refreshStateOrAuthGate\(\)\.catch\(\(\) => \{\}\)/);
+  assert.doesNotMatch(finallySource, /if \(action === 'open-thread'\) scrollToMessage\(threadMessageId\)/);
 });
 
 test('task surfaces load older pages through cursor-backed task API', async () => {

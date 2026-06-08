@@ -358,6 +358,14 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function compactBootstrapConversationRecord(record = {}) {
+    if (!record || typeof record !== 'object') return record;
+    const next = { ...record };
+    if (Object.hasOwn(next, 'workspaceId')) delete next.workspaceId;
+    if (next.updatedAt && next.createdAt && next.updatedAt === next.createdAt) delete next.updatedAt;
+    return next;
+  }
+
   function publicTaskMetadata(metadata = null) {
     if (!metadata || typeof metadata !== 'object') return undefined;
     const result = {};
@@ -422,6 +430,9 @@ export function createSystemServices(deps) {
     const record = { ...agent };
     for (const key of ['workspaceId', 'role', 'statusReason', 'statusUpdatedAt', 'heartbeatAt', 'updatedAt']) {
       if (Object.hasOwn(record, key)) delete record[key];
+    }
+    if (Array.isArray(record.activeWorkItemIds) && record.activeWorkItemIds.length === 0) {
+      delete record.activeWorkItemIds;
     }
     return record;
   }
@@ -737,8 +748,12 @@ export function createSystemServices(deps) {
         },
         unreadHydration,
       },
-      messages: [...messageById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
-      replies: [...replyById.values()].sort((a, b) => recordTime(a) - recordTime(b)),
+      messages: [...messageById.values()]
+        .sort((a, b) => recordTime(a) - recordTime(b))
+        .map(compactBootstrapConversationRecord),
+      replies: [...replyById.values()]
+        .sort((a, b) => recordTime(a) - recordTime(b))
+        .map(compactBootstrapConversationRecord),
       tasks: visibleTasks,
       agents: records(snapshot.agents).map(compactBootstrapAgentRecord),
       humans: records(snapshot.humans).map(compactBootstrapHumanRecord),

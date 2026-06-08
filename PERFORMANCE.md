@@ -46,13 +46,15 @@ npm run test:quick
 cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. It
 currently enforces:
 
-- Bootstrap JSON is at most 900 KB and generated in at most 250 ms.
+- Bootstrap JSON is at most 850 KB and generated in at most 250 ms.
 - Bootstrap includes no internal payload fields such as raw imports, startup
   collaboration internals, Team Sharing source anchors, or agent runtime caches.
 - Bootstrap compacts member-directory churn fields such as repeated workspace
   IDs, heartbeat timestamps, and per-record update timestamps.
 - Bootstrap cloud member rows do not duplicate nested Human payloads already
   available in the top-level Humans directory.
+- Bootstrap conversation rows omit request-scoped workspace IDs and redundant
+  update timestamps when the update time equals creation time.
 - Deferred and unchanged heartbeat fanout must not serialize full member
   presence payloads before falling back to keepalive comments or deltas.
 - Off-space unread hydration remains bounded to 80 records.
