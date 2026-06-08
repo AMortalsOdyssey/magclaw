@@ -50,6 +50,7 @@ async function createRealtimeHarness() {
     collapsedTaskColumns: {},
     taskChannelFilterIds: [],
     threadMessageId: null,
+    lastSseSeq: 0,
     CONVERSATION_HISTORY_PAGE_SIZE: 80,
     conversationHistoryPages: { main: {}, thread: {} },
     conversationHistoryLoading: { main: {}, thread: {} },
@@ -83,6 +84,8 @@ async function createRealtimeHarness() {
     HUMAN_PRESENCE_STATE_KEY: 'magclaw:human-presence-state:test',
     HUMAN_PRESENCE_LEASE_TTL_MS: 65000,
     humanPresenceTabId: 'tab_a',
+    serverSlugFromPath: () => '',
+    currentServerSlug: () => '',
   };
   vm.createContext(context);
   vm.runInContext(source, context);
@@ -112,6 +115,9 @@ test('bootstrap request and normalizer support compact conversation tuples', asy
   const context = await createRealtimeHarness();
   const url = new URL(context.bootstrapStatePath(), 'http://magclaw.local');
   assert.equal(url.searchParams.get('conversationFormat'), 'tuple-v1');
+  context.selectedHumanId = 'hum_1';
+  const eventUrl = new URL(context.eventStreamPathForCurrentSelection(), 'http://magclaw.local');
+  assert.equal(eventUrl.searchParams.get('selectedHumanId'), 'hum_1');
 
   const normalized = context.normalizeIncomingStateSnapshot({
     bootstrap: { conversationFormat: 'tuple-v1' },
@@ -680,6 +686,10 @@ test('realtime stream handlers ignore stale events after thread scope changes', 
     app.indexOf('function connectEvents()'),
     app.indexOf('function disconnectEvents()'),
   );
+  const eventStreamPathSource = app.slice(
+    app.indexOf('function eventStreamPathForCurrentSelection()'),
+    app.indexOf('function connectEvents()'),
+  );
 
   assert.match(connectEventsSource, /const currentEventSource = eventSource/);
   assert.match(connectEventsSource, /const eventAppliesToCurrentStream = \(\) => eventSource === currentEventSource && eventSourcePath === eventPath/);
@@ -1022,6 +1032,10 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
     app.indexOf('function applyRealtimeJournalEvent(envelope)'),
     app.indexOf('function eventStreamPathForCurrentSelection()'),
   );
+  const eventStreamPathSource = app.slice(
+    app.indexOf('function eventStreamPathForCurrentSelection()'),
+    app.indexOf('function connectEvents()'),
+  );
   const connectEventsSource = app.slice(
     app.indexOf('function connectEvents()'),
     app.indexOf('function disconnectEvents()'),
@@ -1048,6 +1062,7 @@ test('high-frequency SSE state updates are coalesced before scoped patching', as
   assert.match(realtimeSource, /if \(envelope\?\.type === 'state_patch' && envelope\.payload\) \{[\s\S]*queueStateUpdate\(envelope\.payload\)/);
   assert.match(realtimeSource, /function applyStateResyncRequiredEnvelope\(envelope = \{\}\)[\s\S]*applySseSeq\(envelope\?\.seq \|\| envelope\?\.currentSeq\)[\s\S]*refreshAfterSseGap\(envelope\)/);
   assert.match(realtimeSource, /function applyRealtimeJournalEvent\(envelope\)[\s\S]*applySseSeq\(envelope\?\.seq, envelope\?\.seqStart\)/);
+  assert.match(eventStreamPathSource, /params\.set\('selectedHumanId', selectedHumanId\)/);
   assert.match(connectEventsSource, /addEventListener\('state'[\s\S]*queueStateUpdate\(JSON\.parse\(event\.data\)\)/);
   assert.match(app, /function claimHumanPresenceLease\(\)/);
   assert.match(browserHeartbeatSource, /if \(!claimHumanPresenceLease\(\)\) return/);

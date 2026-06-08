@@ -1399,6 +1399,11 @@ export function createStateCore(deps) {
       const seenAt = Date.parse(human.lastSeenAt || human.presenceUpdatedAt || human.updatedAt || human.createdAt || '');
       return seenAt && seenAt >= humanCutoff ? 'online' : 'offline';
     };
+    const detailHumanIds = new Set(
+      (Array.isArray(req?.magclawPresenceDetailHumanIds) ? req.magclawPresenceDetailHumanIds : [])
+        .map((id) => String(id || '').trim())
+        .filter(Boolean),
+    );
     const compactTuple = (values = []) => {
       let lastIndex = values.length - 1;
       while (lastIndex > 1) {
@@ -1436,8 +1441,9 @@ export function createStateCore(deps) {
       humans: (state?.humans || []).filter(workspaceMatches).map((human) => compactTuple([
         human.id,
         humanPresence(human),
-        human.lastSeenAt || null,
-        human.presenceUpdatedAt || null,
+        ...(detailHumanIds.has(String(human?.id || ''))
+          ? [human.lastSeenAt || null, human.presenceUpdatedAt || null]
+          : []),
       ])),
     };
   }

@@ -105,7 +105,9 @@ membership fanout visible in the budget. It currently enforces:
 - Task hydration remains windowed to at most 200 records in the synthetic smoke,
   with selected-space and global task pagination cursors exposed for older
   history.
-- Presence heartbeat JSON is at most 80 KB and generated in at most 50 ms.
+- Presence heartbeat JSON is at most 50 KB and generated in at most 50 ms.
+  Human heartbeat rows carry `id/status` by default; `lastSeenAt` detail is
+  included only for the currently selected Human detail request.
 - Heartbeats include no internal agent runtime payload fields.
 - Heartbeats use compact `tuple-v1` member presence rows, so full presence
   snapshots preserve status/activity UX without repeating object field names
@@ -117,7 +119,7 @@ membership fanout visible in the budget. It currently enforces:
   10 KB and send no `event: heartbeat` payloads; only visible status changes
   trigger a full presence heartbeat.
 - Single-member Agent/Human presence changes fanned out to 100 SSE clients stay
-  under 35 KB and send only changed-member heartbeat payloads, not the full
+  under 25 KB and send only changed-member heartbeat payloads, not the full
   workspace member list.
 - A burst of 10 status-only agent updates fanned out to 100 SSE clients stays
   under 90 KB total, compacts status activity entries for SSE transport,

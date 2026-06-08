@@ -511,9 +511,17 @@ test('state core filters presence heartbeats to the request workspace', async ()
     assert.deepEqual(heartbeat.agents.map(presenceId), ['agt_a', 'agt_legacy']);
     assert.deepEqual(heartbeat.humans.map(presenceId), ['hum_a', 'hum_legacy']);
     assert.deepEqual(heartbeat.agents[0], ['agt_a', 'idle']);
+    assert.deepEqual(heartbeat.humans[0], ['hum_a', 'online']);
     assert.equal(heartbeat.agents[0].name, undefined);
     assert.equal(heartbeat.agents[0].activeWorkItemIds, undefined);
     assert.equal(heartbeat.humans[0].name, undefined);
+
+    const detailHeartbeat = core.presenceHeartbeat({
+      magclawPresenceWorkspaceId: 'wsp_a',
+      magclawPresenceDetailHumanIds: ['hum_a'],
+    });
+    assert.equal(detailHeartbeat.humans[0][0], 'hum_a');
+    assert.equal(detailHeartbeat.humans[0][2], core.state.humans[0].lastSeenAt);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

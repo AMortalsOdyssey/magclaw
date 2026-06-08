@@ -445,6 +445,8 @@ export async function handleSystemApi(req, res, url, deps) {
         || '',
       ).trim();
     }
+    const selectedHumanId = String(url.searchParams.get('selectedHumanId') || '').trim();
+    req.magclawPresenceDetailHumanIds = selectedHumanId ? [selectedHumanId] : [];
     timing.mark('scope', scopeStarted);
     const replayPackets = [];
     const lastSeq = Number(url.searchParams.get('lastSeq') || 0);

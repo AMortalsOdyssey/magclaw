@@ -123,13 +123,13 @@ const BUDGETS = Object.freeze({
   membersDirectoryPageMs: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_MS || 250),
   membersRailRows: Number(process.env.MAGCLAW_PERF_MEMBERS_RAIL_ROWS || 170),
   membersRailModelMs: Number(process.env.MAGCLAW_PERF_MEMBERS_RAIL_MODEL_MS || 50),
-  heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
+  heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 50_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
   deferredHeartbeatFullSerializations: Number(process.env.MAGCLAW_PERF_DEFERRED_HEARTBEAT_FULL_SERIALIZATIONS || 0),
   repeatedHeartbeatBytes: Number(process.env.MAGCLAW_PERF_REPEATED_HEARTBEAT_BYTES || 10_000),
   humanHeartbeatChurnBytes: Number(process.env.MAGCLAW_PERF_HUMAN_HEARTBEAT_CHURN_BYTES || 10_000),
-  presenceMemberDeltaBytes: Number(process.env.MAGCLAW_PERF_PRESENCE_MEMBER_DELTA_BYTES || 35_000),
+  presenceMemberDeltaBytes: Number(process.env.MAGCLAW_PERF_PRESENCE_MEMBER_DELTA_BYTES || 25_000),
   stateChangeFanoutBytes: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_BYTES || 700_000),
   stateChangeFanoutBytesCoalesced: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_COALESCED_BYTES || 90_000),
   stateChangeFanoutEvents: Number(process.env.MAGCLAW_PERF_STATE_CHANGE_FANOUT_EVENTS || 100),
@@ -640,6 +640,11 @@ async function measureHeartbeat(state) {
       bytes: Buffer.byteLength(body, 'utf8'),
       agents: heartbeat.agents.length,
       humans: heartbeat.humans.length,
+      humanTimestampEntries: (heartbeat.humans || []).filter((entry) => (
+        Array.isArray(entry)
+          ? Boolean(entry[2] || entry[3])
+          : Boolean(entry?.lastSeenAt || entry?.presenceUpdatedAt)
+      )).length,
       hasInternalFields: body.includes('promptCache') || body.includes('runtimeSession'),
     };
   } finally {
@@ -1342,6 +1347,7 @@ async function main() {
   assertBudget(membersRailWindow.includesSelectedHuman, 'members rail window dropped the selected human');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
+  assertBudget(heartbeat.humanTimestampEntries === 0, `heartbeat included ${heartbeat.humanTimestampEntries} unselected human timestamp entries`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
   assertBudget(repeatedHeartbeat.deferredOpenBytes <= BUDGETS.deferredOpenBytes, `deferred SSE open ${repeatedHeartbeat.deferredOpenBytes} bytes exceeds ${BUDGETS.deferredOpenBytes}`);
   assertBudget(repeatedHeartbeat.fullPresenceSerializations <= BUDGETS.deferredHeartbeatFullSerializations, `deferred unchanged heartbeat serialized ${repeatedHeartbeat.fullPresenceSerializations} full presence payloads`);

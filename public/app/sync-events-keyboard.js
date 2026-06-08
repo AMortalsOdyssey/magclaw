@@ -2474,6 +2474,7 @@ function eventStreamPathForCurrentSelection() {
   params.set('spaceType', selectedSpaceType || 'channel');
   params.set('spaceId', selectedSpaceId || '');
   if (threadMessageId) params.set('threadMessageId', threadMessageId);
+  if (selectedHumanId) params.set('selectedHumanId', selectedHumanId);
   if (lastSseSeq) params.set('lastSeq', String(lastSseSeq));
   params.set('presence', 'defer');
   params.set('messageLimit', '80');
