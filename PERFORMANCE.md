@@ -48,7 +48,7 @@ cloud members, 1000 agents, 20000 messages, 1000 replies, and 2000 tasks. The
 synthetic `#all` channel includes every human and agent to keep company-scale
 membership fanout visible in the budget. It currently enforces:
 
-- Browser bootstrap JSON is at most 500 KB and generated in at most 250 ms.
+- Browser bootstrap JSON is at most 420 KB and generated in at most 250 ms.
 - Full member directory hydration is isolated from bootstrap and paged at 250
   records per Agents/Humans/Members slice. Each page is at most 80 KB / 250 ms,
   with the synthetic company-scale roster completing in at most 4 pages and
@@ -92,6 +92,9 @@ membership fanout visible in the budget. It currently enforces:
   arrays.
 - Bootstrap conversation rows omit request-scoped workspace IDs and redundant
   update timestamps when the update time equals creation time.
+- Bootstrap task rows omit request-scoped workspace IDs, redundant update
+  timestamps, and empty array fields while preserving task status, ownership,
+  attachments, mentions, and history when those fields contain data.
 - Deferred and unchanged heartbeat fanout must not serialize full member
   presence payloads before falling back to keepalive comments or deltas.
 - Off-space unread hydration remains bounded to 80 records.

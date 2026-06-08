@@ -591,6 +591,17 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function compactBootstrapTaskRecord(task = {}) {
+    if (!task || typeof task !== 'object') return task;
+    const record = { ...task };
+    if (Object.hasOwn(record, 'workspaceId')) delete record.workspaceId;
+    if (record.updatedAt && record.createdAt && record.updatedAt === record.createdAt) delete record.updatedAt;
+    for (const key of ['assigneeIds', 'attachmentIds', 'mentionedAgentIds', 'mentionedHumanIds', 'history']) {
+      if (Array.isArray(record[key]) && record[key].length === 0) delete record[key];
+    }
+    return record;
+  }
+
   function publicAgentRecord(agent = {}) {
     const record = pickPublicFields(agent, [
       'id',
@@ -1612,7 +1623,8 @@ export function createSystemServices(deps) {
     }
     const visibleTasks = [...visibleTaskById.values()]
       .sort(compareTaskRecords)
-      .map(publicTaskRecord);
+      .map(publicTaskRecord)
+      .map(compactBootstrapTaskRecord);
 
     const attachmentIds = new Set();
     for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {

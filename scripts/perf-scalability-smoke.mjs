@@ -64,7 +64,7 @@ const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS = Object.freeze([
   'role',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 500_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 420_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 250),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
@@ -1161,6 +1161,15 @@ async function main() {
     hasBootstrapConversationChurnFields: [...snapshot.messages, ...snapshot.replies].some((record) => (
       record.workspaceId || (record.updatedAt && record.createdAt && record.updatedAt === record.createdAt)
     )),
+    hasBootstrapTaskChurnFields: snapshot.tasks.some((task) => (
+      task.workspaceId
+      || (task.updatedAt && task.createdAt && task.updatedAt === task.createdAt)
+      || (Array.isArray(task.assigneeIds) && task.assigneeIds.length === 0)
+      || (Array.isArray(task.attachmentIds) && task.attachmentIds.length === 0)
+      || (Array.isArray(task.mentionedAgentIds) && task.mentionedAgentIds.length === 0)
+      || (Array.isArray(task.mentionedHumanIds) && task.mentionedHumanIds.length === 0)
+      || (Array.isArray(task.history) && task.history.length === 0)
+    )),
     hasBootstrapEmptyAgentWorkItems: decodedAgents.some((agent) => (
       Array.isArray(agent.activeWorkItemIds) && agent.activeWorkItemIds.length === 0
     )),
@@ -1207,6 +1216,7 @@ async function main() {
   assertBudget(!bootstrap.hasInternalFields, 'bootstrap leaked internal payload fields');
   assertBudget(!bootstrap.hasBootstrapMemberChurnFields, 'bootstrap leaked member churn fields');
   assertBudget(!bootstrap.hasBootstrapConversationChurnFields, 'bootstrap leaked conversation churn fields');
+  assertBudget(!bootstrap.hasBootstrapTaskChurnFields, 'bootstrap leaked task churn fields');
   assertBudget(!bootstrap.hasBootstrapEmptyAgentWorkItems, 'bootstrap leaked empty agent work item arrays');
   assertBudget(!bootstrap.hasBootstrapDuplicateAgentRuntimeState, 'bootstrap leaked duplicate agent runtime/status fields');
   assertBudget(!bootstrap.hasBootstrapCloudMemberDuplication, 'bootstrap leaked duplicate cloud member human payloads');

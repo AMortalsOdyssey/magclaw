@@ -1170,6 +1170,21 @@ test('bootstrap state compacts member directory churn fields without changing fu
       createdAt,
       updatedAt: createdAt,
     });
+    state.tasks.push({
+      id: 'task_compact',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      title: 'compact task',
+      status: 'todo',
+      assigneeIds: [],
+      attachmentIds: [],
+      mentionedAgentIds: [],
+      mentionedHumanIds: [],
+      history: [],
+      createdAt,
+      updatedAt: createdAt,
+    });
   }, {
     publicCloudState: () => ({
       auth: {
@@ -1249,6 +1264,9 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.deepEqual(full.channels.find((channel) => channel.id === 'chan_all').memberIds, ['hum_1', 'agt_compact', 'agt_idle']);
   assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').workspaceId, 'local');
   assert.equal(full.messages.find((message) => message.id === 'msg_redundant_update').updatedAt, createdAt);
+  assert.equal(full.tasks.find((task) => task.id === 'task_compact').workspaceId, 'local');
+  assert.equal(full.tasks.find((task) => task.id === 'task_compact').updatedAt, createdAt);
+  assert.deepEqual(full.tasks.find((task) => task.id === 'task_compact').assigneeIds, []);
 
   const bootstrapAllChannel = bootstrap.channels.find((channel) => channel.id === 'chan_all');
   assert.equal(bootstrapAllChannel.membershipMode, 'all');
@@ -1298,6 +1316,13 @@ test('bootstrap state compacts member directory churn fields without changing fu
   assert.equal(bootstrap.messages.find((message) => message.id === 'msg_edited').updatedAt, updatedAt);
   assert.equal(bootstrap.replies.find((reply) => reply.id === 'rep_redundant_update').workspaceId, undefined);
   assert.equal(bootstrap.replies.find((reply) => reply.id === 'rep_redundant_update').updatedAt, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').workspaceId, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').updatedAt, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').assigneeIds, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').attachmentIds, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').mentionedAgentIds, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').mentionedHumanIds, undefined);
+  assert.equal(bootstrap.tasks.find((task) => task.id === 'task_compact').history, undefined);
 });
 
 test('public state for signed-in non-members keeps empty collection fields stable', () => {
