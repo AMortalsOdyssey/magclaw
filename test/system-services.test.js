@@ -181,6 +181,40 @@ test('bootstrap state bounds off-space unread hydration to newest records', () =
   assert.ok(Buffer.byteLength(JSON.stringify(snapshot), 'utf8') < 500_000);
 });
 
+test('bootstrap unread hydration checks read markers without mapping arrays', () => {
+  class ReadMarkers extends Array {
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    map() {
+      throw new Error('unread hydration should not allocate mapped read markers');
+    }
+  }
+  const services = makeServices((state) => {
+    state.messages.push({
+      id: 'msg_read_marker',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_1',
+      authorType: 'agent',
+      authorId: 'agt_1',
+      body: 'already read off-space message',
+      readBy: ReadMarkers.from(['hum_1']),
+      createdAt: '2026-05-18T00:10:00.000Z',
+      updatedAt: '2026-05-18T00:10:00.000Z',
+    });
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  });
+
+  assert.equal(snapshot.messages.some((message) => message.id === 'msg_read_marker'), false);
+  assert.equal(snapshot.bootstrap.unreadHydration.included, 0);
+});
+
 test('bootstrap state hydrates newest unread replies with parent context', () => {
   const services = makeServices((state) => {
     state.dms.push({

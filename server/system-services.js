@@ -373,10 +373,18 @@ export function createSystemServices(deps) {
     };
   }
 
+  function readByIncludesHuman(readBy, humanId) {
+    const expected = String(humanId || '');
+    if (!expected || !Array.isArray(readBy)) return false;
+    for (const value of readBy) {
+      if (String(value || '') === expected) return true;
+    }
+    return false;
+  }
+
   function conversationRecordUnreadForHuman(record, humanId) {
     if (!humanId || !record?.id || record.authorType !== 'agent') return false;
-    const readBy = records(record.readBy).map(String);
-    return !readBy.includes(String(humanId));
+    return !readByIncludesHuman(record.readBy, humanId);
   }
 
   function includeUnreadConversationRecords({
@@ -425,7 +433,8 @@ export function createSystemServices(deps) {
     }
     const parentById = new Map();
     if (parentIds.size) {
-      for (const message of sourceMessages) {
+      for (let index = sourceMessages.length - 1; index >= 0; index -= 1) {
+        const message = sourceMessages[index];
         const id = String(message?.id || '');
         if (!parentIds.has(id)) continue;
         parentById.set(id, message);
