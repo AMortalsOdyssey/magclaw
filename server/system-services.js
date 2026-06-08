@@ -259,6 +259,23 @@ export function createSystemServices(deps) {
     };
   }
 
+  function visibleDirectoryAgentsForIds(sourceAgents, ids, inScope) {
+    const targetIds = ids?.agentIds instanceof Set ? ids.agentIds : new Set();
+    const agents = [];
+    const foundIds = new Set();
+    let total = 0;
+    const source = Array.isArray(sourceAgents) ? sourceAgents : [];
+    for (const agent of source) {
+      if (!agent || !inScope(agent)) continue;
+      total += 1;
+      const id = String(agent?.id || '');
+      if (!id || !targetIds.has(id) || foundIds.has(id)) continue;
+      agents.push(agent);
+      foundIds.add(id);
+    }
+    return { agents, total };
+  }
+
   function clampLimit(value, fallback, max) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -1665,6 +1682,7 @@ export function createSystemServices(deps) {
     const cloud = typeof publicCloudState === 'function' ? publicCloudState(req) : undefined;
     const currentHumanId = cloud?.auth?.currentMember?.humanId || null;
     const includeConversationArrays = options.includeConversationArrays !== false;
+    const includeAgentArrays = options.includeAgentArrays !== false;
     const channels = records(currentState.channels);
     const dms = records(currentState.dms);
     const messages = includeConversationArrays ? records(currentState.messages) : [];
@@ -1682,13 +1700,15 @@ export function createSystemServices(deps) {
     const scopedMessages = includeConversationArrays ? messages.filter(inCurrentWorkspace) : [];
     const scopedReplies = includeConversationArrays ? replies.filter(inCurrentWorkspace) : [];
     const scopedRecords = (key) => records(currentState[key]).filter(inCurrentWorkspace);
-    const scopedAgents = scopedRecords('agents');
+    const scopedAgents = includeAgentArrays ? scopedRecords('agents') : [];
     let agentBoundComputerIds = null;
     const boundComputerIds = () => {
       if (agentBoundComputerIds) return agentBoundComputerIds;
       agentBoundComputerIds = new Set();
-      for (const agent of scopedAgents) {
+      const sourceAgents = includeAgentArrays ? scopedAgents : records(currentState.agents);
+      for (const agent of sourceAgents) {
         if (!agent || agent.deletedAt) continue;
+        if (!includeAgentArrays && !inCurrentWorkspace(agent)) continue;
         const computerId = String(agent.computerId || '');
         if (computerId) agentBoundComputerIds.add(computerId);
       }
@@ -1828,14 +1848,13 @@ export function createSystemServices(deps) {
   }
 
   function publicBootstrapState(req = null, options = {}) {
-    const scope = publicStateScope(req, { includeConversationArrays: false });
+    const scope = publicStateScope(req, { includeConversationArrays: false, includeAgentArrays: false });
     const {
       currentState,
       cloud,
       currentHumanId,
       scopedChannels,
       scopedRecords,
-      scopedAgents,
       visibleComputers,
       visibleDms,
       inCurrentWorkspace,
@@ -2022,13 +2041,20 @@ export function createSystemServices(deps) {
           tasks: visibleTasks,
         })
       : null;
+    let rawDirectoryAgents;
+    let directoryAgentTotal;
     let rawDirectoryHumans;
     let directoryHumanTotal;
     if (visibleDirectoryIds) {
+      const visibleAgents = visibleDirectoryAgentsForIds(currentState.agents, visibleDirectoryIds, inCurrentWorkspace);
+      rawDirectoryAgents = visibleAgents.agents;
+      directoryAgentTotal = visibleAgents.total;
       const visibleHumans = visibleDirectoryHumansForIds(currentState.humans, visibleDirectoryIds, inCurrentWorkspace);
       rawDirectoryHumans = visibleHumans.humans;
       directoryHumanTotal = visibleHumans.total;
     } else {
+      rawDirectoryAgents = scopedRecords('agents');
+      directoryAgentTotal = rawDirectoryAgents.length;
       rawDirectoryHumans = appendReferencedHumans(
         scopedRecords('humans'),
         [...directoryMessages, ...directoryReplies],
@@ -2037,12 +2063,12 @@ export function createSystemServices(deps) {
       directoryHumanTotal = rawDirectoryHumans.length;
     }
     const directoryTotals = {
-      agents: scopedAgents.length,
+      agents: directoryAgentTotal,
       humans: directoryHumanTotal,
       members: Array.isArray(cloud?.members) ? cloud.members.length : records(cloud?.members).length,
     };
     const rawDirectory = filterDirectoryRecords({
-      agents: scopedAgents,
+      agents: rawDirectoryAgents,
       humans: rawDirectoryHumans,
       cloud,
       ids: visibleDirectoryIds,

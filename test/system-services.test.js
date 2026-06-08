@@ -605,6 +605,57 @@ test('bootstrap visible directory selects humans without materializing the full 
   assert.equal(CountingHumans.filterCalls, 0);
 });
 
+test('bootstrap visible directory selects agents without materializing the full roster', () => {
+  class CountingAgents extends Array {
+    static filterCalls = 0;
+
+    static get [Symbol.species]() {
+      return Array;
+    }
+
+    filter(...args) {
+      CountingAgents.filterCalls += 1;
+      return super.filter(...args);
+    }
+  }
+  const agents = CountingAgents.from(Array.from({ length: 250 }, (_value, index) => ({
+    id: index === 0 ? 'agt_visible_0' : `agt_visible_${index}`,
+    workspaceId: 'local',
+    name: `Agent ${index}`,
+    status: 'idle',
+    createdAt: '2026-05-18T00:00:00.000Z',
+    updatedAt: '2026-05-18T00:00:00.000Z',
+  })));
+  const services = makeServices((state) => {
+    state.agents = agents;
+  });
+  CountingAgents.filterCalls = 0;
+  let fullAgentFilterCalls = 0;
+  const originalFilter = Array.prototype.filter;
+  Array.prototype.filter = function trackedFilter(...args) {
+    if (this.length === agents.length && this[0]?.id === 'agt_visible_0') {
+      fullAgentFilterCalls += 1;
+    }
+    return originalFilter.apply(this, args);
+  };
+  let snapshot;
+  try {
+    snapshot = services.publicBootstrapState({
+      url: '/api/bootstrap?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=20&directoryScope=visible&selectedAgentId=agt_visible_0',
+      headers: {},
+    });
+  } finally {
+    Array.prototype.filter = originalFilter;
+  }
+
+  assert.equal(snapshot.agents.length, 1);
+  assert.equal(snapshot.agents[0].id, 'agt_visible_0');
+  assert.equal(snapshot.bootstrap.directory.agents.loaded, 1);
+  assert.equal(snapshot.bootstrap.directory.agents.total, 250);
+  assert.equal(CountingAgents.filterCalls, 0);
+  assert.equal(fullAgentFilterCalls, 0);
+});
+
 test('bootstrap state selects newest conversation window from unsorted state arrays', () => {
   const services = makeServices((state) => {
     state.messages = [
