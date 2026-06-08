@@ -106,6 +106,49 @@ test('state sync module loads before realtime and submit consumers', async () =>
   assert.ok(stateSyncIndex < submitIndex, 'state sync should load before submit handlers');
 });
 
+test('browser performance marks cover startup, SSE, resync, and scoped patches', async () => {
+  const entry = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const app = await readAppSource();
+  const perfHelperSource = app.slice(
+    app.indexOf('const MAGCLAW_PERF_ENTRY_LIMIT'),
+    app.indexOf("magclawPerfMark('magclaw:boot:perf-helper-ready')"),
+  );
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  const sseSource = app.slice(app.indexOf('async function refreshRealtimeBusinessObject'), app.indexOf('function disconnectEvents'));
+  const patchSource = app.slice(app.indexOf('function trackSurfacePatch'), app.indexOf('function stateSpaceMessages'));
+  const searchPatchSource = app.slice(app.indexOf('function patchSearchSurface'), app.indexOf('async function openSearchChannelPath'));
+
+  const perfIndex = entry.indexOf("'/app/performance-marks.js'");
+  const stateCoreIndex = entry.indexOf("'/app/state-render-core.js'");
+  assert.ok(perfIndex >= 0, 'performance helper should be loaded by the app shell');
+  assert.ok(perfIndex < stateCoreIndex, 'performance helper should load before render/state chunks');
+  assert.match(perfHelperSource, /globalThis\.__magclawPerf/);
+  assert.match(perfHelperSource, /function magclawPerfStart/);
+  assert.match(perfHelperSource, /function magclawPerfEnd/);
+  assert.match(perfHelperSource, /function magclawPerfTrack/);
+  assert.match(entry, /magclaw:boot:scripts-ready/);
+
+  assert.match(renderSource, /magclaw:render:full/);
+  assert.match(renderSource, /magclaw:render:first/);
+  assert.match(renderSource, /magclaw:render:first:since-navigation/);
+  assert.match(refreshSource, /magclaw:bootstrap:refresh/);
+  assert.match(refreshSource, /magclaw:bootstrap:fetch/);
+  assert.match(sseSource, /magclaw:sse:open/);
+  assert.match(sseSource, /magclaw:sse:resync-fetch/);
+  assert.match(sseSource, /magclaw:sse:error/);
+
+  assert.match(patchSource, /function trackSurfacePatch/);
+  assert.match(patchSource, /`magclaw:patch:\$\{name\}`/);
+  assert.match(patchSource, /trackSurfacePatch\('rail'/);
+  assert.match(app, /trackSurfacePatch\('agent-detail'/);
+  assert.match(app, /trackSurfacePatch\('thread-drawer'/);
+  assert.match(app, /trackSurfacePatch\('task-surface'/);
+  assert.match(app, /trackSurfacePatch\('active-conversation'/);
+  assert.match(app, /trackSurfacePatch\('server-profile-settings'/);
+  assert.match(searchPatchSource, /trackSurfacePatch\('search'/);
+});
+
 test('thread replies use the current state lookup index instead of scanning every reply', async () => {
   const app = await readAppSource();
   const stateLookupSource = app.slice(
@@ -945,7 +988,7 @@ test('full refresh fallback preserves chat, thread, and page scroll positions', 
     app.indexOf('function restorePaneScrolls(snapshot)'),
   );
 
-  assert.match(refreshSource, /rememberPinnedBottomBeforeStateChange\(\);[\s\S]*const nextState = await api\(bootstrapStatePath\(\)\)/);
+  assert.match(refreshSource, /rememberPinnedBottomBeforeStateChange\(\);[\s\S]*const bootstrapPath = bootstrapStatePath\(\);[\s\S]*nextState = await api\(bootstrapPath\)/);
   assert.match(refreshSource, /appState = nextState;[\s\S]*render\(\);/);
   assert.match(renderSource, /const scrollSnapshot = \{[\s\S]*main: paneScrollSnapshot\('main'\),[\s\S]*thread: paneScrollSnapshot\('thread'\),[\s\S]*page: pageScrollSnapshot\(\)/);
   assert.match(renderSource, /root\.innerHTML = `[\s\S]*window\.requestAnimationFrame\(\(\) => \{[\s\S]*restorePaneScrolls\(scrollSnapshot\);[\s\S]*restorePageScroll\(scrollSnapshot\.page\)/);

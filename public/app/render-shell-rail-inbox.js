@@ -136,6 +136,15 @@ function render() {
     pendingProfileFormRender = true;
     return;
   }
+  const renderPerf = typeof magclawPerfStart === 'function'
+    ? magclawPerfStart('magclaw:render:full', {
+      view: activeView,
+      tab: activeTab,
+      rail: railTab,
+      modal: Boolean(modal),
+      thread: Boolean(threadMessageId),
+    })
+    : null;
   captureProfileFormDraft();
   captureAgentDetailFieldDraft();
   captureComputerNameFieldDraft();
@@ -168,6 +177,16 @@ function render() {
     if (typeof translatePage === 'function') translatePage(root);
     if (typeof ensureOfflineComputerConnectCommand === 'function') {
       window.setTimeout(ensureOfflineComputerConnectCommand, 0);
+    }
+    if (typeof magclawPerfEnd === 'function') {
+      magclawPerfEnd(renderPerf, { mode: 'mobile' });
+    }
+    if (!firstWorkspaceRenderMarked && typeof magclawPerfMark === 'function') {
+      firstWorkspaceRenderMarked = true;
+      magclawPerfMark('magclaw:render:first', { mode: 'mobile', view: activeView });
+      if (typeof magclawPerfMeasureSinceNavigation === 'function') {
+        magclawPerfMeasureSinceNavigation('magclaw:render:first:since-navigation', { mode: 'mobile', view: activeView });
+      }
     }
     window.requestAnimationFrame(() => {
       restorePaneScrolls(scrollSnapshot);
@@ -219,6 +238,16 @@ function render() {
   if (typeof translatePage === 'function') translatePage(root);
   if (typeof ensureOfflineComputerConnectCommand === 'function') {
     window.setTimeout(ensureOfflineComputerConnectCommand, 0);
+  }
+  if (typeof magclawPerfEnd === 'function') {
+    magclawPerfEnd(renderPerf, { mode: 'desktop' });
+  }
+  if (!firstWorkspaceRenderMarked && typeof magclawPerfMark === 'function') {
+    firstWorkspaceRenderMarked = true;
+    magclawPerfMark('magclaw:render:first', { mode: 'desktop', view: activeView });
+    if (typeof magclawPerfMeasureSinceNavigation === 'function') {
+      magclawPerfMeasureSinceNavigation('magclaw:render:first:since-navigation', { mode: 'desktop', view: activeView });
+    }
   }
   window.requestAnimationFrame(() => {
     restorePaneScrolls(scrollSnapshot);

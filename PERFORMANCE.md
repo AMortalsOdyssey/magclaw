@@ -148,6 +148,11 @@ membership fanout visible in the budget. It currently enforces:
 - Browser startup renders the post-bootstrap workspace before refreshing shared
   package version reminders, so npm/package-version checks cannot keep the app
   stuck on `MAGCLAW / BOOTING`.
+- Browser performance marks expose bootstrap fetch/refresh, first workspace
+  render, SSE open, SSE resync fetch, full renders, and major scoped surface
+  patches through `window.__magclawPerf`, so local, test, and production
+  investigations can compare concrete browser-stage timings instead of relying
+  on visual impressions.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 
@@ -181,7 +186,5 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Add browser-side performance marks for bootstrap, first render, SSE open,
-  resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,
   server timing, and SSE event mix before and after rollout.

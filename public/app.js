@@ -9,6 +9,7 @@ globalThis.renderFanoutDecisionToastsHtml = renderFanoutDecisionToastsHtml;
 const appScripts = [
   '/app/i18n.js',
   '/app/prelude.js',
+  '/app/performance-marks.js',
   '/app/state-render-core.js',
   '/app/state-sync.js',
   '/app/notifications-layout-avatar.js',
@@ -54,6 +55,9 @@ function loadAppScript(src) {
 try {
   for (const script of appScripts) {
     await loadAppScript(script);
+  }
+  if (typeof magclawPerfMark === 'function') {
+    magclawPerfMark('magclaw:boot:scripts-ready', { scripts: appScripts.length });
   }
 } catch (error) {
   console.error('Failed to boot MagClaw app:', error);

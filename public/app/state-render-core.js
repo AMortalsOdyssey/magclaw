@@ -56,6 +56,7 @@ canonicalizeLegacyRoutePath();
 const initialRouteState = routeStateFromLocation(window.location.pathname || '');
 
 let appState = null;
+let firstWorkspaceRenderMarked = false;
 let stateEntityLookupCache = null;
 let workspaceHumansCache = null;
 let workspaceAgentsCache = null;

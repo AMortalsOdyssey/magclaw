@@ -515,46 +515,85 @@ function refreshPackageVersionReminders() {
 }
 
 async function refreshState() {
-  rememberPinnedBottomBeforeStateChange();
-  const nextState = await api(bootstrapStatePath());
-  const normalizedNextState = normalizeIncomingStateSnapshot(nextState);
-  if (normalizedNextState !== nextState) Object.assign(nextState, normalizedNextState);
-  const preservedNextState = preserveIncomingDirectorySnapshot(appState, nextState);
-  if (preservedNextState !== nextState) Object.assign(nextState, preservedNextState);
-  trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
-  trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
-  appState = nextState;
-  syncBootstrapPagination(appState);
-  if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts();
-  if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
-  const routeSlug = serverSlugFromPath();
-  if (
-    routeSlug
-    && routeSlug !== currentServerSlug()
-    && !routeServerSwitchAttempted
-    && appState.cloud?.auth?.currentUser
-    && (appState.cloud?.workspaces || []).some((server) => String(server.slug || server.id) === routeSlug)
-  ) {
-    routeServerSwitchAttempted = true;
-    await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
-    const switchedState = await api(bootstrapStatePath());
-    appState = normalizeIncomingStateSnapshot(switchedState);
+  const refreshPerf = typeof magclawPerfStart === 'function'
+    ? magclawPerfStart('magclaw:bootstrap:refresh', {
+      view: activeView,
+      spaceType: selectedSpaceType,
+      thread: Boolean(threadMessageId),
+    })
+    : null;
+  try {
+    rememberPinnedBottomBeforeStateChange();
+    const bootstrapPath = bootstrapStatePath();
+    const fetchPerf = typeof magclawPerfStart === 'function'
+      ? magclawPerfStart('magclaw:bootstrap:fetch', {
+        spaceType: selectedSpaceType,
+        thread: Boolean(threadMessageId),
+        selectedAgent: Boolean(selectedAgentId),
+        selectedHuman: Boolean(selectedHumanId),
+      })
+      : null;
+    let nextState;
+    try {
+      nextState = await api(bootstrapPath);
+      if (typeof magclawPerfEnd === 'function') magclawPerfEnd(fetchPerf, { ok: true });
+    } catch (error) {
+      if (typeof magclawPerfEnd === 'function') magclawPerfEnd(fetchPerf, { ok: false, error: error?.name || 'Error' });
+      throw error;
+    }
+    const normalizedNextState = normalizeIncomingStateSnapshot(nextState);
+    if (normalizedNextState !== nextState) Object.assign(nextState, normalizedNextState);
+    const preservedNextState = preserveIncomingDirectorySnapshot(appState, nextState);
+    if (preservedNextState !== nextState) Object.assign(nextState, preservedNextState);
+    trackFanoutRouteEvents(nextState, { silent: !initialLoadComplete || !appState });
+    trackAgentNotifications(nextState, { silent: !initialLoadComplete || !appState });
+    appState = nextState;
     syncBootstrapPagination(appState);
-    if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts({ force: true });
+    if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts();
     if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
+    const routeSlug = serverSlugFromPath();
+    if (
+      routeSlug
+      && routeSlug !== currentServerSlug()
+      && !routeServerSwitchAttempted
+      && appState.cloud?.auth?.currentUser
+      && (appState.cloud?.workspaces || []).some((server) => String(server.slug || server.id) === routeSlug)
+    ) {
+      routeServerSwitchAttempted = true;
+      await api(`/api/console/servers/${encodeURIComponent(routeSlug)}/switch`, { method: 'POST', body: '{}' });
+      const switchFetchPerf = typeof magclawPerfStart === 'function'
+        ? magclawPerfStart('magclaw:bootstrap:switch-fetch', { routeServer: true })
+        : null;
+      let switchedState;
+      try {
+        switchedState = await api(bootstrapStatePath());
+        if (typeof magclawPerfEnd === 'function') magclawPerfEnd(switchFetchPerf, { ok: true });
+      } catch (error) {
+        if (typeof magclawPerfEnd === 'function') magclawPerfEnd(switchFetchPerf, { ok: false, error: error?.name || 'Error' });
+        throw error;
+      }
+      appState = normalizeIncomingStateSnapshot(switchedState);
+      syncBootstrapPagination(appState);
+      if (typeof loadStoredComposerDrafts === 'function') loadStoredComposerDrafts({ force: true });
+      if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
+    }
+    if (appState.cloud?.workspaceAccess?.denied) {
+      syncBrowserRouteForActiveView({ replace: true });
+    }
+    startHumanPresenceHeartbeat();
+    if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
+      await loadInstalledRuntimes().catch(() => {});
+    }
+    applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
+    render();
+    scheduleMembersDirectoryPageLoad();
+    scheduleMembersRailDirectoryPageLoad({ delay: 120 });
+    refreshPackageVersionReminders();
+    if (typeof magclawPerfEnd === 'function') magclawPerfEnd(refreshPerf, { ok: true });
+  } catch (error) {
+    if (typeof magclawPerfEnd === 'function') magclawPerfEnd(refreshPerf, { ok: false, error: error?.name || 'Error' });
+    throw error;
   }
-  if (appState.cloud?.workspaceAccess?.denied) {
-    syncBrowserRouteForActiveView({ replace: true });
-  }
-  startHumanPresenceHeartbeat();
-  if (!installedRuntimes.length && (selectedAgentId || activeView === 'members' || activeView === 'computers')) {
-    await loadInstalledRuntimes().catch(() => {});
-  }
-  applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
-  render();
-  scheduleMembersDirectoryPageLoad();
-  scheduleMembersRailDirectoryPageLoad({ delay: 120 });
-  refreshPackageVersionReminders();
 }
 
 function cloudAuthErrorMessage(error, { interactive = false } = {}) {
@@ -719,10 +758,27 @@ function syncRecordList(container, records, renderRecord, datasetName, emptyHtml
   return true;
 }
 
+function trackSurfacePatch(name, detail, callback) {
+  const patchDetail = {
+    view: activeView,
+    tab: activeTab,
+    rail: railTab,
+    modal: Boolean(modal),
+    ...(detail || {}),
+  };
+  if (typeof magclawPerfTrack === 'function') {
+    return magclawPerfTrack(`magclaw:patch:${name}`, patchDetail, callback);
+  }
+  return callback();
+}
+
 function patchRailSurface(railSnapshot = railScrollSnapshot()) {
-  const rail = document.querySelector('.collab-rail');
-  if (rail) rail.replaceWith(htmlToElement(renderRail()));
-  restoreRailScroll(railSnapshot);
+  return trackSurfacePatch('rail', {}, () => {
+    const rail = document.querySelector('.collab-rail');
+    if (rail) rail.replaceWith(htmlToElement(renderRail()));
+    restoreRailScroll(railSnapshot);
+    return Boolean(rail);
+  });
 }
 
 function patchDmHeaderSurface() {
@@ -1542,65 +1598,69 @@ function patchAgentDetailBody(agent) {
 }
 
 function patchAgentDetailSurface(scrollSnapshot = {}) {
-  if (!selectedAgentId) return false;
-  const agent = byId(appState.agents, selectedAgentId);
-  const shell = document.querySelector('.agent-detail-shell');
-  if (!agent || !shell) return false;
-  patchRailSurface();
-  patchAgentDetailChrome(agent);
-  if (!agentDetailRuntimeControlIsActive()) patchAgentDetailLiveSurfaces(agent);
-  patchAgentDetailBody(agent);
-  window.requestAnimationFrame(() => {
-    restorePaneScrolls(scrollSnapshot);
-    restorePageScroll(scrollSnapshot.page);
+  return trackSurfacePatch('agent-detail', { agentTab: agentDetailTab }, () => {
+    if (!selectedAgentId) return false;
+    const agent = byId(appState.agents, selectedAgentId);
+    const shell = document.querySelector('.agent-detail-shell');
+    if (!agent || !shell) return false;
+    patchRailSurface();
+    patchAgentDetailChrome(agent);
+    if (!agentDetailRuntimeControlIsActive()) patchAgentDetailLiveSurfaces(agent);
+    patchAgentDetailBody(agent);
+    window.requestAnimationFrame(() => {
+      restorePaneScrolls(scrollSnapshot);
+      restorePageScroll(scrollSnapshot.page);
+    });
+    return true;
   });
-  return true;
 }
 
 function patchOpenThreadDrawerSurface(scrollSnapshot) {
-  if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
-  const message = byId(appState.messages, threadMessageId);
-  const context = document.querySelector('#thread-context');
-  const panel = document.querySelector('.thread-drawer');
-  if (!message || !context || !panel) return false;
+  return trackSurfacePatch('thread-drawer', { thread: Boolean(threadMessageId) }, () => {
+    if (!threadMessageId || selectedProjectFile || selectedAgentId || selectedTaskId) return false;
+    const message = byId(appState.messages, threadMessageId);
+    const context = document.querySelector('#thread-context');
+    const panel = document.querySelector('.thread-drawer');
+    if (!message || !context || !panel) return false;
 
-  const replies = threadReplies(message.id);
-  const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
-  const pageInfo = currentThreadHistoryPage(message.id);
-  const totalReplies = Math.max(Number(message.replyCount || 0), replies.length);
-  const replyWord = totalReplies === 1 ? 'reply' : 'replies';
-  const replyCountText = pageInfo?.hasMore && totalReplies > replies.length
-    ? `${replies.length} of ${totalReplies} ${replyWord}`
-    : `${totalReplies} ${replyWord}`;
-  const card = context.querySelector('.thread-parent-card');
+    const replies = threadReplies(message.id);
+    const task = message.taskId ? byId(appState.tasks, message.taskId) : null;
+    const pageInfo = currentThreadHistoryPage(message.id);
+    const totalReplies = Math.max(Number(message.replyCount || 0), replies.length);
+    const replyWord = totalReplies === 1 ? 'reply' : 'replies';
+    const replyCountText = pageInfo?.hasMore && totalReplies > replies.length
+      ? `${replies.length} of ${totalReplies} ${replyWord}`
+      : `${totalReplies} ${replyWord}`;
+    const card = context.querySelector('.thread-parent-card');
 
-  patchThreadParentCard(message);
-  patchThreadTaskLifecycle(card, task);
-  const dividerLabel = context.querySelector('.thread-reply-divider span');
-  if (dividerLabel) dividerLabel.textContent = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
-  const dividerCount = context.querySelector('.thread-reply-divider strong');
-  if (dividerCount) dividerCount.textContent = replyCountText;
-  patchThreadReplyList(context, replies);
+    patchThreadParentCard(message);
+    patchThreadTaskLifecycle(card, task);
+    const dividerLabel = context.querySelector('.thread-reply-divider span');
+    if (dividerLabel) dividerLabel.textContent = pageInfo?.hasMore ? 'Scroll up for earlier replies' : 'Beginning of replies';
+    const dividerCount = context.querySelector('.thread-reply-divider strong');
+    if (dividerCount) dividerCount.textContent = replyCountText;
+    patchThreadReplyList(context, replies);
 
-  const tools = panel.querySelector('.thread-tools');
-  if (tools) {
-    tools.innerHTML = `
-      <span>${escapeHtml(replyCountText)}</span>
-      ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
-    `;
-  }
+    const tools = panel.querySelector('.thread-tools');
+    if (tools) {
+      tools.innerHTML = `
+        <span>${escapeHtml(replyCountText)}</span>
+        ${task ? renderTaskInlineBadge(task, { showAssignee: false }) : ''}
+      `;
+    }
 
-  const list = document.querySelector('#message-list');
-  if (list) {
-    const emptyHtml = selectedSpaceType === 'dm'
-      ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
-      : '<div class="empty-box">No messages here yet.</div>';
-    syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
-  }
-  patchDmHeaderSurface();
-  patchRailSurface();
-  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
-  return true;
+    const list = document.querySelector('#message-list');
+    if (list) {
+      const emptyHtml = selectedSpaceType === 'dm'
+        ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
+        : '<div class="empty-box">No messages here yet.</div>';
+      syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
+    }
+    patchDmHeaderSurface();
+    patchRailSurface();
+    window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+    return true;
+  });
 }
 
 function activeTaskSurfaceIsVisible() {
@@ -1626,17 +1686,19 @@ function activeTaskSurfaceNode() {
 }
 
 function patchVisibleTaskSurface(scrollSnapshot = {}) {
-  if (!activeTaskSurfaceIsVisible()) return false;
-  const current = activeTaskSurfaceNode();
-  const nextHtml = renderActiveTaskSurface();
-  const next = nextHtml ? htmlToElement(nextHtml) : null;
-  if (!current || !next) return false;
-  if (current.outerHTML !== next.outerHTML) current.replaceWith(next);
-  window.requestAnimationFrame(() => {
-    restorePaneScrolls(scrollSnapshot);
-    restorePageScroll(scrollSnapshot.page);
+  return trackSurfacePatch('task-surface', {}, () => {
+    if (!activeTaskSurfaceIsVisible()) return false;
+    const current = activeTaskSurfaceNode();
+    const nextHtml = renderActiveTaskSurface();
+    const next = nextHtml ? htmlToElement(nextHtml) : null;
+    if (!current || !next) return false;
+    if (current.outerHTML !== next.outerHTML) current.replaceWith(next);
+    window.requestAnimationFrame(() => {
+      restorePaneScrolls(scrollSnapshot);
+      restorePageScroll(scrollSnapshot.page);
+    });
+    return true;
   });
-  return true;
 }
 
 function activeThreadDrawerIsVisible() {
@@ -1663,52 +1725,56 @@ function patchActiveThreadSurface(scrollSnapshot, { visibleChanged = true } = {}
 }
 
 function patchActiveConversationSurface(scrollSnapshot, { allowInspector = false } = {}) {
-  if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
-  const inspectorOpen = selectedProjectFile || selectedAgentId || selectedTaskId;
-  if (threadMessageId || (!allowInspector && inspectorOpen)) return false;
-  const list = document.querySelector('#message-list');
-  const panel = document.querySelector('.chat-panel');
-  if (!list || !panel) return false;
+  return trackSurfacePatch('active-conversation', { allowInspector }, () => {
+    if (modal || activeView !== 'space' || activeTab !== 'chat') return false;
+    const inspectorOpen = selectedProjectFile || selectedAgentId || selectedTaskId;
+    if (threadMessageId || (!allowInspector && inspectorOpen)) return false;
+    const list = document.querySelector('#message-list');
+    const panel = document.querySelector('.chat-panel');
+    if (!list || !panel) return false;
 
-  const emptyHtml = selectedSpaceType === 'dm'
-    ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
-    : '<div class="empty-box">No messages here yet.</div>';
-  syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
-  patchDmHeaderSurface();
-  patchRailSurface();
-  window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
-  return true;
+    const emptyHtml = selectedSpaceType === 'dm'
+      ? '<div class="dm-empty-state">No messages yet. Start the conversation!</div>'
+      : '<div class="empty-box">No messages here yet.</div>';
+    syncRecordList(list, spaceMessages(), renderMessage, 'messageId', emptyHtml);
+    patchDmHeaderSurface();
+    patchRailSurface();
+    window.requestAnimationFrame(() => restorePaneScrolls(scrollSnapshot));
+    return true;
+  });
 }
 
 function patchServerProfileSettingsSurface() {
-  if (activeView !== 'cloud' || settingsTab !== 'server') return false;
-  const profileForm = document.getElementById('server-profile-form');
-  if (!profileForm) return false;
-  const server = currentServerProfile();
-  const avatar = serverProfileAvatarDraft === null ? (server.avatar || '') : serverProfileAvatarDraft;
-  const avatarPreview = profileForm.querySelector('.server-profile-avatar');
-  if (avatarPreview) {
-    avatarPreview.innerHTML = renderServerAvatar({ ...server, avatar }, 'server-profile-avatar-img');
-  }
-  const avatarInput = profileForm.querySelector('[data-server-avatar-input]');
-  if (avatarInput) avatarInput.value = avatar;
-  const nameInput = profileForm.querySelector('input[name="name"]');
-  if (nameInput && document.activeElement !== nameInput) nameInput.value = server.name || '';
-  const onboardingInput = profileForm.querySelector('input[name="onboardingAgentId"]');
-  if (onboardingInput) onboardingInput.value = server.onboardingAgentId || '';
-  const greetingInput = profileForm.querySelector('input[name="newAgentGreetingEnabled"]');
-  if (greetingInput) greetingInput.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
+  return trackSurfacePatch('server-profile-settings', {}, () => {
+    if (activeView !== 'cloud' || settingsTab !== 'server') return false;
+    const profileForm = document.getElementById('server-profile-form');
+    if (!profileForm) return false;
+    const server = currentServerProfile();
+    const avatar = serverProfileAvatarDraft === null ? (server.avatar || '') : serverProfileAvatarDraft;
+    const avatarPreview = profileForm.querySelector('.server-profile-avatar');
+    if (avatarPreview) {
+      avatarPreview.innerHTML = renderServerAvatar({ ...server, avatar }, 'server-profile-avatar-img');
+    }
+    const avatarInput = profileForm.querySelector('[data-server-avatar-input]');
+    if (avatarInput) avatarInput.value = avatar;
+    const nameInput = profileForm.querySelector('input[name="name"]');
+    if (nameInput && document.activeElement !== nameInput) nameInput.value = server.name || '';
+    const onboardingInput = profileForm.querySelector('input[name="onboardingAgentId"]');
+    if (onboardingInput) onboardingInput.value = server.onboardingAgentId || '';
+    const greetingInput = profileForm.querySelector('input[name="newAgentGreetingEnabled"]');
+    if (greetingInput) greetingInput.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
 
-  const onboardingForm = document.getElementById('server-onboarding-form');
-  if (onboardingForm) {
-    const select = onboardingForm.querySelector('select[name="onboardingAgentId"]');
-    if (select && document.activeElement !== select) select.value = server.onboardingAgentId || '';
-    const greetingSelect = onboardingForm.querySelector('select[name="newAgentGreetingEnabled"]');
-    if (greetingSelect && document.activeElement !== greetingSelect) greetingSelect.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
-    const mode = onboardingForm.querySelector('.panel-title span:last-child');
-    if (mode) mode.textContent = server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting';
-  }
-  return true;
+    const onboardingForm = document.getElementById('server-onboarding-form');
+    if (onboardingForm) {
+      const select = onboardingForm.querySelector('select[name="onboardingAgentId"]');
+      if (select && document.activeElement !== select) select.value = server.onboardingAgentId || '';
+      const greetingSelect = onboardingForm.querySelector('select[name="newAgentGreetingEnabled"]');
+      if (greetingSelect && document.activeElement !== greetingSelect) greetingSelect.value = server.newAgentGreetingEnabled === false ? 'false' : 'true';
+      const mode = onboardingForm.querySelector('.panel-title span:last-child');
+      if (mode) mode.textContent = server.newAgentGreetingEnabled === false ? 'quiet' : 'greeting';
+    }
+    return true;
+  });
 }
 
 function computerPairingModalRenderSignature(stateSnapshot = appState) {
@@ -2263,20 +2329,36 @@ function realtimeBusinessObjectTarget(envelope = {}) {
 }
 
 async function refreshRealtimeBusinessObject(target = realtimeBusinessObjectTarget()) {
-  if (target?.type === 'thread' && target.id) {
-    const refreshed = await refreshOpenThreadReplies(target.id);
-    if (refreshed) return true;
-  }
-  if (target?.type === 'space' && target.spaceType && target.spaceId) {
-    const refreshed = await refreshActiveSpaceMessages(target.spaceType, target.spaceId);
-    if (refreshed) return true;
-  }
-  if (target?.type === 'tasks') {
+  const span = typeof magclawPerfStart === 'function'
+    ? magclawPerfStart('magclaw:sse:resync-fetch', {
+      target: target?.type || 'bootstrap',
+      thread: Boolean(target?.id),
+      spaceType: target?.spaceType || '',
+    })
+    : null;
+  let refreshed = false;
+  try {
+    if (target?.type === 'thread' && target.id) {
+      refreshed = await refreshOpenThreadReplies(target.id);
+      if (refreshed) return true;
+    }
+    if (target?.type === 'space' && target.spaceType && target.spaceId) {
+      refreshed = await refreshActiveSpaceMessages(target.spaceType, target.spaceId);
+      if (refreshed) return true;
+    }
+    if (target?.type === 'tasks') {
+      applyStateUpdate(await api(bootstrapStatePath()));
+      refreshed = true;
+      return true;
+    }
     applyStateUpdate(await api(bootstrapStatePath()));
+    refreshed = true;
     return true;
+  } finally {
+    if (typeof magclawPerfEnd === 'function') {
+      magclawPerfEnd(span, { refreshed });
+    }
   }
-  applyStateUpdate(await api(bootstrapStatePath()));
-  return true;
 }
 
 async function refreshAfterSseGap(envelope = {}) {
@@ -2326,9 +2408,31 @@ function connectEvents() {
   if (eventSource && eventSourcePath === eventPath) return;
   if (eventSource) disconnectEvents();
   eventSourcePath = eventPath;
+  const sseOpenPerf = typeof magclawPerfStart === 'function'
+    ? magclawPerfStart('magclaw:sse:open', {
+      spaceType: selectedSpaceType,
+      thread: Boolean(threadMessageId),
+      lastSeq: Boolean(lastSseSeq),
+    })
+    : null;
+  let sseOpenPerfEnded = false;
+  const finishSseOpenPerf = (detail = {}) => {
+    if (sseOpenPerfEnded) return;
+    sseOpenPerfEnded = true;
+    if (typeof magclawPerfEnd === 'function') magclawPerfEnd(sseOpenPerf, detail);
+  };
   eventSource = new EventSource(eventPath);
   const currentEventSource = eventSource;
   const eventAppliesToCurrentStream = () => eventSource === currentEventSource && eventSourcePath === eventPath;
+  eventSource.addEventListener('open', () => {
+    if (!eventAppliesToCurrentStream()) return;
+    finishSseOpenPerf({ ok: true });
+  });
+  eventSource.addEventListener('error', () => {
+    if (!eventAppliesToCurrentStream()) return;
+    finishSseOpenPerf({ ok: false, error: 'EventSource' });
+    if (typeof magclawPerfMark === 'function') magclawPerfMark('magclaw:sse:error', { spaceType: selectedSpaceType, thread: Boolean(threadMessageId) });
+  });
   eventSource.addEventListener('state-delta', (event) => {
     if (!eventAppliesToCurrentStream()) return;
     applyStateDeltaEnvelope(JSON.parse(event.data));

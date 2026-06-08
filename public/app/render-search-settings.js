@@ -313,7 +313,14 @@ function updateSearchResults({ skipFetch = false } = {}) {
 }
 
 function patchSearchSurface() {
-  updateSearchResults({ skipFetch: true });
+  const run = () => {
+    updateSearchResults({ skipFetch: true });
+    return true;
+  };
+  if (typeof trackSurfacePatch === 'function') {
+    return trackSurfacePatch('search', { query: Boolean(searchQuery.trim()) }, run);
+  }
+  return run();
 }
 
 async function openSearchChannelPath(item = {}) {
