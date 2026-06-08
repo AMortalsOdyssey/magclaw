@@ -625,9 +625,12 @@ test('members page uses a join-ordered directory with invite modals', async () =
   assert.match(membersMainSource, /renderHumanDetail\(human\)/);
   assert.match(membersMainSource, /renderAgentDetail\(agent\)/);
   assert.match(membersSettingsSource, /renderMembersDirectory\(\{ context: 'settings' \}\)/);
+  assert.match(app, /\/api\/members\/directory/);
+  assert.match(app, /function membersDirectoryServerModel/);
   assert.match(app, /const MEMBERS_PAGE_SIZE = 50/);
   assert.match(app, /function compareMemberDirectoryRows\(a, b\)/);
   assert.match(app, /function membersPaginationModel\(rows = buildMembersRows\(\)\)/);
+  assert.match(app, /id="members-search-input"/);
   assert.match(app, /<span>Name<\/span>[\s\S]*<span>Status<\/span>[\s\S]*<span>Last active<\/span>[\s\S]*<span>Role<\/span>/);
   assert.doesNotMatch(membersSettingsSource, />Heartbeat<\/span>|上次活动时间|已加入|邀请中|刚刚|分钟前|小时前|个月前|添加团队成员|发送邀请|邀请链接|无限制/);
   assert.match(app, /data-modal="member-invite"[\s\S]*>Invite<\/button>/);
@@ -643,9 +646,13 @@ test('members page uses a join-ordered directory with invite modals', async () =
   assert.match(modalSource, /if \(!String\(content\)\.trim\(\)\) \{[\s\S]*modal = null/);
   assert.match(styles, /\.members-directory-shell/);
   assert.match(styles, /\.members-page-header/);
+  assert.match(styles, /\.members-search-wrap/);
   assert.match(styles, /\.members-pagination/);
   assert.match(styles, /\.modal-member-invite/);
   assert.match(styles, /\.member-invite-links-list/);
+  const refreshSource = app.slice(app.indexOf('async function refreshState()'), app.indexOf('function cloudAuthErrorMessage'));
+  assert.match(refreshSource, /scheduleMembersDirectoryPageLoad\(\)/);
+  assert.doesNotMatch(refreshSource, /scheduleFullDirectoryHydration\(\)/);
 });
 
 test('members directory separates roles from top-centered manage actions', async () => {
@@ -913,6 +920,22 @@ test('members directory sorts active before pending by invite time and paginates
   assert.equal(page.page, 2);
   assert.equal(page.rows.length, 50);
   assert.equal(page.rows[0].member.id, 'm-50');
+
+  context.membersDirectoryState = {
+    status: 'ready',
+    query: '',
+    page: 3,
+    pageSize: 50,
+    total: 123,
+    totalPages: 3,
+    rows: [{ type: 'member', member: { id: 'm-120' } }],
+  };
+  context.memberDirectoryPage = 3;
+  const serverPage = context.membersPaginationModel();
+  assert.equal(serverPage.serverBacked, true);
+  assert.equal(serverPage.total, 123);
+  assert.equal(serverPage.totalPages, 3);
+  assert.equal(serverPage.rows[0].member.id, 'm-120');
 });
 
 test('member invitations dedupe input and show registered-user invite errors', async () => {

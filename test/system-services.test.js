@@ -645,6 +645,17 @@ test('bootstrap visible directory scope trims startup members and directory endp
           user: { id: 'usr_hidden', name: 'Hidden Human', email: 'hidden@example.test' },
         },
       ],
+      invitations: [
+        {
+          id: 'inv_pending',
+          workspaceId: 'local',
+          email: 'pending@example.test',
+          role: 'admin',
+          status: 'pending',
+          createdAt: '2026-05-19T00:00:00.000Z',
+          expiresAt: '2999-01-01T00:00:00.000Z',
+        },
+      ],
     }),
   });
 
@@ -704,6 +715,28 @@ test('bootstrap visible directory scope trims startup members and directory endp
   assert.equal(search.bootstrap.directory.agents.loaded, 1);
   assert.equal(search.bootstrap.directory.humans.loaded, 1);
   assert.equal(search.bootstrap.directory.members.loaded, 1);
+
+  const membersPage = services.publicMembersDirectoryState({
+    url: '/api/members/directory?page=2&pageSize=1',
+    headers: {},
+  });
+  assert.equal(membersPage.mode, 'members-directory');
+  assert.equal(membersPage.page, 2);
+  assert.equal(membersPage.pageSize, 1);
+  assert.equal(membersPage.total, 3);
+  assert.equal(membersPage.totalPages, 3);
+  assert.equal(membersPage.rows.length, 1);
+  assert.equal(membersPage.rows[0].member.id, 'mem_hidden');
+  assert.equal(membersPage.rows[0].member.human.name, 'Hidden Human');
+
+  const memberSearch = services.publicMembersDirectoryState({
+    url: '/api/members/directory?q=pending&pageSize=10',
+    headers: {},
+  });
+  assert.equal(memberSearch.query, 'pending');
+  assert.equal(memberSearch.total, 1);
+  assert.equal(memberSearch.rows[0].type, 'invitation');
+  assert.equal(memberSearch.rows[0].invitation.id, 'inv_pending');
 });
 
 test('public state exposes configured public URL for share exports', () => {

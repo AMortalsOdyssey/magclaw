@@ -14,6 +14,7 @@ function bootstrapStatePath() {
 }
 
 const DIRECTORY_HYDRATION_PAGE_LIMIT = 250;
+const MEMBERS_DIRECTORY_API_PAGE_SIZE = 50;
 
 function directoryStatePath(cursor = '') {
   const params = new URLSearchParams();
@@ -37,6 +38,10 @@ function preserveIncomingDirectorySnapshot(previousState, nextState) {
 
 let directoryHydrationInFlight = null;
 let directoryHydrationScheduled = false;
+let membersDirectoryRequestInFlight = null;
+let membersDirectoryRequestKey = '';
+let membersDirectoryRequestSeq = 0;
+let membersDirectorySearchTimer = null;
 
 function currentDirectoryIsFull() {
   return typeof directorySnapshotIsFull === 'function'
@@ -58,6 +63,141 @@ function applyDirectorySnapshot(directorySnapshot, { renderAfter = true } = {}) 
   resetDirectoryLookupCaches();
   if (renderAfter) render();
   return true;
+}
+
+function normalizedMemberDirectoryQuery(value = memberDirectoryQuery) {
+  return String(value || '').trim();
+}
+
+function membersDirectoryPath(page = memberDirectoryPage, query = memberDirectoryQuery) {
+  const params = new URLSearchParams();
+  params.set('page', String(Math.max(1, Number.parseInt(page, 10) || 1)));
+  params.set('pageSize', String(MEMBERS_DIRECTORY_API_PAGE_SIZE));
+  const q = normalizedMemberDirectoryQuery(query);
+  if (q) params.set('q', q);
+  return `/api/members/directory?${params.toString()}`;
+}
+
+function membersDirectoryIsVisible() {
+  return activeView === 'cloud' && settingsTab === 'members';
+}
+
+function membersDirectoryStateIsCurrent(page = memberDirectoryPage, query = memberDirectoryQuery) {
+  const state = membersDirectoryState || {};
+  return state.status === 'ready'
+    && Number(state.page || 1) === Math.max(1, Number.parseInt(page, 10) || 1)
+    && String(state.query || '') === normalizedMemberDirectoryQuery(query)
+    && Number(state.pageSize || 0) === MEMBERS_DIRECTORY_API_PAGE_SIZE;
+}
+
+function membersDirectoryFocusSnapshot() {
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
+  if (!active || !['members-search-input', 'members-page-input'].includes(active.id)) return null;
+  return {
+    id: active.id,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restoreMembersDirectoryFocus(snapshot) {
+  if (!snapshot?.id || typeof document === 'undefined') return;
+  const target = document.getElementById(snapshot.id);
+  if (!target) return;
+  target.focus();
+  if (typeof target.setSelectionRange === 'function') {
+    const start = Number.isFinite(snapshot.selectionStart) ? snapshot.selectionStart : target.value.length;
+    const end = Number.isFinite(snapshot.selectionEnd) ? snapshot.selectionEnd : start;
+    target.setSelectionRange(start, end);
+  }
+}
+
+function applyMembersDirectorySnapshot(snapshot, { renderAfter = true, focusSnapshot = null } = {}) {
+  if (!snapshot || typeof snapshot !== 'object') return false;
+  membersDirectoryState = {
+    status: 'ready',
+    mode: snapshot.mode || 'members-directory',
+    query: String(snapshot.query || ''),
+    page: Math.max(1, Number(snapshot.page || 1) || 1),
+    pageSize: Math.max(1, Number(snapshot.pageSize || MEMBERS_DIRECTORY_API_PAGE_SIZE) || MEMBERS_DIRECTORY_API_PAGE_SIZE),
+    total: Math.max(0, Number(snapshot.total || 0) || 0),
+    totalPages: Math.max(1, Number(snapshot.totalPages || 1) || 1),
+    hasMore: Boolean(snapshot.hasMore),
+    rows: Array.isArray(snapshot.rows) ? snapshot.rows : [],
+    error: '',
+  };
+  if (memberDirectoryPage !== membersDirectoryState.page) memberDirectoryPage = membersDirectoryState.page;
+  if (renderAfter) {
+    render();
+    restoreMembersDirectoryFocus(focusSnapshot);
+  }
+  return true;
+}
+
+async function ensureMembersDirectoryPage({ renderAfter = true, force = false } = {}) {
+  if (!appState) return false;
+  const page = Math.max(1, Number.parseInt(memberDirectoryPage, 10) || 1);
+  const query = normalizedMemberDirectoryQuery();
+  const requestKey = `${page}:${MEMBERS_DIRECTORY_API_PAGE_SIZE}:${query}`;
+  if (!force && membersDirectoryStateIsCurrent(page, query)) return false;
+  if (membersDirectoryRequestInFlight && membersDirectoryRequestKey === requestKey) return membersDirectoryRequestInFlight;
+  const seq = ++membersDirectoryRequestSeq;
+  const focusSnapshot = membersDirectoryFocusSnapshot();
+  membersDirectoryRequestKey = requestKey;
+  membersDirectoryState = {
+    ...(membersDirectoryState || {}),
+    status: 'loading',
+    query,
+    page,
+    pageSize: MEMBERS_DIRECTORY_API_PAGE_SIZE,
+    error: '',
+  };
+  if (renderAfter) {
+    render();
+    restoreMembersDirectoryFocus(focusSnapshot);
+  }
+  membersDirectoryRequestInFlight = (async () => {
+    const snapshot = await api(membersDirectoryPath(page, query));
+    if (seq !== membersDirectoryRequestSeq) return false;
+    return applyMembersDirectorySnapshot(snapshot, { renderAfter, focusSnapshot });
+  })().catch((error) => {
+    if (seq === membersDirectoryRequestSeq) {
+      membersDirectoryState = {
+        ...(membersDirectoryState || {}),
+        status: 'error',
+        query,
+        page,
+        pageSize: MEMBERS_DIRECTORY_API_PAGE_SIZE,
+        error: error?.message || 'Members could not be loaded.',
+      };
+      if (renderAfter) {
+        render();
+        restoreMembersDirectoryFocus(focusSnapshot);
+      }
+    }
+    return false;
+  }).finally(() => {
+    if (seq === membersDirectoryRequestSeq) {
+      membersDirectoryRequestInFlight = null;
+      membersDirectoryRequestKey = '';
+    }
+  });
+  return membersDirectoryRequestInFlight;
+}
+
+function scheduleMembersDirectoryPageLoad({ delay = 0, force = false } = {}) {
+  if (!membersDirectoryIsVisible()) return;
+  const timerHost = typeof window !== 'undefined' ? window : globalThis;
+  if (membersDirectorySearchTimer) timerHost.clearTimeout(membersDirectorySearchTimer);
+  const run = () => {
+    membersDirectorySearchTimer = null;
+    ensureMembersDirectoryPage({ renderAfter: true, force }).catch((error) => console.warn('Failed to load members directory:', error));
+  };
+  if (delay > 0) {
+    membersDirectorySearchTimer = timerHost.setTimeout(run, delay);
+  } else {
+    run();
+  }
 }
 
 function waitForDirectoryHydrationTurn() {
@@ -236,7 +376,7 @@ async function refreshState() {
   }
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   render();
-  scheduleFullDirectoryHydration();
+  scheduleMembersDirectoryPageLoad();
   refreshPackageVersionReminders();
 }
 
@@ -2518,8 +2658,7 @@ document.addEventListener('keydown', async (event) => {
   if (event.target.id === 'members-page-input' && event.key === 'Enter') {
     event.preventDefault();
     memberDirectoryPage = Number.parseInt(event.target.value, 10) || 1;
-    render();
-    document.getElementById('members-page-input')?.focus();
+    ensureMembersDirectoryPage({ renderAfter: true, force: true }).catch((error) => console.warn('Failed to load members directory:', error));
     return;
   }
 
@@ -2756,6 +2895,21 @@ document.addEventListener('input', async (event) => {
       validateConsoleServerForm(consoleServerForm, { report: false });
       return;
     }
+  }
+
+  if (event.target.id === 'members-search-input') {
+    memberDirectoryQuery = event.target.value;
+    memberDirectoryPage = 1;
+    membersDirectoryState = {
+      ...(membersDirectoryState || {}),
+      status: 'loading',
+      query: normalizedMemberDirectoryQuery(),
+      page: 1,
+      pageSize: MEMBERS_DIRECTORY_API_PAGE_SIZE,
+      error: '',
+    };
+    scheduleMembersDirectoryPageLoad({ delay: 180, force: true });
+    return;
   }
 
   // Handle @ mention autocomplete in message textarea

@@ -148,6 +148,7 @@ export async function handleSystemApi(req, res, url, deps) {
     publicBootstrapState,
     publicDirectoryState,
     publicDirectorySearchState,
+    publicMembersDirectoryState,
     publicState,
     readJson,
     sendError,
@@ -314,6 +315,18 @@ export async function handleSystemApi(req, res, url, deps) {
     const cursor = url.searchParams.get('cursor') || '';
     if (cursor) options.cursor = cursor;
     sendJson(res, 200, (publicDirectoryState || publicState)(req, options));
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/members/directory') {
+    const options = {};
+    const page = url.searchParams.get('page') || '';
+    if (page) options.page = page;
+    const pageSize = url.searchParams.get('pageSize') || '';
+    if (pageSize) options.pageSize = pageSize;
+    const query = url.searchParams.get('q') || url.searchParams.get('query') || '';
+    if (query) options.query = query;
+    sendJson(res, 200, (publicMembersDirectoryState || publicState)(req, options));
     return true;
   }
 

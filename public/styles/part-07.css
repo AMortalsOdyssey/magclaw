@@ -1491,6 +1491,37 @@
   line-height: 1.2;
 }
 
+.members-page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.members-search-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: min(280px, 44vw);
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--settings-line);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+
+.members-search-wrap input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+}
+
 .member-directory-invite-btn {
   min-width: 82px;
   min-height: 36px;

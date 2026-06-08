@@ -195,6 +195,17 @@ let cloudInviteEmails = [];
 let cloudInviteDraft = '';
 let cloudGeneratedLinks = [];
 let memberDirectoryPage = 1;
+let memberDirectoryQuery = '';
+let membersDirectoryState = {
+  status: 'idle',
+  query: '',
+  page: 1,
+  pageSize: 50,
+  total: 0,
+  totalPages: 1,
+  rows: [],
+  error: '',
+};
 let memberManageState = { memberId: null };
 let memberActionConfirmState = { memberId: null, action: null };
 let memberResetLinkState = { email: '', link: '' };

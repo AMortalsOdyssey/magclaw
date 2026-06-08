@@ -71,6 +71,8 @@ const BUDGETS = Object.freeze({
   directoryPages: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGES || 4),
   directorySearchBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_BYTES || 20_000),
   directorySearchMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_SEARCH_MS || 250),
+  membersDirectoryPageBytes: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_BYTES || 35_000),
+  membersDirectoryPageMs: Number(process.env.MAGCLAW_PERF_MEMBERS_DIRECTORY_PAGE_MS || 250),
   heartbeatBytes: Number(process.env.MAGCLAW_PERF_HEARTBEAT_BYTES || 80_000),
   heartbeatMs: Number(process.env.MAGCLAW_PERF_HEARTBEAT_MS || 50),
   deferredOpenBytes: Number(process.env.MAGCLAW_PERF_DEFERRED_OPEN_BYTES || 10_000),
@@ -263,6 +265,43 @@ function measureDirectorySearch() {
       || member.user?.id
       || member.user?.name
     )),
+  };
+}
+
+function measureMembersDirectoryPage() {
+  const sourceState = makeSyntheticState({
+    humans: 10_000,
+    agents: 0,
+    messages: 0,
+    replies: 0,
+    tasks: 0,
+  });
+  const services = makeSystemServices(sourceState);
+  const started = performance.now();
+  const snapshot = services.publicMembersDirectoryState({
+    url: '/api/members/directory?page=100&pageSize=50',
+    headers: {},
+  });
+  const body = JSON.stringify(snapshot);
+  return {
+    ms: Math.round(performance.now() - started),
+    bytes: Buffer.byteLength(body, 'utf8'),
+    sourceHumans: sourceState.humans.length,
+    mode: snapshot.mode || '',
+    page: snapshot.page || 0,
+    pageSize: snapshot.pageSize || 0,
+    total: snapshot.total || 0,
+    totalPages: snapshot.totalPages || 0,
+    rows: snapshot.rows?.length || 0,
+    firstMemberId: snapshot.rows?.[0]?.member?.id || '',
+    lastMemberId: snapshot.rows?.[snapshot.rows.length - 1]?.member?.id || '',
+    hasOffPageFirstMember: body.includes('mem_0000'),
+    hasOffPageLastMember: body.includes('mem_9999'),
+    hasInternalFields: body.includes('promptCache')
+      || body.includes('runtimeSession')
+      || body.includes('sourceAnchor')
+      || body.includes('tokenHash')
+      || body.includes('passwordHash'),
   };
 }
 
@@ -1028,6 +1067,7 @@ async function main() {
   const body = JSON.stringify(snapshot);
   const directory = measureDirectoryHydration(services);
   const directorySearch = measureDirectorySearch();
+  const membersDirectoryPage = measureMembersDirectoryPage();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
     channel?.id === 'chan_all'
     || String(channel?.name || '').trim().toLowerCase() === 'all'
@@ -1151,6 +1191,19 @@ async function main() {
   assertBudget(directorySearch.hasDirectoryTuples, 'directory search did not compact member directories into tuple rows');
   assertBudget(!directorySearch.hasCloudMemberDuplication, 'directory search leaked duplicate cloud member human payloads');
   assertBudget(!directorySearch.hasInternalFields, 'directory search leaked internal payload fields');
+  assertBudget(membersDirectoryPage.sourceHumans === 10_000, 'members directory page smoke did not use the 10000-member fixture');
+  assertBudget(membersDirectoryPage.ms <= BUDGETS.membersDirectoryPageMs, `members directory page ${membersDirectoryPage.ms}ms exceeds ${BUDGETS.membersDirectoryPageMs}ms`);
+  assertBudget(membersDirectoryPage.bytes <= BUDGETS.membersDirectoryPageBytes, `members directory page ${membersDirectoryPage.bytes} bytes exceeds ${BUDGETS.membersDirectoryPageBytes}`);
+  assertBudget(membersDirectoryPage.mode === 'members-directory', `members directory mode expected members-directory but got ${membersDirectoryPage.mode || '[none]'}`);
+  assertBudget(membersDirectoryPage.page === 100, `members directory page expected 100 but got ${membersDirectoryPage.page}`);
+  assertBudget(membersDirectoryPage.pageSize === 50, `members directory page size expected 50 but got ${membersDirectoryPage.pageSize}`);
+  assertBudget(membersDirectoryPage.total === 10_000, `members directory total expected 10000 but got ${membersDirectoryPage.total}`);
+  assertBudget(membersDirectoryPage.totalPages === 200, `members directory total pages expected 200 but got ${membersDirectoryPage.totalPages}`);
+  assertBudget(membersDirectoryPage.rows === 50, `members directory page expected 50 rows but got ${membersDirectoryPage.rows}`);
+  assertBudget(membersDirectoryPage.firstMemberId === 'mem_4950', `members directory first row expected mem_4950 but got ${membersDirectoryPage.firstMemberId || '[none]'}`);
+  assertBudget(membersDirectoryPage.lastMemberId === 'mem_4999', `members directory last row expected mem_4999 but got ${membersDirectoryPage.lastMemberId || '[none]'}`);
+  assertBudget(!membersDirectoryPage.hasOffPageFirstMember && !membersDirectoryPage.hasOffPageLastMember, 'members directory page leaked off-page member rows');
+  assertBudget(!membersDirectoryPage.hasInternalFields, 'members directory page leaked internal payload fields');
   assertBudget(heartbeat.ms <= BUDGETS.heartbeatMs, `heartbeat ${heartbeat.ms}ms exceeds ${BUDGETS.heartbeatMs}ms`);
   assertBudget(heartbeat.bytes <= BUDGETS.heartbeatBytes, `heartbeat ${heartbeat.bytes} bytes exceeds ${BUDGETS.heartbeatBytes}`);
   assertBudget(!heartbeat.hasInternalFields, 'heartbeat leaked internal payload fields');
@@ -1186,7 +1239,7 @@ async function main() {
   assertBudget(bootstrapLargeUnread.ms <= BUDGETS.bootstrapLargeUnreadMs, `large-unread bootstrap ${bootstrapLargeUnread.ms}ms exceeds ${BUDGETS.bootstrapLargeUnreadMs}ms`);
   assertBudget(bootstrapLargeUnread.bytes <= BUDGETS.bootstrapLargeUnreadBytes, `large-unread bootstrap ${bootstrapLargeUnread.bytes} bytes exceeds ${BUDGETS.bootstrapLargeUnreadBytes}`);
 
-  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
+  console.log(JSON.stringify({ ok: true, budgets: BUDGETS, bootstrap, directory, directorySearch, membersDirectoryPage, heartbeat, repeatedHeartbeat, humanHeartbeatChurn, presenceMemberDelta, stateChangeFanout, bootstrapProjection, bootstrapLargeHistory, bootstrapLargeUnread }, null, 2));
 }
 
 main().catch((error) => {

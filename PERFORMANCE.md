@@ -55,6 +55,9 @@ membership fanout visible in the budget. It currently enforces:
 - Directory search is server-backed for very large rosters: a 10000 Human /
   10000 Agent fixture must find a unique Agent/Human/member without hydrating
   the whole roster, returning at most 20 KB in at most 250 ms.
+- Members administration is server-backed for large rosters: a 10000-member
+  fixture must return a 50-row Members directory page without leaking off-page
+  rows, staying below 35 KB and 250 ms.
 - Bootstrap server-side projection is windowed: with 10000 source messages, the
   smoke test allows at most 500 conversation metadata reads while still exposing
   history pagination.
@@ -75,10 +78,11 @@ membership fanout visible in the budget. It currently enforces:
   Agents, Humans, and cloud Members, then normalize them back to objects at the
   frontend state boundary so rendering code keeps the same object UX contract.
 - Browser bootstrap requests also use `directoryScope=visible`, keeping only
-  current-view identities in the first paint. The full Agents/Humans/Members
-  directory is hydrated through paged `/api/directory` requests after first
-  render or when the Members surface is opened, and later partial bootstraps
-  preserve that hydrated roster.
+  current-view identities in the first paint. Deeper people lookup is now
+  server-backed: mention search uses `/api/directory/search`, while Settings /
+  Members browsing uses `/api/members/directory` pages. The legacy full
+  `/api/directory` hydration path remains available for explicit callers, but
+  it is no longer scheduled automatically after refresh or Members navigation.
 - Bootstrap represents `#all` membership with `membershipMode: all` and a
   count, instead of duplicating every human and agent ID in channel membership
   arrays.
@@ -171,8 +175,8 @@ asks for it.
 
 ## Next Optimization Queue
 
-- Move the Members directory page itself to server-backed pagination/filtering
-  so admin browsing does not require the browser to keep every member row.
+- Move the members rail itself toward server-backed search/windowing so very
+  large organizations do not render every Human/Agent shortcut in the sidebar.
 - Add browser-side performance marks for bootstrap, first render, SSE open,
   resync fetch, and major surface patches.
 - Add production/test-environment verification that records response sizes,

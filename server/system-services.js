@@ -23,6 +23,8 @@ const DIRECTORY_PAGE_LIMIT_DEFAULT = 0;
 const DIRECTORY_PAGE_LIMIT_MAX = 500;
 const DIRECTORY_SEARCH_LIMIT_DEFAULT = 25;
 const DIRECTORY_SEARCH_LIMIT_MAX = 100;
+const MEMBERS_DIRECTORY_PAGE_SIZE_DEFAULT = 50;
+const MEMBERS_DIRECTORY_PAGE_SIZE_MAX = 100;
 const BOOTSTRAP_AGENT_TUPLE_FIELDS = Object.freeze([
   'id',
   'name',
@@ -971,6 +973,246 @@ export function createSystemServices(deps) {
     };
   }
 
+  function membersDirectoryPageNumber(value) {
+    const parsed = Math.floor(Number(value) || 0);
+    return Math.max(1, parsed || 1);
+  }
+
+  function membersDirectoryPageSize(value) {
+    const parsed = Math.floor(Number(value) || 0);
+    if (parsed <= 0) return MEMBERS_DIRECTORY_PAGE_SIZE_DEFAULT;
+    return Math.min(MEMBERS_DIRECTORY_PAGE_SIZE_MAX, Math.max(1, parsed));
+  }
+
+  function normalizeMembersDirectoryQuery(value = '') {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  function membersDirectoryWorkspaceId(cloud = null) {
+    return String(cloud?.workspace?.id || cloud?.auth?.currentMember?.workspaceId || '').trim();
+  }
+
+  function memberDirectoryHumanRecord(member = {}, humansById = new Map()) {
+    if (member?.human && typeof member.human === 'object') return member.human;
+    const humanId = String(member?.humanId || '').trim();
+    if (humanId && humansById.has(humanId)) return humansById.get(humanId);
+    const userId = String(member?.userId || member?.user?.id || '').trim();
+    if (userId && humansById.has(userId)) return humansById.get(userId);
+    const email = String(member?.user?.email || member?.email || '').trim().toLowerCase();
+    if (email && humansById.has(email)) return humansById.get(email);
+    return {};
+  }
+
+  function memberDirectoryEmail(member = {}, humansById = new Map()) {
+    const human = memberDirectoryHumanRecord(member, humansById);
+    return String(member?.user?.email || human?.email || member?.email || member?.userId || '').trim();
+  }
+
+  function memberDirectoryDisplayName(member = {}, humansById = new Map()) {
+    const human = memberDirectoryHumanRecord(member, humansById);
+    return String(member?.user?.name || human?.name || member?.name || member?.user?.email || member?.email || member?.humanId || 'Member').trim();
+  }
+
+  function memberDirectorySortTimestamp(value) {
+    const timestamp = Date.parse(value || '');
+    return Number.isFinite(timestamp) ? timestamp : Number.MAX_SAFE_INTEGER;
+  }
+
+  function compareMemberDirectorySortParts(a, b) {
+    const timeDiff = memberDirectorySortTimestamp(a?.invitedAt) - memberDirectorySortTimestamp(b?.invitedAt);
+    if (timeDiff) return timeDiff;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  }
+
+  function acceptedInvitationForDirectoryMember(member = {}, invitations = [], humansById = new Map()) {
+    const email = memberDirectoryEmail(member, humansById).toLowerCase();
+    const userId = String(member?.user?.id || member?.userId || '').trim();
+    return records(invitations)
+      .filter((invitation) => {
+        if (!invitation?.acceptedAt) return false;
+        if (userId && invitation.acceptedBy === userId) return true;
+        return email && String(invitation.email || '').trim().toLowerCase() === email;
+      })
+      .sort((a, b) => compareMemberDirectorySortParts(
+        { invitedAt: a.createdAt, id: a.id },
+        { invitedAt: b.createdAt, id: b.id },
+      ))[0] || null;
+  }
+
+  function compactMembersDirectoryUser(user = null, human = {}) {
+    if (!user || typeof user !== 'object') return null;
+    const record = {};
+    for (const key of ['id', 'name', 'email', 'avatarUrl', 'avatar']) {
+      if (usefulMetadataValue(user[key])) record[key] = user[key];
+    }
+    if (record.email && human?.email && String(record.email) === String(human.email)) delete record.email;
+    if (record.avatarUrl && (human?.avatarUrl || human?.avatar) && String(record.avatarUrl) === String(human.avatarUrl || human.avatar)) delete record.avatarUrl;
+    return Object.keys(record).length ? record : null;
+  }
+
+  function compactMembersDirectoryHuman(human = {}) {
+    if (!human || typeof human !== 'object' || !human.id) return null;
+    const record = compactBootstrapHumanRecord(human);
+    if (human.lastSeenAt) record.lastSeenAt = human.lastSeenAt;
+    if (human.presenceUpdatedAt) record.presenceUpdatedAt = human.presenceUpdatedAt;
+    if (human.joinedAt) record.joinedAt = human.joinedAt;
+    return record;
+  }
+
+  function compactMembersDirectoryMember(member = {}, humansById = new Map()) {
+    const human = memberDirectoryHumanRecord(member, humansById);
+    const record = {};
+    for (const key of ['id', 'userId', 'humanId', 'role', 'status', 'joinedAt', 'createdAt']) {
+      if (usefulMetadataValue(member[key])) record[key] = member[key];
+    }
+    const user = compactMembersDirectoryUser(member.user, human);
+    if (user) record.user = user;
+    const compactHuman = compactMembersDirectoryHuman(human);
+    if (compactHuman) record.human = compactHuman;
+    return record;
+  }
+
+  function compactMembersDirectoryInvitation(invitation = {}) {
+    const record = {};
+    for (const key of ['id', 'email', 'name', 'role', 'status', 'humanId', 'acceptedAt', 'revokedAt', 'expiresAt', 'createdAt']) {
+      if (usefulMetadataValue(invitation[key])) record[key] = invitation[key];
+    }
+    return record;
+  }
+
+  function memberDirectoryRowSearchText(row = {}, humansById = new Map()) {
+    if (row.type === 'invitation') {
+      const invitation = row.invitation || {};
+      return directorySearchText([
+        invitation.id,
+        invitation.email,
+        invitation.name,
+        invitation.role,
+        invitation.status,
+      ]);
+    }
+    const member = row.member || {};
+    return directorySearchText([
+      member.id,
+      member.userId,
+      member.humanId,
+      member.role,
+      member.status,
+      memberDirectoryDisplayName(member, humansById),
+      memberDirectoryEmail(member, humansById),
+      member.user?.name,
+      member.user?.email,
+      member.human?.name,
+      member.human?.email,
+    ]);
+  }
+
+  function memberDirectorySortParts(row = {}, humansById = new Map()) {
+    if (row.type === 'invitation') {
+      return {
+        group: 1,
+        invitedAt: row.invitation?.createdAt,
+        id: row.invitation?.id || row.invitation?.email || '',
+      };
+    }
+    const member = row.member || {};
+    const human = memberDirectoryHumanRecord(member, humansById);
+    return {
+      group: 0,
+      invitedAt: row.invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt,
+      id: row.invitation?.id || member.id || member.userId || memberDirectoryEmail(member, humansById),
+    };
+  }
+
+  function compareMembersDirectoryRows(a, b, humansById = new Map()) {
+    const left = memberDirectorySortParts(a, humansById);
+    const right = memberDirectorySortParts(b, humansById);
+    const groupDiff = left.group - right.group;
+    if (groupDiff) return groupDiff;
+    return compareMemberDirectorySortParts(left, right);
+  }
+
+  function buildMembersDirectoryRows({ cloud = null, humans = [], query = '' } = {}) {
+    const workspaceId = membersDirectoryWorkspaceId(cloud);
+    const humansById = new Map();
+    for (const human of records(humans)) {
+      if (human?.id) humansById.set(String(human.id), human);
+      if (human?.authUserId) humansById.set(String(human.authUserId), human);
+      if (human?.userId) humansById.set(String(human.userId), human);
+      if (human?.email) humansById.set(String(human.email).toLowerCase(), human);
+    }
+    const invitations = records(cloud?.invitations).filter((invitation) => (
+      !workspaceId
+      || !invitation?.workspaceId
+      || String(invitation.workspaceId) === workspaceId
+    ));
+    const activeMembers = records(cloud?.members)
+      .filter((member) => (
+        (!workspaceId || !member?.workspaceId || String(member.workspaceId) === workspaceId)
+        && String(member?.status || 'active') === 'active'
+      ));
+    const activeEmails = new Set(activeMembers.map((member) => memberDirectoryEmail(member, humansById).toLowerCase()).filter(Boolean));
+    const rows = [
+      ...activeMembers.map((member) => {
+        const invitation = acceptedInvitationForDirectoryMember(member, invitations, humansById);
+        const human = memberDirectoryHumanRecord(member, humansById);
+        return {
+          type: 'member',
+          member,
+          invitation,
+          sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '',
+        };
+      }),
+      ...invitations
+        .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
+        .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
+        .filter((invitation) => !activeEmails.has(String(invitation.email || '').trim().toLowerCase()))
+        .map((invitation) => ({
+          type: 'invitation',
+          invitation,
+          sortAt: invitation.createdAt || '',
+        })),
+    ];
+    const filteredRows = query
+      ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById), query))
+      : rows;
+    return filteredRows
+      .sort((a, b) => compareMembersDirectoryRows(a, b, humansById))
+      .map((row) => {
+        if (row.type === 'invitation') {
+          return {
+            type: 'invitation',
+            invitation: compactMembersDirectoryInvitation(row.invitation),
+            sortAt: row.sortAt || '',
+          };
+        }
+        return {
+          type: 'member',
+          member: compactMembersDirectoryMember(row.member, humansById),
+          invitation: row.invitation ? compactMembersDirectoryInvitation(row.invitation) : null,
+          sortAt: row.sortAt || '',
+        };
+      });
+  }
+
+  function membersDirectoryPageSnapshot({ cloud = null, humans = [], query = '', page = 1, pageSize = MEMBERS_DIRECTORY_PAGE_SIZE_DEFAULT } = {}) {
+    const rows = buildMembersDirectoryRows({ cloud, humans, query });
+    const total = rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+    const start = (safePage - 1) * pageSize;
+    return {
+      mode: 'members-directory',
+      query,
+      page: safePage,
+      pageSize,
+      total,
+      totalPages,
+      hasMore: safePage < totalPages,
+      rows: rows.slice(start, start + pageSize),
+    };
+  }
+
   function compactTuple(values = []) {
     let lastIndex = values.length - 1;
     while (lastIndex >= 0) {
@@ -1057,8 +1299,14 @@ export function createSystemServices(deps) {
       if (limit) options.limit = limit;
       const cursor = url.searchParams.get('cursor') || '';
       if (cursor) options.cursor = cursor;
+      const page = url.searchParams.get('page') || '';
+      if (page) options.page = page;
+      const pageSize = url.searchParams.get('pageSize') || '';
+      if (pageSize) options.pageSize = pageSize;
       const query = url.searchParams.get('query') || '';
       if (query) options.query = query;
+      const q = url.searchParams.get('q') || '';
+      if (q && !options.query) options.query = q;
       const types = url.searchParams.get('types') || '';
       if (types) options.types = types;
       if (req?.magclawBootstrapHydration) options.hydration = req.magclawBootstrapHydration;
@@ -1611,6 +1859,37 @@ export function createSystemServices(deps) {
       },
     };
     return encodeBootstrapDirectories(snapshot, effectiveOptions);
+  }
+
+  function publicMembersDirectoryState(req = null, options = {}) {
+    const scope = publicStateScope(req);
+    const {
+      cloud,
+      scopedRecords,
+    } = scope;
+    const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
+    const query = normalizeMembersDirectoryQuery(effectiveOptions.query || effectiveOptions.q);
+    const page = membersDirectoryPageNumber(effectiveOptions.page);
+    const pageSize = membersDirectoryPageSize(effectiveOptions.pageSize || effectiveOptions.limit);
+    if (cloud?.auth?.currentUser && !cloud?.auth?.currentMember) {
+      return {
+        mode: 'members-directory',
+        query,
+        page: 1,
+        pageSize,
+        total: 0,
+        totalPages: 1,
+        hasMore: false,
+        rows: [],
+      };
+    }
+    return membersDirectoryPageSnapshot({
+      cloud,
+      humans: scopedRecords('humans'),
+      query,
+      page,
+      pageSize,
+    });
   }
   
   function workspaceFanoutApiConfig(cloud = null) {
@@ -2470,6 +2749,7 @@ export function createSystemServices(deps) {
     publicBootstrapState,
     publicDirectoryState,
     publicDirectorySearchState,
+    publicMembersDirectoryState,
     publicState,
     runtimeSnapshot,
     startPackageVersionPolling,

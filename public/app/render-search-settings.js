@@ -1597,6 +1597,8 @@ function clampMembersPage(page, totalPages) {
 }
 
 function membersPaginationModel(rows = buildMembersRows()) {
+  const serverModel = membersDirectoryServerModel();
+  if (serverModel) return serverModel;
   const total = rows.length;
   const totalPages = Math.max(1, Math.ceil(total / MEMBERS_PAGE_SIZE));
   const page = clampMembersPage(memberDirectoryPage, totalPages);
@@ -1607,6 +1609,26 @@ function membersPaginationModel(rows = buildMembersRows()) {
     totalPages,
     page,
     rows: rows.slice(start, start + MEMBERS_PAGE_SIZE),
+  };
+}
+
+function membersDirectoryServerModel() {
+  const state = typeof membersDirectoryState === 'object' ? membersDirectoryState : null;
+  if (!state || state.status === 'idle') return null;
+  const query = typeof memberDirectoryQuery === 'undefined' ? '' : String(memberDirectoryQuery || '').trim();
+  const stateQuery = String(state.query || '');
+  const totalPages = Math.max(1, Number(state.totalPages || 1) || 1);
+  if (state.status === 'ready' && stateQuery !== query) return null;
+  const page = clampMembersPage(state.page || memberDirectoryPage, totalPages);
+  if (memberDirectoryPage !== page) memberDirectoryPage = page;
+  return {
+    serverBacked: true,
+    loading: state.status === 'loading',
+    error: state.status === 'error' ? state.error || 'Members could not be loaded.' : '',
+    total: Math.max(0, Number(state.total || 0) || 0),
+    totalPages,
+    page,
+    rows: Array.isArray(state.rows) ? state.rows : [],
   };
 }
 
@@ -1740,16 +1762,25 @@ function renderMemberInviteModal() {
   `;
 }
 
+function memberFromDirectoryRows(id) {
+  const target = String(id || '');
+  if (!target) return null;
+  const rows = typeof membersDirectoryState === 'object' && Array.isArray(membersDirectoryState.rows)
+    ? membersDirectoryState.rows
+    : [];
+  return rows.find((row) => row?.type === 'member' && String(row.member?.id || '') === target)?.member || null;
+}
+
 function memberManageTarget() {
   const id = memberManageState?.memberId || '';
   if (!id) return null;
-  return (appState.cloud?.members || []).find((member) => member.id === id) || null;
+  return (appState.cloud?.members || []).find((member) => member.id === id) || memberFromDirectoryRows(id);
 }
 
 function memberActionConfirmTarget() {
   const id = memberActionConfirmState?.memberId || '';
   if (!id) return null;
-  return (appState.cloud?.members || []).find((member) => member.id === id) || null;
+  return (appState.cloud?.members || []).find((member) => member.id === id) || memberFromDirectoryRows(id);
 }
 
 function memberResetLinkText() {
@@ -1935,11 +1966,18 @@ function renderMemberInviteTrigger() {
 
 function renderMembersDirectory({ context = 'main' } = {}) {
   const model = membersPaginationModel();
+  const query = typeof memberDirectoryQuery === 'undefined' ? '' : memberDirectoryQuery;
   return `
     <section class="members-page members-directory-shell members-directory-${escapeHtml(context)}">
       <header class="members-page-header">
         <h2>Members</h2>
-        ${renderMemberInviteTrigger()}
+        <div class="members-page-actions">
+          <label class="members-search-wrap" for="members-search-input">
+            <span>${renderSearchLensIcon(15)}</span>
+            <input id="members-search-input" value="${escapeHtml(query)}" placeholder="Search members" autocomplete="off" />
+          </label>
+          ${renderMemberInviteTrigger()}
+        </div>
       </header>
       <div class="members-table-card">
         <div class="members-table-head">
@@ -1950,7 +1988,8 @@ function renderMembersDirectory({ context = 'main' } = {}) {
           <span>Manage</span>
         </div>
         <div class="members-table-body">
-          ${model.rows.map(renderMemberRow).join('') || '<div class="empty-box small">No members yet.</div>'}
+          ${model.error ? `<div class="empty-box small">${escapeHtml(model.error)}</div>` : ''}
+          ${model.rows.map(renderMemberRow).join('') || (model.loading ? '<div class="empty-box small">Loading members...</div>' : '<div class="empty-box small">No members yet.</div>')}
         </div>
         ${renderMembersPagination(model)}
       </div>
@@ -1960,18 +1999,19 @@ function renderMembersDirectory({ context = 'main' } = {}) {
 
 function renderMembersPagination(model) {
   if (!model || model.totalPages <= 1) {
-    return `<div class="members-pagination"><span>${escapeHtml(model?.total || 0)} total</span><span>Page 1 of 1</span></div>`;
+    return `<div class="members-pagination"><span>${escapeHtml(model?.total || 0)} total</span><span>${model?.loading ? 'Loading' : 'Page 1 of 1'}</span></div>`;
   }
+  const disabled = model.loading ? 'disabled' : '';
   return `
     <div class="members-pagination" aria-label="Members pagination">
       <span>${escapeHtml(model.total)} total</span>
-      <button class="secondary-btn compact-btn" type="button" data-action="members-page-prev" data-page="${escapeHtml(model.page - 1)}" ${model.page <= 1 ? 'disabled' : ''}>Previous</button>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-prev" data-page="${escapeHtml(model.page - 1)}" ${model.page <= 1 || model.loading ? 'disabled' : ''}>Previous</button>
       <label>Page
-        <input id="members-page-input" type="number" min="1" max="${escapeHtml(model.totalPages)}" value="${escapeHtml(model.page)}" inputmode="numeric" />
+        <input id="members-page-input" type="number" min="1" max="${escapeHtml(model.totalPages)}" value="${escapeHtml(model.page)}" inputmode="numeric" ${disabled} />
       </label>
       <span>of ${escapeHtml(model.totalPages)}</span>
-      <button class="secondary-btn compact-btn" type="button" data-action="members-page-go">Go</button>
-      <button class="secondary-btn compact-btn" type="button" data-action="members-page-next" data-page="${escapeHtml(model.page + 1)}" ${model.page >= model.totalPages ? 'disabled' : ''}>Next</button>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-go" ${disabled}>Go</button>
+      <button class="secondary-btn compact-btn" type="button" data-action="members-page-next" data-page="${escapeHtml(model.page + 1)}" ${model.page >= model.totalPages || model.loading ? 'disabled' : ''}>Next</button>
     </div>
   `;
 }

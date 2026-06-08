@@ -375,6 +375,16 @@
     flex-direction: column;
   }
 
+  .members-page-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .members-search-wrap {
+    min-width: 0;
+    width: 100%;
+  }
+
   .members-table-head {
     display: none;
   }

@@ -61,6 +61,7 @@ function routeDeps(overrides = {}) {
     publicBootstrapState: (_req, options) => ({ bootstrap: { options }, router: state.router }),
     publicDirectoryState: (_req, options) => ({ bootstrap: { mode: 'directory', options }, agents: [] }),
     publicDirectorySearchState: (_req, options) => ({ bootstrap: { mode: 'directory-search', options }, agents: [] }),
+    publicMembersDirectoryState: (_req, options) => ({ mode: 'members-directory', options, rows: [] }),
     publicState: () => ({ settings: state.settings, router: state.router }),
     readJson: async () => ({}),
     sendError: (res, statusCode, message) => {
@@ -149,6 +150,26 @@ test('directory search route forwards compact search options', async () => {
     query: 'alice',
     limit: '12',
     types: 'agents,humans',
+  });
+});
+
+test('members directory route forwards page and search options', async () => {
+  const deps = routeDeps();
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' }, on: () => {} },
+    res,
+    new URL('http://local/api/members/directory?page=3&pageSize=50&q=alice'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.mode, 'members-directory');
+  assert.deepEqual(res.data.options, {
+    page: '3',
+    pageSize: '50',
+    query: 'alice',
   });
 });
 

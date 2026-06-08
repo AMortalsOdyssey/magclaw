@@ -398,14 +398,13 @@ async function prepareDocumentClick(event) {
     }
     if (action === 'members-page-prev' || action === 'members-page-next') {
       memberDirectoryPage = Number.parseInt(target.dataset.page, 10) || 1;
-      render();
+      ensureMembersDirectoryPage({ renderAfter: true, force: true }).catch((error) => console.warn('Failed to load members directory:', error));
       return;
     }
     if (action === 'members-page-go') {
       const input = document.getElementById('members-page-input');
       memberDirectoryPage = Number.parseInt(input?.value, 10) || 1;
-      render();
-      document.getElementById('members-page-input')?.focus();
+      ensureMembersDirectoryPage({ renderAfter: true, force: true }).catch((error) => console.warn('Failed to load members directory:', error));
       return;
     }
     if (action === 'open-member-manage') {
