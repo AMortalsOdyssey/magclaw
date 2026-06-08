@@ -57,6 +57,7 @@ const initialRouteState = routeStateFromLocation(window.location.pathname || '')
 
 let appState = null;
 let workspaceHumansCache = null;
+let workspaceAgentsCache = null;
 const initialRouteSpace = initialRouteState.space || initialSpaceFromLocation(initialUiState.selectedSpaceType || 'channel', initialUiState.selectedSpaceId || 'chan_all');
 let selectedSpaceType = initialRouteSpace.type;
 let selectedSpaceId = initialRouteSpace.id;
@@ -889,6 +890,36 @@ function workspaceHumans() {
     return setWorkspaceHumansCache(humans);
   }
   return setWorkspaceHumansCache(stateHumans.filter((human) => human && human.status !== 'removed'));
+}
+
+function workspaceAgents() {
+  const stateAgents = appState?.agents || [];
+  const stateComputers = appState?.computers || [];
+  const workspaceId = appState?.cloud?.workspace?.id || appState?.connection?.workspaceId || '';
+  if (
+    workspaceAgentsCache
+    && workspaceAgentsCache.stateAgents === stateAgents
+    && workspaceAgentsCache.stateComputers === stateComputers
+    && workspaceAgentsCache.workspaceId === workspaceId
+    && workspaceAgentsCache.agentCount === stateAgents.length
+    && workspaceAgentsCache.computerCount === stateComputers.length
+  ) {
+    return workspaceAgentsCache.value;
+  }
+  const agents = stateAgents.filter((agent) => (
+    typeof agentIsActiveInWorkspace === 'function'
+      ? agentIsActiveInWorkspace(agent)
+      : !agent?.deletedAt && !agent?.archivedAt && !['deleted', 'disabled'].includes(String(agent?.status || '').toLowerCase())
+  ));
+  workspaceAgentsCache = {
+    stateAgents,
+    stateComputers,
+    workspaceId,
+    agentCount: stateAgents.length,
+    computerCount: stateComputers.length,
+    value: agents,
+  };
+  return agents;
 }
 
 function humanByIdAny(id) {

@@ -91,6 +91,9 @@ membership fanout visible in the budget. It currently enforces:
 - Browser member-directory rendering caches normalized workspace humans for a
   stable state snapshot, so repeated rail, channel, mention, and detail renders
   do not repeatedly sort and enrich the full cloud member list.
+- Browser channel, mention, and create-channel surfaces cache the active
+  workspace Agent directory for a stable state snapshot, so repeated renders do
+  not re-filter the full 1000-Agent list until Agent or Computer state changes.
 
 For a real local HTTP smoke, start the app and measure the selected workspace:
 

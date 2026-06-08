@@ -695,14 +695,16 @@ test('members directory separates roles from top-centered manage actions', async
   assert.match(styles, /\.member-reset-link-modal/);
 });
 
-test('workspace human directory caches cloud member normalization without losing roles', async () => {
+test('workspace people directories cache normalization without losing roles or active agents', async () => {
   const source = await readFile(new URL('../public/app/state-render-core.js', import.meta.url), 'utf8');
   const syncSource = await readFile(new URL('../public/app/sync-events-keyboard.js', import.meta.url), 'utf8');
   const directorySource = [
     'function byId(list, id) { return (list || []).find((item) => item?.id === id) || null; }',
     'let workspaceHumansCache = null;',
+    'let workspaceAgentsCache = null;',
     source.slice(source.indexOf('function serverOwnerUserId'), source.indexOf('function currentAccountHuman')),
     'globalThis.workspaceHumans = workspaceHumans;',
+    'globalThis.workspaceAgents = workspaceAgents;',
   ].join('\n');
   const members = Array.from({ length: 1000 }, (_item, index) => {
     const suffix = String(index).padStart(4, '0');
@@ -717,9 +719,21 @@ test('workspace human directory caches cloud member normalization without losing
       user: { email: `human${index}@example.test` },
     };
   });
+  const agents = Array.from({ length: 1000 }, (_item, index) => ({
+    id: `agt_${String(index).padStart(4, '0')}`,
+    name: `Agent ${index}`,
+    status: index === 999 ? 'deleted' : 'idle',
+  }));
+  let activeAgentChecks = 0;
   const context = {
+    agentIsActiveInWorkspace(agent) {
+      activeAgentChecks += 1;
+      return agent?.status !== 'deleted';
+    },
     appState: {
       cloud: { workspace: { id: 'local', ownerUserId: 'usr_0000' }, members },
+      agents,
+      computers: [],
       humans: members.map((member, index) => ({
         id: member.humanId,
         name: `Human ${index}`,
@@ -739,14 +753,27 @@ test('workspace human directory caches cloud member normalization without losing
   assert.equal(first.find((human) => human.id === 'hum_0001')?.role, 'admin');
   assert.equal(first.find((human) => human.id === 'hum_0002')?.role, 'member');
 
+  const firstAgents = context.workspaceAgents();
+  const checksAfterFirstAgents = activeAgentChecks;
+  const secondAgents = context.workspaceAgents();
+
+  assert.equal(firstAgents, secondAgents);
+  assert.equal(firstAgents.length, 999);
+  assert.equal(checksAfterFirstAgents, 1000);
+  assert.equal(activeAgentChecks, checksAfterFirstAgents);
+
   context.appState = {
     ...context.appState,
     cloud: { ...context.appState.cloud, members: [...members] },
+    agents: [...agents],
   };
   const third = context.workspaceHumans();
+  const thirdAgents = context.workspaceAgents();
 
   assert.notEqual(third, first);
+  assert.notEqual(thirdAgents, firstAgents);
   assert.match(syncSource, /workspaceHumansCache = null/);
+  assert.match(syncSource, /workspaceAgentsCache = null/);
 });
 
 test('members directory sorts active before pending by invite time and paginates at 50 rows', async () => {
@@ -1558,7 +1585,13 @@ test('channel members infer all-channel bootstrap members from active workspace 
   assert.deepEqual(members.humans.map((human) => human.id), ['hum_current']);
   assert.match(modalSource, /renderHumanAvatar\(member, 'dm-avatar member-avatar'\)/);
   assert.match(modalSource, /workspaceHumans\(\)\.filter/);
-  assert.match(await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8'), /return workspaceHumans\(\)/);
+  assert.match(source, /function channelWorkspaceAgents\(\)/);
+  assert.match(source, /agents: channelWorkspaceAgents\(\)/);
+  assert.match(modalSource, /workspaceAgents\(\)/);
+  const mentionSource = await readFile(new URL('../public/app/data-search-mentions.js', import.meta.url), 'utf8');
+  assert.match(mentionSource, /return workspaceHumans\(\)/);
+  assert.match(mentionSource, /function mentionWorkspaceAgents\(\)/);
+  assert.match(mentionSource, /\? workspaceAgents\(\)/);
 });
 
 test('threads render newest first with display names instead of raw ids', async () => {
@@ -2806,7 +2839,7 @@ test('message status dots render with agent status in message row keys only', as
 
 test('mention candidates hide deleted agents', async () => {
   const app = await readAppSource();
-  const mentionSource = app.slice(app.indexOf('function getMentionCandidates'), app.indexOf('async function getProjectMentionCandidates'));
+  const mentionSource = app.slice(app.indexOf('function mentionWorkspaceAgents'), app.indexOf('async function getProjectMentionCandidates'));
 
   assert.match(mentionSource, /agentIsActiveInWorkspace\(agent\)/);
   assert.match(mentionSource, /String\(agent\?\.status \|\| ''\)\.toLowerCase\(\) !== 'deleted'/);

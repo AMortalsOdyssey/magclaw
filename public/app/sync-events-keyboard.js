@@ -1397,6 +1397,7 @@ function applyStateUpdate(nextState) {
   rememberPinnedBottomBeforeStateChange();
   appState = nextState;
   workspaceHumansCache = null;
+  workspaceAgentsCache = null;
   applyPackageVersionSnapshot(readCachedPackageVersionSnapshot());
   if (typeof applyMagclawAccountLanguage === 'function') applyMagclawAccountLanguage(appState);
   startHumanPresenceHeartbeat();

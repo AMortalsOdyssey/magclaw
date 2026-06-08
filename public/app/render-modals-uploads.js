@@ -232,7 +232,9 @@ function agentCanJoinNewChannel(agent) {
 }
 
 function channelAssignableAgents() {
-  return (appState.agents || []).filter(agentIsActiveInWorkspace);
+  return typeof workspaceAgents === 'function'
+    ? workspaceAgents()
+    : (appState.agents || []).filter(agentIsActiveInWorkspace);
 }
 
 function renderChannelModal() {

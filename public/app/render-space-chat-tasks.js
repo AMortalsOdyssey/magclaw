@@ -15,6 +15,12 @@ function channelAgentIsActive(agent) {
   return !agent?.deletedAt && !agent?.archivedAt && agent?.status !== 'deleted' && agent?.status !== 'disabled';
 }
 
+function channelWorkspaceAgents() {
+  return typeof workspaceAgents === 'function'
+    ? workspaceAgents()
+    : (appState.agents || []).filter(channelAgentIsActive);
+}
+
 function getChannelMembers(channelId) {
   const channel = byId(appState?.channels, channelId);
   if (!channel) return { agents: [], humans: [] };
@@ -27,13 +33,13 @@ function getChannelMembers(channelId) {
     : (channel.id === 'chan_all' || String(channel.name || '').toLowerCase() === 'all');
   if (allChannel) {
     return {
-      agents: (appState.agents || []).filter(channelAgentIsActive),
+      agents: channelWorkspaceAgents(),
       humans: humansInWorkspace,
     };
   }
-  const memberIds = [...new Set([...(channel.memberIds || []), ...(channel.humanIds || [])])];
-  const humanIds = new Set(memberIds.filter((id) => String(id).startsWith('hum_')));
-  const agents = (appState.agents || []).filter((a) => memberIds.includes(a.id) && channelAgentIsActive(a));
+  const memberIds = new Set([...(channel.memberIds || []), ...(channel.humanIds || [])].map(String).filter(Boolean));
+  const humanIds = new Set([...memberIds].filter((id) => String(id).startsWith('hum_')));
+  const agents = channelWorkspaceAgents().filter((agent) => memberIds.has(String(agent?.id || '')));
   const humans = [];
   const seenHumans = new Set();
   for (const id of humanIds) {
