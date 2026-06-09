@@ -292,10 +292,30 @@ export function createSystemServices(deps) {
     return record?.updatedAt || record?.createdAt || '';
   }
 
+  function isDigitAt(text, index) {
+    const code = text.charCodeAt(index);
+    return code >= 48 && code <= 57;
+  }
+
   function isoTimestampRank(value) {
     if (typeof value !== 'string') return '';
-    const text = value.trim();
-    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(text) ? text : '';
+    const firstCode = value.charCodeAt(0);
+    const lastCode = value.charCodeAt(value.length - 1);
+    const text = firstCode <= 32 || lastCode <= 32 ? value.trim() : value;
+    if (text.length < 19) return '';
+    return (
+      isDigitAt(text, 0) && isDigitAt(text, 1) && isDigitAt(text, 2) && isDigitAt(text, 3)
+      && text.charCodeAt(4) === 45
+      && isDigitAt(text, 5) && isDigitAt(text, 6)
+      && text.charCodeAt(7) === 45
+      && isDigitAt(text, 8) && isDigitAt(text, 9)
+      && text.charCodeAt(10) === 84
+      && isDigitAt(text, 11) && isDigitAt(text, 12)
+      && text.charCodeAt(13) === 58
+      && isDigitAt(text, 14) && isDigitAt(text, 15)
+      && text.charCodeAt(16) === 58
+      && isDigitAt(text, 17) && isDigitAt(text, 18)
+    ) ? text : '';
   }
 
   function recordTime(record, value = recordTimestampValue(record)) {
@@ -327,7 +347,11 @@ export function createSystemServices(deps) {
   function compareNewestRank(a, b) {
     const timeDiff = compareRecordTime(a, b);
     if (timeDiff) return timeDiff;
-    return String(a?.id || '').localeCompare(String(b?.id || ''));
+    const leftId = String(a?.id || '');
+    const rightId = String(b?.id || '');
+    if (leftId > rightId) return 1;
+    if (leftId < rightId) return -1;
+    return 0;
   }
 
   function compareNewestRecords(a, b) {
@@ -864,20 +888,6 @@ export function createSystemServices(deps) {
     const spaceType = String(bootstrap?.spaceType || options.spaceType || '');
     const spaceId = String(bootstrap?.spaceId || options.spaceId || '');
     return spaceType && spaceId ? { spaceType, spaceId } : null;
-  }
-
-  function compactBootstrapConversationDefaults(record = {}, defaults = null) {
-    if (!defaults || !record || typeof record !== 'object') return record;
-    if (
-      String(record.spaceType || '') !== defaults.spaceType
-      || String(record.spaceId || '') !== defaults.spaceId
-    ) {
-      return record;
-    }
-    const next = { ...record };
-    delete next.spaceType;
-    delete next.spaceId;
-    return next;
   }
 
   function publicTaskMetadata(metadata = null) {
@@ -1649,14 +1659,29 @@ export function createSystemServices(deps) {
     return values.slice(0, lastIndex + 1);
   }
 
-  function bootstrapTupleRecord(record = {}, fields = [], fieldSet = null) {
+  function tupleFieldValue(record = {}, field = '', defaults = null) {
+    const value = record[field];
+    if (
+      defaults
+      && (field === 'spaceType' || field === 'spaceId')
+      && String(value || '') === String(defaults[field] || '')
+    ) {
+      return null;
+    }
+    return usefulMetadataValue(value) ? value : null;
+  }
+
+  function bootstrapTupleRecord(record = {}, fields = [], fieldSet = null, defaults = null) {
     if (!record || typeof record !== 'object') return record;
     const knownFields = fieldSet || new Set(fields);
     const extra = {};
     for (const [key, value] of Object.entries(record)) {
       if (!knownFields.has(key) && usefulMetadataValue(value)) extra[key] = value;
     }
-    const values = fields.map((field) => (usefulMetadataValue(record[field]) ? record[field] : null));
+    const values = new Array(fields.length);
+    for (let index = 0; index < fields.length; index += 1) {
+      values[index] = tupleFieldValue(record, fields[index], defaults);
+    }
     values.push(Object.keys(extra).length ? extra : null);
     return compactTuple(values);
   }
@@ -1710,27 +1735,30 @@ export function createSystemServices(deps) {
     if (Array.isArray(snapshot.messages)) {
       next.messages = snapshot.messages.map((message) => (
         bootstrapTupleRecord(
-          compactBootstrapConversationDefaults(message, conversationDefaults),
+          message,
           BOOTSTRAP_MESSAGE_TUPLE_FIELDS,
           BOOTSTRAP_MESSAGE_TUPLE_FIELD_SET,
+          conversationDefaults,
         )
       ));
     }
     if (Array.isArray(snapshot.replies)) {
       next.replies = snapshot.replies.map((reply) => (
         bootstrapTupleRecord(
-          compactBootstrapConversationDefaults(reply, conversationDefaults),
+          reply,
           BOOTSTRAP_REPLY_TUPLE_FIELDS,
           BOOTSTRAP_REPLY_TUPLE_FIELD_SET,
+          conversationDefaults,
         )
       ));
     }
     if (Array.isArray(snapshot.tasks)) {
       next.tasks = snapshot.tasks.map((task) => (
         bootstrapTupleRecord(
-          compactBootstrapConversationDefaults(task, conversationDefaults),
+          task,
           BOOTSTRAP_TASK_TUPLE_FIELDS,
           BOOTSTRAP_TASK_TUPLE_FIELD_SET,
+          conversationDefaults,
         )
       ));
     }
