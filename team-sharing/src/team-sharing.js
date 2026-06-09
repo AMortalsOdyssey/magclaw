@@ -843,20 +843,22 @@ async function readTeamSharingHookTemplateConfig(runtime, hookOptions = {}, env 
     ...hookOptions,
     runtime: normalized,
     hookEventName,
-    packageVersion: vars.TEAM_SHARING_VERSION,
-    sourceCommit: vars.TEAM_SHARING_SOURCE_COMMIT,
   })));
   return JSON.parse(renderTeamSharingTemplate(withCommands, vars));
 }
 
-function defaultTeamSharingHookCommand(flags = {}, env = process.env) {
-  const explicit = String(
+function explicitTeamSharingHookCommand(flags = {}, env = process.env) {
+  return String(
     flags.teamSharingCommand
       || flags.commandPath
       || env.MAGCLAW_TEAM_SHARING_COMMAND
       || env.MAGCLAW_TEAM_SHARING_HOOK_COMMAND
       || '',
   ).trim();
+}
+
+function defaultTeamSharingHookCommand(flags = {}, env = process.env) {
+  const explicit = explicitTeamSharingHookCommand(flags, env);
   if (explicit) return explicit;
   return TEAM_SHARING_SOURCE_COMMAND;
 }
@@ -951,16 +953,118 @@ export async function installTeamSharingShim(flags = {}, env = process.env) {
     files.push(await writeTeamSharingShimFile(path.join(binDir, shim.name), shim.content));
   }
   const changed = files.some((file) => file.changed);
+  const sharedRuntime = await ensureTeamSharingSharedRuntime(flags, env);
   return {
-    ok: true,
+    ok: Boolean(sharedRuntime.ok),
     command: 'team-sharing',
     installed: changed,
     updated: changed,
     binDir,
     path: path.join(binDir, String(flags.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase() === 'win32' ? 'team-sharing.cmd' : 'team-sharing'),
     files: files.map((file) => file.file),
+    sharedRuntime,
     reason: changed ? 'installed_or_updated' : 'already_current',
   };
+}
+
+async function activeTeamSharingRuntimeStatus(paths, expectedVersion = '', env = process.env, expectedSourceCommit = '') {
+  const state = await readJsonFile(paths.updateActive, {});
+  const active = state?.active && typeof state.active === 'object' ? state.active : state;
+  const version = cleanTemplateVersion(active?.version || '');
+  const bin = String(active?.bin || '').trim();
+  if (!version || !bin) return { ok: false, reason: 'missing_active_package' };
+  if (!existsSync(bin)) return { ok: false, reason: 'active_bin_missing', active };
+  const expected = cleanTemplateVersion(expectedVersion || '');
+  if (expected && version !== expected && !semverGreater(version, expected)) {
+    return { ok: false, reason: 'active_version_older', active };
+  }
+  const verify = spawnSync(process.execPath, [bin, '-V'], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  if (verify.status !== 0) {
+    return { ok: false, reason: 'active_verify_failed', active, error: String(verify.stderr || verify.stdout || '').trim() };
+  }
+  const stdoutVersion = cleanTemplateVersion(String(verify.stdout || '').trim());
+  if (stdoutVersion && stdoutVersion !== version) {
+    return { ok: false, reason: 'active_version_mismatch', active, stdoutVersion };
+  }
+  const expectedCommit = cleanTemplateCommit(expectedSourceCommit || '');
+  if (expectedCommit !== 'unknown' && version === expected) {
+    const packageJson = active?.packageRoot
+      ? await readJsonFile(path.join(active.packageRoot, 'package.json'), {})
+      : {};
+    const activeCommit = cleanTemplateCommit(active?.sourceCommit || packageJson.gitHead || '');
+    if (activeCommit !== expectedCommit) {
+      return { ok: false, reason: 'active_source_commit_mismatch', active, activeCommit, expectedCommit };
+    }
+  }
+  return {
+    ok: true,
+    reason: version === expected ? 'already_active' : 'newer_active_available',
+    active,
+  };
+}
+
+async function currentTeamSharingPackageVersion(env = process.env) {
+  const packageJson = await readTeamSharingPackageJson();
+  return cleanTemplateVersion(env.MAGCLAW_TEAM_SHARING_VERSION || packageJson.version || '');
+}
+
+function currentPackageAlreadyUnderVersions(paths) {
+  const versionsRoot = path.resolve(paths.versionsDir);
+  const packageRoot = path.resolve(TEAM_SHARING_PACKAGE_ROOT);
+  return packageRoot === versionsRoot || packageRoot.startsWith(`${versionsRoot}${path.sep}`);
+}
+
+async function activateCurrentTeamSharingPackage(flags = {}, env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const version = await currentTeamSharingPackageVersion(env);
+  const sourceCommit = currentTeamSharingSourceCommit(env);
+  const existing = await activeTeamSharingRuntimeStatus(paths, version, env, sourceCommit);
+  if (existing.ok) return { ok: true, activated: false, reason: existing.reason, active: existing.active, activePath: paths.updateActive };
+  const stage = currentPackageAlreadyUnderVersions(paths)
+    ? {
+      version,
+      versionDir: path.dirname(TEAM_SHARING_PACKAGE_ROOT),
+      packageRoot: TEAM_SHARING_PACKAGE_ROOT,
+      bin: TEAM_SHARING_SOURCE_COMMAND,
+      source: 'currentPackage',
+      sourceCommit,
+    }
+    : await stageTeamSharingPackage({
+      ...flags,
+      latestVersion: version,
+      sourceDir: TEAM_SHARING_PACKAGE_ROOT,
+      sourceCommit,
+    }, env);
+  const verify = verifyStagedTeamSharingPackage(stage, env);
+  const state = await activateTeamSharingPackage(stage, verify, {
+    releaseNotesMarkdown: flags.releaseNotesMarkdown || '',
+    sourceCommit,
+  }, env);
+  return {
+    ok: true,
+    activated: true,
+    reason: existing.reason || 'bootstrapped_current_package',
+    active: state.active,
+    activePath: paths.updateActive,
+  };
+}
+
+async function ensureTeamSharingSharedRuntime(flags = {}, env = process.env) {
+  if (env.MAGCLAW_TEAM_SHARING_BOOTSTRAP_ACTIVE === '0' || flags.bootstrapActive === false || flags.noBootstrapActive) {
+    return { ok: true, skipped: true, reason: 'disabled' };
+  }
+  try {
+    return await activateCurrentTeamSharingPackage(flags, env);
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'bootstrap_active_failed',
+      error: error?.message || String(error),
+    };
+  }
 }
 
 export function teamSharingPaths({ profile = DEFAULT_PROFILE, cwd = process.cwd(), env = process.env } = {}) {
@@ -2140,10 +2244,13 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     hookEvent,
   });
   if (syncPackage.body) {
+    const templateVars = await teamSharingTemplateVars(env);
     const metadata = Object.fromEntries(Object.entries({
       integration: String(flags.integration || '').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, ''),
-      packageVersion: flags.packageVersion ? cleanTemplateVersion(flags.packageVersion) : '',
-      sourceCommit: flags.sourceCommit ? cleanTemplateCommit(flags.sourceCommit) : '',
+      packageVersion: flags.packageVersion ? cleanTemplateVersion(flags.packageVersion) : templateVars.TEAM_SHARING_VERSION,
+      sourceCommit: flags.sourceCommit ? cleanTemplateCommit(flags.sourceCommit) : (
+        templateVars.TEAM_SHARING_SOURCE_COMMIT === 'unknown' ? '' : templateVars.TEAM_SHARING_SOURCE_COMMIT
+      ),
     }).filter(([, value]) => Boolean(value)));
     if (Object.keys(metadata).length) {
       syncPackage.body.metadata = {
@@ -3190,9 +3297,11 @@ export async function installTeamSharingHooks(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
   const cwd = path.resolve(installTarget.projectDir || flags.cwd || process.cwd());
   const targets = selectedTargets(flags, env);
-  const hookCommand = defaultTeamSharingHookCommand(flags, env);
+  const explicitHookCommand = explicitTeamSharingHookCommand(flags, env);
+  const shim = explicitHookCommand ? null : await installTeamSharingShim(flags, env);
+  const hookCommand = explicitHookCommand || shim?.path || defaultTeamSharingHookCommand(flags, env);
   const ignored = installTarget.scope === 'project' ? await ensureProjectInstallIgnored(cwd, targets) : [];
-  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored };
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored, ...(shim ? { shim } : {}) };
   for (const runtime of targets) {
     const key = runtime === 'claude_code' ? 'claude' : 'codex';
     const templateConfig = await readTeamSharingHookTemplateConfig(runtime, {
@@ -3567,9 +3676,18 @@ async function stageTeamSharingPackage(flags = {}, env = process.env) {
   if (flags.sourceDir) {
     const packageRoot = path.join(versionDir, 'package');
     await cp(path.resolve(flags.sourceDir), packageRoot, { recursive: true, force: true });
+    const sourceCommit = cleanTemplateCommit(flags.sourceCommit || currentTeamSharingSourceCommit(env));
+    if (sourceCommit !== 'unknown') {
+      const packageJsonPath = path.join(packageRoot, 'package.json');
+      const packageJson = await readJsonFile(packageJsonPath, {});
+      await writeJsonFile(packageJsonPath, {
+        ...packageJson,
+        gitHead: sourceCommit,
+      });
+    }
     const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
     await chmod(bin, 0o755).catch(() => {});
-    return { version, versionDir, packageRoot, bin, source: 'sourceDir' };
+    return { version, versionDir, packageRoot, bin, source: 'sourceDir', sourceCommit };
   }
   const npmPath = String(flags.npmPath || env.MAGCLAW_TEAM_SHARING_NPM_PATH || 'npm').trim() || 'npm';
   const install = spawnSync(npmPath, [
@@ -3637,6 +3755,7 @@ async function activateTeamSharingPackage(stage, verify, metadata = {}, env = pr
     packageRoot: stage.packageRoot,
     versionDir: stage.versionDir,
     source: stage.source,
+    ...(metadata.sourceCommit || stage.sourceCommit ? { sourceCommit: metadata.sourceCommit || stage.sourceCommit } : {}),
     activatedAt: now(),
     verifiedAt: verify.checkedAt || now(),
     lastHealthyAt: verify.checkedAt || now(),
@@ -3651,6 +3770,7 @@ async function activateTeamSharingPackage(stage, verify, metadata = {}, env = pr
       ok: true,
       version: stage.version,
       source: stage.source,
+      ...(metadata.sourceCommit || stage.sourceCommit ? { sourceCommit: metadata.sourceCommit || stage.sourceCommit } : {}),
       releaseNotesMarkdown: metadata.releaseNotesMarkdown || '',
       updatedAt: now(),
     },

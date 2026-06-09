@@ -1201,6 +1201,7 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
     const first = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, { ...env, MAGCLAW_SESSION_TITLE: '验收会话总结共享' });
     const second = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex' }, env);
     const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
+    const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
 
     assert.equal(first.ok, true);
     assert.equal(first.appendedEventCount, 2);
@@ -1211,6 +1212,7 @@ test('team sharing cli sync uploads only new transcript events and saves cursor'
     assert.equal(calls[0].body.title, '验收会话总结共享');
     assert.equal(calls[0].body.fromOrdinal, 1);
     assert.equal(calls[0].body.toOrdinal, 2);
+    assert.equal(calls[0].body.metadata.packageVersion, packageJson.version);
     assert.equal(cursor.sessions.codex.sess_cli.lastOrdinal, 2);
     assert.equal(calls[0].init.headers.authorization, 'Bearer team-sharing-token-secret');
   } finally {
@@ -1688,25 +1690,45 @@ test('team sharing cli installs Codex and Claude hook configs without overwritin
   assert.ok(claude.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 });
 
-test('team sharing hook install defaults to the current package binary', async () => {
+test('team sharing hook install defaults to the shared active shim and bootstraps current package', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-source-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-source-home-'));
+  const binDir = path.join(home, 'bin');
   await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-source-fixture"}\n');
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'), PATH: '' };
   const codexHooks = path.join(home, '.codex', 'hooks.json');
-  const sourceCommand = path.resolve('team-sharing', 'bin', 'team-sharing.js');
 
   const result = await installTeamSharingHooks({
     cwd,
     target: 'codex',
     codexConfig: codexHooks,
+    binDir,
   }, env);
   const codex = JSON.parse(await readFile(codexHooks, 'utf8'));
   const command = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex')).command;
+  const paths = teamSharingPaths({ cwd, env });
+  const activeState = JSON.parse(await readFile(paths.updateActive, 'utf8'));
+  const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
+  const activePackageJson = JSON.parse(await readFile(path.join(activeState.active.packageRoot, 'package.json'), 'utf8'));
+  const gitHead = String(spawnSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+    cwd: path.resolve('team-sharing'),
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  }).stdout || '').trim();
 
   assert.equal(result.ok, true);
-  assert.match(command, new RegExp(`^${sourceCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sync`));
+  assert.equal(result.shim.ok, true);
+  assert.equal(result.shim.sharedRuntime.ok, true);
+  assert.equal(result.shim.sharedRuntime.activated, true);
+  assert.equal(activeState.active.version, packageJson.version);
+  if (gitHead) {
+    assert.equal(activeState.active.sourceCommit, gitHead);
+    assert.equal(activePackageJson.gitHead, gitHead);
+  }
+  assert.match(activeState.active.bin, /versions/);
+  assert.match(command, new RegExp(`^${path.join(binDir, 'team-sharing').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sync`));
   assert.doesNotMatch(command, /^team-sharing sync/);
+  assert.doesNotMatch(command, /--package-version|--source-commit/);
 
   const hooks = await statusTeamSharingHooks({ cwd, target: 'codex', codexConfig: codexHooks }, env);
   assert.equal(hooks.codex.commandChecks.every((check) => check.executable), true);
@@ -1819,8 +1841,8 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('${')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
-  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--package-version')));
-  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--source-commit')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('--package-version')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('--source-commit')));
   assert.ok(claudeConfig.hooks.SessionEnd[0].hooks.some((hook) => hook.command.includes('--runtime claude_code')));
 
   const removedHooks = await removeTeamSharingHooks({ cwd, target: 'codex' }, env);
