@@ -1734,60 +1734,70 @@ export function createSystemServices(deps) {
       if (human?.userId) humansById.set(String(human.userId), human);
       if (human?.email) humansById.set(String(human.email).toLowerCase(), human);
     }
-    const invitations = records(cloud?.invitations).filter((invitation) => (
-      !workspaceId
-      || !invitation?.workspaceId
-      || String(invitation.workspaceId) === workspaceId
-    ));
+    const invitations = [];
+    for (const invitation of records(cloud?.invitations)) {
+      if (
+        !workspaceId
+        || !invitation?.workspaceId
+        || String(invitation.workspaceId) === workspaceId
+      ) {
+        invitations.push(invitation);
+      }
+    }
     const acceptedInvitationIndex = acceptedInvitationDirectoryIndex(invitations);
-    const activeMembers = records(cloud?.members)
-      .filter((member) => (
-        (!workspaceId || !member?.workspaceId || String(member.workspaceId) === workspaceId)
-        && String(member?.status || 'active') === 'active'
-      ));
-    const activeEmails = new Set(activeMembers.map((member) => memberDirectoryEmail(member, humansById).toLowerCase()).filter(Boolean));
+    const activeEmails = new Set();
     const nowMs = Date.now();
-    const rows = [
-      ...activeMembers.map((member) => {
-        const invitation = acceptedInvitationForDirectoryMember(member, acceptedInvitationIndex, humansById);
-        const human = memberDirectoryHumanRecord(member, humansById);
-        const sortAt = invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '';
-        return {
-          type: 'member',
-          member,
-          invitation,
-          sortAt,
-          sortParts: {
-            group: 0,
-            invitedAt: sortAt,
-            time: memberDirectorySortTimestamp(sortAt),
-            id: invitation?.id || member.id || member.userId || memberDirectoryEmail(member, humansById),
-          },
-        };
-      }),
-      ...invitations
-        .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
-        .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > nowMs)
-        .filter((invitation) => !activeEmails.has(String(invitation.email || '').trim().toLowerCase()))
-        .map((invitation) => {
-          const sortAt = invitation.createdAt || '';
-          return {
-            type: 'invitation',
-            invitation,
-            sortAt,
-            sortParts: {
-              group: 1,
-              invitedAt: sortAt,
-              time: memberDirectorySortTimestamp(sortAt),
-              id: invitation.id || invitation.email || '',
-            },
-          };
-        }),
-    ];
+    const rows = [];
+    for (const member of records(cloud?.members)) {
+      if (
+        (workspaceId && member?.workspaceId && String(member.workspaceId) !== workspaceId)
+        || String(member?.status || 'active') !== 'active'
+      ) {
+        continue;
+      }
+      const memberEmail = memberDirectoryEmail(member, humansById).toLowerCase();
+      if (memberEmail) activeEmails.add(memberEmail);
+      const invitation = acceptedInvitationForDirectoryMember(member, acceptedInvitationIndex, humansById);
+      const human = memberDirectoryHumanRecord(member, humansById);
+      const sortAt = invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '';
+      rows.push({
+        type: 'member',
+        member,
+        invitation,
+        sortAt,
+        sortParts: {
+          group: 0,
+          invitedAt: sortAt,
+          time: memberDirectorySortTimestamp(sortAt),
+          id: invitation?.id || member.id || member.userId || memberDirectoryEmail(member, humansById),
+        },
+      });
+    }
+    for (const invitation of invitations) {
+      if (invitation.acceptedAt || invitation.revokedAt) continue;
+      if (invitation.expiresAt && Date.parse(invitation.expiresAt) <= nowMs) continue;
+      if (activeEmails.has(String(invitation.email || '').trim().toLowerCase())) continue;
+      const sortAt = invitation.createdAt || '';
+      rows.push({
+        type: 'invitation',
+        invitation,
+        sortAt,
+        sortParts: {
+          group: 1,
+          invitedAt: sortAt,
+          time: memberDirectorySortTimestamp(sortAt),
+          id: invitation.id || invitation.email || '',
+        },
+      });
+    }
     const search = query ? directorySearchContext(query) : null;
-    const filteredRows = search
-      ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById, search), search))
-      : rows;
+    let filteredRows = rows;
+    if (search) {
+      filteredRows = [];
+      for (const row of rows) {
+        if (directorySearchMatches(memberDirectoryRowSearchText(row, humansById, search), search)) filteredRows.push(row);
+      }
+    }
     return {
       rows: membersDirectoryRowsAlreadySorted(filteredRows, humansById)
         ? filteredRows
