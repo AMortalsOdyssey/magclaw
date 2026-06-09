@@ -183,6 +183,22 @@ function decodeTupleRecords(entries = [], fields = []) {
   return (entries || []).map((entry) => tupleRecordToObject(entry, fields));
 }
 
+function applyConversationDefaults(record = {}, defaults = {}) {
+  if (!record || typeof record !== 'object') return record;
+  let next = record;
+  if (!Object.hasOwn(record, 'spaceType') && defaults?.spaceType) {
+    next = { ...next, spaceType: defaults.spaceType };
+  }
+  if (!Object.hasOwn(record, 'spaceId') && defaults?.spaceId) {
+    next = { ...next, spaceId: defaults.spaceId };
+  }
+  return next;
+}
+
+function decodeConversationTupleRecords(entries = [], fields = [], defaults = {}) {
+  return decodeTupleRecords(entries, fields).map((record) => applyConversationDefaults(record, defaults));
+}
+
 function directoryPagePath(cursor = '') {
   const params = new URLSearchParams();
   params.set('directoryFormat', BOOTSTRAP_DIRECTORY_FORMAT);
@@ -576,8 +592,9 @@ function measureReadByHeavyBootstrap() {
     headers: {},
   });
   const body = JSON.stringify(snapshot);
-  const decodedMessages = decodeTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
-  const decodedReplies = decodeTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS);
+  const conversationDefaults = snapshot.bootstrap?.conversationDefaults || {};
+  const decodedMessages = decodeConversationTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS, conversationDefaults);
+  const decodedReplies = decodeConversationTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS, conversationDefaults);
   const conversationRecords = [...decodedMessages, ...decodedReplies];
   return {
     ms: Math.round(performance.now() - started),
@@ -1590,9 +1607,10 @@ async function main() {
   const decodedAgents = decodeTupleRecords(snapshot.agents, BOOTSTRAP_AGENT_TUPLE_FIELDS);
   const decodedHumans = decodeTupleRecords(snapshot.humans, BOOTSTRAP_HUMAN_TUPLE_FIELDS);
   const decodedCloudMembers = decodeTupleRecords(snapshot.cloud?.members || [], BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
-  const decodedMessages = decodeTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
-  const decodedReplies = decodeTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS);
-  const decodedTasks = decodeTupleRecords(snapshot.tasks, BOOTSTRAP_TASK_TUPLE_FIELDS);
+  const conversationDefaults = snapshot.bootstrap?.conversationDefaults || {};
+  const decodedMessages = decodeConversationTupleRecords(snapshot.messages, BOOTSTRAP_MESSAGE_TUPLE_FIELDS, conversationDefaults);
+  const decodedReplies = decodeConversationTupleRecords(snapshot.replies, BOOTSTRAP_REPLY_TUPLE_FIELDS, conversationDefaults);
+  const decodedTasks = decodeConversationTupleRecords(snapshot.tasks, BOOTSTRAP_TASK_TUPLE_FIELDS, conversationDefaults);
   const selectedMessagePageStart = state.messages.length - 80;
   const syntheticMessageIndex = (message) => {
     const match = String(message?.id || '').match(/^msg_(\d+)$/);
@@ -1608,6 +1626,7 @@ async function main() {
     bytes: Buffer.byteLength(body, 'utf8'),
     directoryFormat: snapshot.bootstrap?.directoryFormat || '',
     conversationFormat: snapshot.bootstrap?.conversationFormat || '',
+    conversationDefaults,
     directoryScope: snapshot.bootstrap?.directory?.scope || '',
     directory: snapshot.bootstrap?.directory || null,
     hasBootstrapDirectoryTuples: (snapshot.agents || []).some(Array.isArray)
@@ -1694,6 +1713,7 @@ async function main() {
   assertBudget(bootstrapReadByHeavy.readMarkerMaxSize <= 1, `readBy-heavy bootstrap emitted read marker arrays of size ${bootstrapReadByHeavy.readMarkerMaxSize}`);
   assertBudget(bootstrap.directoryFormat === BOOTSTRAP_DIRECTORY_FORMAT, `bootstrap directory format expected ${BOOTSTRAP_DIRECTORY_FORMAT} but got ${bootstrap.directoryFormat || '[none]'}`);
   assertBudget(bootstrap.conversationFormat === BOOTSTRAP_CONVERSATION_FORMAT, `bootstrap conversation format expected ${BOOTSTRAP_CONVERSATION_FORMAT} but got ${bootstrap.conversationFormat || '[none]'}`);
+  assertBudget(bootstrap.conversationDefaults?.spaceType === 'channel' && bootstrap.conversationDefaults?.spaceId === 'chan_all', 'bootstrap did not publish conversation tuple defaults');
   assertBudget(bootstrap.directoryScope === BOOTSTRAP_DIRECTORY_SCOPE, `bootstrap directory scope expected ${BOOTSTRAP_DIRECTORY_SCOPE} but got ${bootstrap.directoryScope || '[none]'}`);
   assertBudget(bootstrap.hasBootstrapDirectoryTuples, 'bootstrap did not compact member directories into tuple rows');
   assertBudget(bootstrap.hasBootstrapConversationTuples, 'bootstrap did not compact conversation records into tuple rows');

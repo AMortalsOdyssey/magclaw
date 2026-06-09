@@ -917,6 +917,18 @@ test('bootstrap state can compact conversation records into tuple rows', () => {
   const createdAt = '2026-05-18T00:10:00.000Z';
   const services = makeServices((state) => {
     state.messages[0].replyCount = 1;
+    state.messages.push({
+      id: 'msg_without_replies',
+      workspaceId: 'local',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      authorType: 'human',
+      authorId: 'hum_1',
+      body: 'no replies',
+      replyCount: 0,
+      createdAt,
+      updatedAt: createdAt,
+    });
     state.replies.push({
       id: 'rep_channel',
       workspaceId: 'local',
@@ -957,20 +969,56 @@ test('bootstrap state can compact conversation records into tuple rows', () => {
     });
     const extra = entry[fields.length];
     if (extra && typeof extra === 'object' && !Array.isArray(extra)) Object.assign(record, extra);
+    const defaults = compact.bootstrap.conversationDefaults || {};
+    if (!Object.hasOwn(record, 'spaceType') && defaults.spaceType) record.spaceType = defaults.spaceType;
+    if (!Object.hasOwn(record, 'spaceId') && defaults.spaceId) record.spaceId = defaults.spaceId;
     return record;
   };
 
   assert.equal(Array.isArray(plain.messages[0]), false);
+  assert.equal(plain.messages.find((message) => message.id === 'msg_channel')?.spaceType, 'channel');
+  assert.equal(plain.messages.find((message) => message.id === 'msg_channel')?.spaceId, 'chan_all');
   assert.equal(compact.bootstrap.conversationFormat, 'tuple-v1');
+  assert.deepEqual(compact.bootstrap.conversationDefaults, { spaceType: 'channel', spaceId: 'chan_all' });
   assert.equal(Array.isArray(compact.messages[0]), true);
   assert.equal(Array.isArray(compact.replies[0]), true);
   assert.equal(Array.isArray(compact.tasks[0]), true);
-  assert.equal(decode(compact.messages[0], compact.bootstrap.conversationFields.messages).body, 'channel hello');
-  assert.equal(decode(compact.messages[0], compact.bootstrap.conversationFields.messages).replyCount, 1);
-  assert.equal(decode(compact.replies[0], compact.bootstrap.conversationFields.replies).parentMessageId, 'msg_channel');
-  assert.equal(decode(compact.replies[0], compact.bootstrap.conversationFields.replies).body, 'reply body');
-  assert.equal(decode(compact.tasks.find((task) => task[0] === 'task_channel'), compact.bootstrap.conversationFields.tasks).title, 'Channel task');
-  assert.equal(decode(compact.tasks.find((task) => task[0] === 'task_channel'), compact.bootstrap.conversationFields.tasks).status, 'todo');
+  const channelMessageEntry = compact.messages.find((message) => message[0] === 'msg_channel');
+  assert.equal(channelMessageEntry[1], null);
+  assert.equal(channelMessageEntry[2], null);
+  const channelMessage = decode(channelMessageEntry, compact.bootstrap.conversationFields.messages);
+  assert.equal(channelMessage.body, 'channel hello');
+  assert.equal(channelMessage.spaceType, 'channel');
+  assert.equal(channelMessage.spaceId, 'chan_all');
+  assert.equal(channelMessage.replyCount, 1);
+  const noReplies = decode(
+    compact.messages.find((message) => message[0] === 'msg_without_replies'),
+    compact.bootstrap.conversationFields.messages,
+  );
+  assert.equal(noReplies.replyCount, undefined);
+  assert.equal(Number(noReplies.replyCount || 0), 0);
+  const replyEntry = compact.replies.find((reply) => reply[0] === 'rep_channel');
+  assert.equal(replyEntry[2], null);
+  assert.equal(replyEntry[3], null);
+  const channelReply = decode(replyEntry, compact.bootstrap.conversationFields.replies);
+  assert.equal(channelReply.parentMessageId, 'msg_channel');
+  assert.equal(channelReply.body, 'reply body');
+  assert.equal(channelReply.spaceType, 'channel');
+  assert.equal(channelReply.spaceId, 'chan_all');
+  const channelTaskEntry = compact.tasks.find((task) => task[0] === 'task_channel');
+  assert.equal(channelTaskEntry[1], null);
+  assert.equal(channelTaskEntry[2], null);
+  const channelTask = decode(channelTaskEntry, compact.bootstrap.conversationFields.tasks);
+  assert.equal(channelTask.title, 'Channel task');
+  assert.equal(channelTask.status, 'todo');
+  assert.equal(channelTask.spaceType, 'channel');
+  assert.equal(channelTask.spaceId, 'chan_all');
+  const offSpaceTask = decode(
+    compact.tasks.find((task) => task[0] === 'task_member_done'),
+    compact.bootstrap.conversationFields.tasks,
+  );
+  assert.equal(offSpaceTask.spaceType, 'channel');
+  assert.equal(offSpaceTask.spaceId, 'chan_member');
 });
 
 test('bootstrap state truncates only background conversation preview bodies', () => {

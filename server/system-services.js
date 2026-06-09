@@ -846,6 +846,9 @@ export function createSystemServices(deps) {
       const humanId = String(options.currentHumanId || '');
       next.readBy = readByIncludesHuman(next.readBy, humanId) ? [humanId] : [];
     }
+    if (Object.hasOwn(next, 'replyCount') && Number(next.replyCount || 0) === 0) {
+      delete next.replyCount;
+    }
     if (
       options.previewOnly
       && typeof next.body === 'string'
@@ -854,6 +857,26 @@ export function createSystemServices(deps) {
       next.body = next.body.slice(0, BOOTSTRAP_CONVERSATION_PREVIEW_CHARS);
       next.bodyTruncated = true;
     }
+    return next;
+  }
+
+  function bootstrapConversationDefaults(bootstrap = {}, options = {}) {
+    const spaceType = String(bootstrap?.spaceType || options.spaceType || '');
+    const spaceId = String(bootstrap?.spaceId || options.spaceId || '');
+    return spaceType && spaceId ? { spaceType, spaceId } : null;
+  }
+
+  function compactBootstrapConversationDefaults(record = {}, defaults = null) {
+    if (!defaults || !record || typeof record !== 'object') return record;
+    if (
+      String(record.spaceType || '') !== defaults.spaceType
+      || String(record.spaceId || '') !== defaults.spaceId
+    ) {
+      return record;
+    }
+    const next = { ...record };
+    delete next.spaceType;
+    delete next.spaceId;
     return next;
   }
 
@@ -1670,11 +1693,13 @@ export function createSystemServices(deps) {
 
   function encodeBootstrapConversationRecords(snapshot = {}, options = {}) {
     if (options.conversationFormat !== BOOTSTRAP_CONVERSATION_FORMAT_TUPLE) return snapshot;
+    const conversationDefaults = bootstrapConversationDefaults(snapshot.bootstrap, options);
     const next = {
       ...snapshot,
       bootstrap: {
         ...(snapshot.bootstrap || {}),
         conversationFormat: BOOTSTRAP_CONVERSATION_FORMAT_TUPLE,
+        ...(conversationDefaults ? { conversationDefaults } : {}),
         conversationFields: {
           messages: BOOTSTRAP_MESSAGE_TUPLE_FIELDS,
           replies: BOOTSTRAP_REPLY_TUPLE_FIELDS,
@@ -1684,17 +1709,29 @@ export function createSystemServices(deps) {
     };
     if (Array.isArray(snapshot.messages)) {
       next.messages = snapshot.messages.map((message) => (
-        bootstrapTupleRecord(message, BOOTSTRAP_MESSAGE_TUPLE_FIELDS, BOOTSTRAP_MESSAGE_TUPLE_FIELD_SET)
+        bootstrapTupleRecord(
+          compactBootstrapConversationDefaults(message, conversationDefaults),
+          BOOTSTRAP_MESSAGE_TUPLE_FIELDS,
+          BOOTSTRAP_MESSAGE_TUPLE_FIELD_SET,
+        )
       ));
     }
     if (Array.isArray(snapshot.replies)) {
       next.replies = snapshot.replies.map((reply) => (
-        bootstrapTupleRecord(reply, BOOTSTRAP_REPLY_TUPLE_FIELDS, BOOTSTRAP_REPLY_TUPLE_FIELD_SET)
+        bootstrapTupleRecord(
+          compactBootstrapConversationDefaults(reply, conversationDefaults),
+          BOOTSTRAP_REPLY_TUPLE_FIELDS,
+          BOOTSTRAP_REPLY_TUPLE_FIELD_SET,
+        )
       ));
     }
     if (Array.isArray(snapshot.tasks)) {
       next.tasks = snapshot.tasks.map((task) => (
-        bootstrapTupleRecord(task, BOOTSTRAP_TASK_TUPLE_FIELDS, BOOTSTRAP_TASK_TUPLE_FIELD_SET)
+        bootstrapTupleRecord(
+          compactBootstrapConversationDefaults(task, conversationDefaults),
+          BOOTSTRAP_TASK_TUPLE_FIELDS,
+          BOOTSTRAP_TASK_TUPLE_FIELD_SET,
+        )
       ));
     }
     return next;

@@ -122,21 +122,30 @@ test('bootstrap request and normalizer support compact conversation tuples', asy
   assert.equal(eventUrl.searchParams.get('selectedHumanId'), 'hum_1');
 
   const normalized = context.normalizeIncomingStateSnapshot({
-    bootstrap: { conversationFormat: 'tuple-v1' },
-    messages: [['msg_1', 'channel', 'chan_all', 'agent', 'agt_1', 'hello', '2026-06-08T00:00:00.000Z', ['hum_1'], true, 2]],
-    replies: [['rep_1', 'msg_1', 'channel', 'chan_all', 'human', 'hum_1', 'reply', '2026-06-08T00:00:01.000Z']],
-    tasks: [['task_1', 'channel', 'chan_all', 'Follow up', 'todo', '2026-06-08T00:00:02.000Z']],
+    bootstrap: {
+      conversationFormat: 'tuple-v1',
+      conversationDefaults: { spaceType: 'channel', spaceId: 'chan_all' },
+    },
+    messages: [['msg_1', null, null, 'agent', 'agt_1', 'hello', '2026-06-08T00:00:00.000Z', ['hum_1'], true, 2]],
+    replies: [['rep_1', 'msg_1', null, null, 'human', 'hum_1', 'reply', '2026-06-08T00:00:01.000Z']],
+    tasks: [['task_1', null, null, 'Follow up', 'todo', '2026-06-08T00:00:02.000Z']],
     agents: [],
     humans: [],
     cloud: { members: [] },
   });
 
   assert.equal(normalized.messages[0].id, 'msg_1');
+  assert.equal(normalized.messages[0].spaceType, 'channel');
+  assert.equal(normalized.messages[0].spaceId, 'chan_all');
   assert.equal(normalized.messages[0].body, 'hello');
   assert.equal(normalized.messages[0].bodyTruncated, true);
   assert.equal(normalized.messages[0].replyCount, 2);
   assert.equal(normalized.replies[0].parentMessageId, 'msg_1');
+  assert.equal(normalized.replies[0].spaceType, 'channel');
+  assert.equal(normalized.replies[0].spaceId, 'chan_all');
   assert.equal(normalized.replies[0].body, 'reply');
+  assert.equal(normalized.tasks[0].spaceType, 'channel');
+  assert.equal(normalized.tasks[0].spaceId, 'chan_all');
   assert.equal(normalized.tasks[0].title, 'Follow up');
   assert.equal(normalized.tasks[0].status, 'todo');
 

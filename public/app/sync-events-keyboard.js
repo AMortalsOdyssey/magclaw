@@ -86,14 +86,37 @@ function tupleRecordToObject(entry, fields = []) {
   return record;
 }
 
+function applyConversationDefaults(record, defaults = {}) {
+  if (!record || typeof record !== 'object') return record;
+  if (!defaults?.spaceType && !defaults?.spaceId) return record;
+  let next = record;
+  if (!Object.prototype.hasOwnProperty.call(record, 'spaceType') && defaults.spaceType) {
+    next = { ...next, spaceType: defaults.spaceType };
+  }
+  if (!Object.prototype.hasOwnProperty.call(record, 'spaceId') && defaults.spaceId) {
+    next = { ...next, spaceId: defaults.spaceId };
+  }
+  return next;
+}
+
 function normalizeConversationTupleSnapshot(nextState) {
   if (!nextState || nextState.bootstrap?.conversationFormat !== 'tuple-v1') return nextState;
   const fields = nextState.bootstrap?.conversationFields || {};
+  const defaults = nextState.bootstrap?.conversationDefaults || {};
   return {
     ...nextState,
-    messages: (nextState.messages || []).map((entry) => tupleRecordToObject(entry, fields.messages || BOOTSTRAP_MESSAGE_TUPLE_FIELDS)),
-    replies: (nextState.replies || []).map((entry) => tupleRecordToObject(entry, fields.replies || BOOTSTRAP_REPLY_TUPLE_FIELDS)),
-    tasks: (nextState.tasks || []).map((entry) => tupleRecordToObject(entry, fields.tasks || BOOTSTRAP_TASK_TUPLE_FIELDS)),
+    messages: (nextState.messages || []).map((entry) => applyConversationDefaults(
+      tupleRecordToObject(entry, fields.messages || BOOTSTRAP_MESSAGE_TUPLE_FIELDS),
+      defaults,
+    )),
+    replies: (nextState.replies || []).map((entry) => applyConversationDefaults(
+      tupleRecordToObject(entry, fields.replies || BOOTSTRAP_REPLY_TUPLE_FIELDS),
+      defaults,
+    )),
+    tasks: (nextState.tasks || []).map((entry) => applyConversationDefaults(
+      tupleRecordToObject(entry, fields.tasks || BOOTSTRAP_TASK_TUPLE_FIELDS),
+      defaults,
+    )),
   };
 }
 
