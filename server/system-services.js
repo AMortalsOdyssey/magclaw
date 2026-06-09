@@ -1151,9 +1151,9 @@ export function createSystemServices(deps) {
     addDirectoryId(target, selectedHumanId);
     addChannelDirectoryReferences(target, selectedChannel);
     for (const dm of records(visibleDms)) addDmDirectoryReferences(target, dm);
-    for (const record of [...records(messages), ...records(replies), ...records(tasks)]) {
-      addRecordDirectoryReferences(target, record);
-    }
+    for (const record of records(messages)) addRecordDirectoryReferences(target, record);
+    for (const record of records(replies)) addRecordDirectoryReferences(target, record);
+    for (const record of records(tasks)) addRecordDirectoryReferences(target, record);
     for (const member of records(cloud?.members)) {
       if (
         target.humanIds.has(String(member?.humanId || ''))
@@ -1905,17 +1905,23 @@ export function createSystemServices(deps) {
     return next;
   }
 
+  function countCompactChannelMembers(channel = {}) {
+    const memberIds = new Set();
+    for (const key of ['memberIds', 'humanIds', 'agentIds']) {
+      for (const id of records(channel[key])) {
+        const value = String(id || '');
+        if (value) memberIds.add(value);
+      }
+    }
+    return memberIds.size;
+  }
+
   function compactBootstrapChannelRecord(channel = {}) {
     if (!channel || typeof channel !== 'object') return channel;
     const record = { ...channel };
     if (!isWorkspaceAllChannel(record)) return record;
-    const memberIds = new Set([
-      ...records(record.memberIds),
-      ...records(record.humanIds),
-      ...records(record.agentIds),
-    ].map(String).filter(Boolean));
     record.membershipMode = 'all';
-    record.memberCount = memberIds.size || Number(record.memberCount || 0) || 0;
+    record.memberCount = countCompactChannelMembers(record) || Number(record.memberCount || 0) || 0;
     delete record.memberIds;
     delete record.humanIds;
     delete record.agentIds;
@@ -2215,7 +2221,8 @@ export function createSystemServices(deps) {
     const hydratedMessagePagination = effectiveOptions.hydration?.messages?.pagination || null;
     const threadRoots = threadRootMessagePage.records;
     const messageById = new Map();
-    for (const message of [...selectedMessages, ...threadRoots]) messageById.set(message.id, message);
+    for (const message of selectedMessages) messageById.set(message.id, message);
+    for (const message of threadRoots) messageById.set(message.id, message);
     if (threadMessageId && !messageById.has(threadMessageId)) {
       const threadRoot = sourceMessages.find((message) => (
         visibleConversationRecord(message)
@@ -2262,7 +2269,8 @@ export function createSystemServices(deps) {
           }
         : null);
     const replyById = new Map();
-    for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
+    for (const reply of latestReplyByParent.values()) replyById.set(reply.id, reply);
+    for (const reply of selectedThreadReplies) replyById.set(reply.id, reply);
     const unreadCandidateSnapshot = unreadCollector.snapshot();
     const unreadHydration = includeUnreadConversationRecords({
       currentHumanId,
@@ -2319,7 +2327,10 @@ export function createSystemServices(deps) {
     selectedSpaceTaskPage.push(...selectedSpaceTasks.records);
     globalTaskPage.push(...globalChannelTasks.records);
     const visibleTaskById = new Map();
-    for (const task of [...selectedSpaceTaskPage, ...globalTaskPage]) {
+    for (const task of selectedSpaceTaskPage) {
+      if (task?.id) visibleTaskById.set(task.id, task);
+    }
+    for (const task of globalTaskPage) {
       if (task?.id) visibleTaskById.set(task.id, task);
     }
     for (const task of referencedTaskById.values()) {
@@ -2331,7 +2342,13 @@ export function createSystemServices(deps) {
       .map(compactBootstrapTaskRecord);
 
     const attachmentIds = new Set();
-    for (const record of [...messageById.values(), ...replyById.values(), ...visibleTasks]) {
+    for (const record of messageById.values()) {
+      for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
+    }
+    for (const record of replyById.values()) {
+      for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
+    }
+    for (const record of visibleTasks) {
       for (const id of records(record.attachmentIds)) attachmentIds.add(String(id));
     }
     const directoryMessages = [...messageById.values()];
