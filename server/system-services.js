@@ -414,7 +414,9 @@ export function createSystemServices(deps) {
     let monotonicOldestFirst = true;
     const monotonicRecords = [];
     let monotonicWriteIndex = 0;
-    for (const item of source) {
+    let index = 0;
+    for (; index < source.length; index += 1) {
+      const item = source[index];
       if (!item) continue;
       if (predicate && !predicate(item)) continue;
       if (previous && compareOldestRecords(previous, item) > 0) {
@@ -440,8 +442,10 @@ export function createSystemServices(deps) {
     }
 
     const heap = [];
-    let total = 0;
-    for (const item of source) {
+    for (const record of monotonicRecords) addBoundedNewestRecord(heap, record, normalizedLimit);
+    let total = monotonicTotal;
+    for (; index < source.length; index += 1) {
+      const item = source[index];
       if (!item) continue;
       if (predicate && !predicate(item)) continue;
       total += 1;
@@ -483,6 +487,15 @@ export function createSystemServices(deps) {
     addBoundedNewestRecord(collector.heap, record, collector.limit);
   }
 
+  function createHeapNewestPageCollector(collector) {
+    const next = createNewestPageCollector(collector?.limit);
+    next.total = Math.max(0, Number(collector?.total) || 0);
+    for (const record of records(collector?.records)) {
+      addBoundedNewestRecord(next.heap, record, next.limit);
+    }
+    return next;
+  }
+
   function finishNewestPageCollector(collector, recordsKey = 'records') {
     const recordsValue = collector[recordsKey] || [];
     recordsValue.sort(compareNewestRecords);
@@ -503,12 +516,15 @@ export function createSystemServices(deps) {
     if (!collectors.length && !visit) return [];
     let previous = null;
     let monotonicOldestFirst = true;
-    for (const item of source) {
+    let index = 0;
+    for (; index < source.length; index += 1) {
+      const item = source[index];
       if (!item) continue;
-      if (visit) visit(item);
       if (previous && compareOldestRecords(previous, item) > 0) {
         monotonicOldestFirst = false;
+        break;
       }
+      if (visit) visit(item);
       if (monotonicOldestFirst) {
         for (const entry of collectors) {
           if (entry.predicate && !entry.predicate(item)) continue;
@@ -523,10 +539,12 @@ export function createSystemServices(deps) {
 
     const heapCollectors = collectors.map((entry) => ({
       predicate: entry.predicate,
-      collector: createNewestPageCollector(entry.collector.limit),
+      collector: createHeapNewestPageCollector(entry.collector),
     }));
-    for (const item of source) {
+    for (; index < source.length; index += 1) {
+      const item = source[index];
       if (!item) continue;
+      if (visit) visit(item);
       for (const entry of heapCollectors) {
         if (entry.predicate && !entry.predicate(item)) continue;
         addHeapNewestRecord(entry.collector, item);
