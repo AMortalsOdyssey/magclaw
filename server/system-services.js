@@ -193,6 +193,31 @@ export function createSystemServices(deps) {
     return output;
   }
 
+  function hasRecords(value) {
+    if (!Array.isArray(value)) return false;
+    for (const item of value) {
+      if (item) return true;
+    }
+    return false;
+  }
+
+  function recordsIncludes(value, expected) {
+    if (!Array.isArray(value)) return false;
+    for (const item of value) {
+      if (item && item === expected) return true;
+    }
+    return false;
+  }
+
+  function recordsLength(value) {
+    if (!Array.isArray(value)) return 0;
+    let count = 0;
+    for (const item of value) {
+      if (item) count += 1;
+    }
+    return count;
+  }
+
   function mentionedHumanIdsForRecords(items = []) {
     const ids = new Set();
     for (const item of records(items)) {
@@ -2017,11 +2042,11 @@ export function createSystemServices(deps) {
       return !(
         status === 'pairing'
         && String(computer?.connectedVia || '').toLowerCase() === 'daemon'
-        && records(computer?.runtimeIds).length === 0
+        && !hasRecords(computer?.runtimeIds)
       );
     });
     const visibleDms = currentHumanId
-      ? scopedDms.filter((dm) => records(dm.participantIds).includes(currentHumanId))
+      ? scopedDms.filter((dm) => recordsIncludes(dm.participantIds, currentHumanId))
       : scopedDms;
     const visibleDmIds = new Set(visibleDms.map((dm) => dm.id));
     const conversationVisible = (record) => record.spaceType !== 'dm' || visibleDmIds.has(record.spaceId);
@@ -2206,7 +2231,7 @@ export function createSystemServices(deps) {
           visibleConversationRecord(message)
           && (Number(message.replyCount || 0) > 0
           || message.taskId
-          || records(message.savedBy).length
+          || hasRecords(message.savedBy)
           || String(message.id || '') === threadMessageId)
         ),
       },
@@ -2294,8 +2319,8 @@ export function createSystemServices(deps) {
     for (const channel of scopedChannels) {
       if (
         !currentHumanId
-        || records(channel.memberIds).includes(currentHumanId)
-        || records(channel.humanIds).includes(currentHumanId)
+        || recordsIncludes(channel.memberIds, currentHumanId)
+        || recordsIncludes(channel.humanIds, currentHumanId)
       ) {
         memberChannelIds.add(channel.id);
       }
@@ -2390,7 +2415,7 @@ export function createSystemServices(deps) {
     const directoryTotals = {
       agents: directoryAgentTotal,
       humans: directoryHumanTotal,
-      members: Array.isArray(cloud?.members) ? cloud.members.length : records(cloud?.members).length,
+      members: Array.isArray(cloud?.members) ? cloud.members.length : recordsLength(cloud?.members),
     };
     const rawDirectory = filterDirectoryRecords({
       agents: rawDirectoryAgents,
@@ -2526,7 +2551,7 @@ export function createSystemServices(deps) {
     }
     const effectiveOptions = { ...bootstrapOptionsFromRequest(req), ...options };
     const scopedHumans = scopedRecords('humans');
-    const rawMemberCount = records(cloud?.members).length;
+    const rawMemberCount = recordsLength(cloud?.members);
     const pageLimit = directoryPageLimit(effectiveOptions.limit);
     const pageCursor = parseDirectoryCursor(effectiveOptions.cursor);
     const rawDirectoryPage = applyDirectoryPagination({
