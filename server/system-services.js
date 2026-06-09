@@ -128,6 +128,12 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'createdBy',
   'metadata',
 ]);
+const BOOTSTRAP_AGENT_TUPLE_FIELD_SET = new Set(BOOTSTRAP_AGENT_TUPLE_FIELDS);
+const BOOTSTRAP_HUMAN_TUPLE_FIELD_SET = new Set(BOOTSTRAP_HUMAN_TUPLE_FIELDS);
+const BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELD_SET = new Set(BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS);
+const BOOTSTRAP_MESSAGE_TUPLE_FIELD_SET = new Set(BOOTSTRAP_MESSAGE_TUPLE_FIELDS);
+const BOOTSTRAP_REPLY_TUPLE_FIELD_SET = new Set(BOOTSTRAP_REPLY_TUPLE_FIELDS);
+const BOOTSTRAP_TASK_TUPLE_FIELD_SET = new Set(BOOTSTRAP_TASK_TUPLE_FIELDS);
 const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
   '@magclaw/web': 'web',
   '@magclaw/daemon': 'daemon',
@@ -1620,12 +1626,12 @@ export function createSystemServices(deps) {
     return values.slice(0, lastIndex + 1);
   }
 
-  function bootstrapTupleRecord(record = {}, fields = []) {
+  function bootstrapTupleRecord(record = {}, fields = [], fieldSet = null) {
     if (!record || typeof record !== 'object') return record;
-    const fieldSet = new Set(fields);
+    const knownFields = fieldSet || new Set(fields);
     const extra = {};
     for (const [key, value] of Object.entries(record)) {
-      if (!fieldSet.has(key) && usefulMetadataValue(value)) extra[key] = value;
+      if (!knownFields.has(key) && usefulMetadataValue(value)) extra[key] = value;
     }
     const values = fields.map((field) => (usefulMetadataValue(record[field]) ? record[field] : null));
     values.push(Object.keys(extra).length ? extra : null);
@@ -1642,15 +1648,21 @@ export function createSystemServices(deps) {
       },
     };
     if (Array.isArray(snapshot.agents)) {
-      next.agents = snapshot.agents.map((agent) => bootstrapTupleRecord(agent, BOOTSTRAP_AGENT_TUPLE_FIELDS));
+      next.agents = snapshot.agents.map((agent) => (
+        bootstrapTupleRecord(agent, BOOTSTRAP_AGENT_TUPLE_FIELDS, BOOTSTRAP_AGENT_TUPLE_FIELD_SET)
+      ));
     }
     if (Array.isArray(snapshot.humans)) {
-      next.humans = snapshot.humans.map((human) => bootstrapTupleRecord(human, BOOTSTRAP_HUMAN_TUPLE_FIELDS));
+      next.humans = snapshot.humans.map((human) => (
+        bootstrapTupleRecord(human, BOOTSTRAP_HUMAN_TUPLE_FIELDS, BOOTSTRAP_HUMAN_TUPLE_FIELD_SET)
+      ));
     }
     if (snapshot.cloud && typeof snapshot.cloud === 'object' && Array.isArray(snapshot.cloud.members)) {
       next.cloud = {
         ...snapshot.cloud,
-        members: snapshot.cloud.members.map((member) => bootstrapTupleRecord(member, BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS)),
+        members: snapshot.cloud.members.map((member) => (
+          bootstrapTupleRecord(member, BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELDS, BOOTSTRAP_CLOUD_MEMBER_TUPLE_FIELD_SET)
+        )),
       };
     }
     return next;
@@ -1671,13 +1683,19 @@ export function createSystemServices(deps) {
       },
     };
     if (Array.isArray(snapshot.messages)) {
-      next.messages = snapshot.messages.map((message) => bootstrapTupleRecord(message, BOOTSTRAP_MESSAGE_TUPLE_FIELDS));
+      next.messages = snapshot.messages.map((message) => (
+        bootstrapTupleRecord(message, BOOTSTRAP_MESSAGE_TUPLE_FIELDS, BOOTSTRAP_MESSAGE_TUPLE_FIELD_SET)
+      ));
     }
     if (Array.isArray(snapshot.replies)) {
-      next.replies = snapshot.replies.map((reply) => bootstrapTupleRecord(reply, BOOTSTRAP_REPLY_TUPLE_FIELDS));
+      next.replies = snapshot.replies.map((reply) => (
+        bootstrapTupleRecord(reply, BOOTSTRAP_REPLY_TUPLE_FIELDS, BOOTSTRAP_REPLY_TUPLE_FIELD_SET)
+      ));
     }
     if (Array.isArray(snapshot.tasks)) {
-      next.tasks = snapshot.tasks.map((task) => bootstrapTupleRecord(task, BOOTSTRAP_TASK_TUPLE_FIELDS));
+      next.tasks = snapshot.tasks.map((task) => (
+        bootstrapTupleRecord(task, BOOTSTRAP_TASK_TUPLE_FIELDS, BOOTSTRAP_TASK_TUPLE_FIELD_SET)
+      ));
     }
     return next;
   }
