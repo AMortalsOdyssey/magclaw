@@ -1774,13 +1774,52 @@ test('team sharing hook install renders Windows-safe command strings', async () 
     teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
   }, env);
   const codex = JSON.parse(await readFile(codexHooks, 'utf8'));
-  const command = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex')).command;
+  const stopHook = codex.hooks.Stop[0].hooks.find((hook) => hook.command.includes('--runtime codex'));
+  const command = stopHook.command;
 
   assert.equal(result.ok, true);
   assert.match(command, /^"C:\\Users\\Agent User\\bin\\team-sharing\.cmd" sync/);
   assert.match(command, /--cwd "/);
+  assert.match(stopHook.commandWindows, /^& 'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
+  assert.match(stopHook.commandWindows, /--runtime 'codex'/);
+  assert.match(stopHook.commandWindows, /--cwd '.*magclaw-team-sharing-cli-hooks-windows-project-/);
   assert.doesNotMatch(command, /\$\{|'/);
+  assert.doesNotMatch(stopHook.commandWindows, /\$\{|"/);
   assert.doesNotMatch(command, /--transcript|--session-title/);
+});
+
+test('team sharing hook status checks Windows commandWindows overrides', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-status-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-hooks-windows-status-home-'));
+  const binDir = path.join(home, 'bin');
+  const commandPath = path.join(binDir, 'team-sharing.cmd');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-windows-status-fixture"}\n');
+  await writeFile(commandPath, '@echo off\r\n');
+  const env = {
+    HOME: home,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    MAGCLAW_TEAM_SHARING_PLATFORM: 'win32',
+  };
+  const codexHooks = path.join(home, '.codex', 'hooks.json');
+
+  const result = await installTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    codexConfig: codexHooks,
+    platform: 'win32',
+    teamSharingCommand: commandPath,
+  }, env);
+  const status = await statusTeamSharingHooks({
+    cwd,
+    target: 'codex',
+    codexConfig: codexHooks,
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(status.codex.ok, true);
+  assert.equal(status.codex.commandChecks.every((check) => check.executable), true);
+  assert.ok(status.codex.commandChecks.every((check) => check.command === commandPath));
 });
 
 test('team sharing setup installs selected runtimes and hook removal only removes team-sharing entries', async () => {

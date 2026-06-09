@@ -1052,6 +1052,10 @@ function windowsCmdQuote(value = '') {
   return `"${text.replace(/(["^&|<>])/g, '^$1')}"`;
 }
 
+function windowsPowerShellQuote(value = '') {
+  return `'${String(value || '').replace(/'/g, "''")}'`;
+}
+
 function shellQuote(value = '', platform = process.platform) {
   return normalizeCommandPlatform(platform) === 'win32'
     ? windowsCmdQuote(value)
@@ -1091,13 +1095,57 @@ export function buildTeamSharingHookCommand(options = {}) {
   return parts.join(' ');
 }
 
-function isTeamSharingHookCommand(command, runtime, hookEventName) {
+export function buildTeamSharingWindowsHookCommand(options = {}) {
+  const runtime = normalizeRuntime(options.runtime);
+  const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
+  const transcriptPath = String(options.transcriptPath || '').trim();
+  const sessionTitle = String(options.sessionTitle ?? '').trim();
+  const commandPath = String(options.teamSharingCommand || options.commandPath || 'team-sharing').trim() || 'team-sharing';
+  const parts = [
+    '&',
+    windowsPowerShellQuote(commandPath),
+    'sync',
+    '--runtime',
+    windowsPowerShellQuote(runtime),
+    '--hook-event',
+    windowsPowerShellQuote(hookEventName),
+  ];
+  if (transcriptPath) parts.push('--transcript', windowsPowerShellQuote(transcriptPath));
+  if (sessionTitle) parts.push('--session-title', windowsPowerShellQuote(sessionTitle));
+  if (options.integration) parts.push('--integration', windowsPowerShellQuote(String(options.integration).replace(/[^a-zA-Z0-9._-]+/g, '-')));
+  if (options.packageVersion) parts.push('--package-version', windowsPowerShellQuote(String(options.packageVersion).replace(/[^a-zA-Z0-9._+-]+/g, '-')));
+  if (options.sourceCommit) parts.push('--source-commit', windowsPowerShellQuote(String(options.sourceCommit).replace(/[^a-zA-Z0-9._-]+/g, '-')));
+  if (options.projectDir) parts.push('--cwd', windowsPowerShellQuote(options.projectDir));
+  return parts.join(' ');
+}
+
+function hookCommandCandidates(hook = {}) {
+  return [
+    hook?.command,
+    hook?.commandWindows,
+    hook?.command_windows,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function isTeamSharingHookCommand(hook, runtime, hookEventName) {
+  return hookCommandCandidates(hook).some((command) => isTeamSharingHookCommandText(command, runtime, hookEventName));
+}
+
+function escapedRegExp(value = '') {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function hasHookFlag(command = '', name = '', value = '') {
+  return new RegExp(`--${escapedRegExp(name)}\\s+(?:"${escapedRegExp(value)}"|'${escapedRegExp(value)}'|${escapedRegExp(value)})(?:\\s|$)`).test(String(command || ''));
+}
+
+function isTeamSharingHookCommandText(command, runtime, hookEventName) {
   const text = String(command || '');
   const hasTeamSharingSync = (text.includes('team-sharing') && text.includes(' sync '))
     || text.includes('magclaw team-sharing sync');
   return hasTeamSharingSync
-    && text.includes(`--runtime ${runtime}`)
-    && text.includes(`--hook-event ${hookEventName}`);
+    && hasHookFlag(text, 'runtime', runtime)
+    && hasHookFlag(text, 'hook-event', hookEventName);
 }
 
 function hookEventsForRuntime(runtime, templateConfig = null) {
@@ -1124,15 +1172,21 @@ function desiredTeamSharingHook(options = {}, runtime = 'codex', hookEventName =
       return {
         type: hook.type || 'command',
         command,
+        ...(hook.commandWindows ? { commandWindows: String(hook.commandWindows) } : {}),
+        ...(hook.command_windows ? { command_windows: String(hook.command_windows) } : {}),
         timeout: Number(hook.timeout || 0) || (hookEventName === 'SessionStart' ? 3 : 15),
       };
     }
   }
-  return {
+  const desired = {
     type: 'command',
     command: buildTeamSharingHookCommand({ ...options, runtime, hookEventName }),
     timeout: hookEventName === 'SessionStart' ? 3 : 15,
   };
+  if (normalizeRuntime(runtime) === 'codex' && normalizeCommandPlatform(options.platform || process.platform) === 'win32') {
+    desired.commandWindows = buildTeamSharingWindowsHookCommand({ ...options, runtime, hookEventName });
+  }
+  return desired;
 }
 
 export async function installTeamSharingHookConfig(options = {}) {
@@ -1148,14 +1202,19 @@ export async function installTeamSharingHookConfig(options = {}) {
     const entries = asArray(config.hooks[hookEventName]);
     const entry = entries[0] || { hooks: [] };
     entry.hooks = asArray(entry.hooks);
-    const existingHookIndex = entry.hooks.findIndex((hook) => isTeamSharingHookCommand(hook?.command, runtime, hookEventName));
+    const existingHookIndex = entry.hooks.findIndex((hook) => isTeamSharingHookCommand(hook, runtime, hookEventName));
     if (existingHookIndex >= 0) {
-      entry.hooks[existingHookIndex] = {
+      const nextHook = {
         ...entry.hooks[existingHookIndex],
         type: entry.hooks[existingHookIndex].type || desiredHook.type || 'command',
         command,
         timeout: entry.hooks[existingHookIndex].timeout || desiredHook.timeout,
       };
+      if (desiredHook.commandWindows) nextHook.commandWindows = desiredHook.commandWindows;
+      else delete nextHook.commandWindows;
+      if (desiredHook.command_windows) nextHook.command_windows = desiredHook.command_windows;
+      else delete nextHook.command_windows;
+      entry.hooks[existingHookIndex] = nextHook;
     } else {
       entry.hooks.push(desiredHook);
       installed.push(hookEventName);

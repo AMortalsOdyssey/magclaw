@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import {
   buildTeamSharingHookCommand,
+  buildTeamSharingWindowsHookCommand,
   buildTeamSharingSyncPackageFromTranscript,
   installTeamSharingHookConfig,
   parseTeamSharingTranscript,
@@ -841,10 +842,27 @@ async function readTeamSharingHookTemplateConfig(runtime, hookOptions = {}, env 
   const template = await readFile(path.join(TEAM_SHARING_PACKAGE_ROOT, 'hooks', fileName), 'utf8');
   const withCommands = template.replace(/\{\{TEAM_SHARING_HOOK_COMMAND:([^}]+)\}\}/g, (_match, hookEventName) => jsonStringContent(buildTeamSharingHookCommand({
     ...hookOptions,
-    runtime: normalized,
-    hookEventName,
-  })));
-  return JSON.parse(renderTeamSharingTemplate(withCommands, vars));
+      runtime: normalized,
+      hookEventName,
+    })));
+  const config = JSON.parse(renderTeamSharingTemplate(withCommands, vars));
+  const platform = String(hookOptions.platform || env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase();
+  if (normalized === 'codex' && platform === 'win32') {
+    for (const [hookEventName, entries] of Object.entries(config.hooks || {})) {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        for (const hook of Array.isArray(entry?.hooks) ? entry.hooks : []) {
+          if (hook?.type === 'command' && hook.command) {
+            hook.commandWindows = buildTeamSharingWindowsHookCommand({
+              ...hookOptions,
+              runtime: normalized,
+              hookEventName,
+            });
+          }
+        }
+      }
+    }
+  }
+  return config;
 }
 
 function explicitTeamSharingHookCommand(flags = {}, env = process.env) {
@@ -3247,7 +3265,8 @@ function hookEventsForRuntime(runtime) {
 }
 
 function firstCommandToken(command = '') {
-  const text = String(command || '').trim();
+  let text = String(command || '').trim();
+  if (text.startsWith('&')) text = text.slice(1).trim();
   if (!text) return '';
   const quote = text[0];
   if (quote === '"' || quote === "'") {
@@ -3291,6 +3310,28 @@ function hookCommandStatus(command = '', env = process.env) {
     resolvedPath: executable ? sanitizeAuditValue(resolved) : '',
     reason: executable ? 'ok' : (hasPathSeparator ? 'command_path_missing' : 'command_not_found_in_path'),
   };
+}
+
+function hookCommandCandidates(hook = {}) {
+  return [
+    hook?.command,
+    hook?.commandWindows,
+    hook?.command_windows,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+}
+
+function hookHasTeamSharingIntegration(hook = {}) {
+  return hookCommandCandidates(hook).some((command) => command.includes('--integration team-sharing')
+    || command.includes("--integration 'team-sharing'")
+    || command.includes('--integration "team-sharing"'));
+}
+
+function activeHookCommandForPlatform(hook = {}, env = process.env) {
+  const platform = String(env.MAGCLAW_TEAM_SHARING_PLATFORM || process.platform).toLowerCase();
+  if (platform === 'win32') {
+    return String(hook.commandWindows || hook.command_windows || hook.command || '').trim();
+  }
+  return String(hook.command || '').trim();
 }
 
 export async function installTeamSharingHooks(flags = {}, env = process.env) {
@@ -3340,11 +3381,11 @@ export async function statusTeamSharingHooks(flags = {}, env = process.env) {
     for (const eventName of hookEventsForRuntime(runtime)) {
       for (const entry of Array.isArray(config.hooks?.[eventName]) ? config.hooks[eventName] : []) {
         for (const hook of Array.isArray(entry.hooks) ? entry.hooks : []) {
-          if (String(hook.command || '').includes('--integration team-sharing')) {
+          if (hookHasTeamSharingIntegration(hook)) {
             installed.push(eventName);
             commandChecks.push({
               eventName,
-              ...hookCommandStatus(hook.command, env),
+              ...hookCommandStatus(activeHookCommandForPlatform(hook, env), env),
             });
           }
         }

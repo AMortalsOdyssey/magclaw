@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   buildTeamSharingHookCommand,
+  buildTeamSharingWindowsHookCommand,
   buildTeamSharingSyncPackageFromTranscript,
   installTeamSharingHookConfig,
   parseTeamSharingTranscript,
@@ -738,6 +739,20 @@ test('team sharing hook command and config installer preserve existing hooks', a
   assert.match(windowsCommand, /--package-version "0\.1\.41"/);
   assert.doesNotMatch(windowsCommand, /\$\{|'/);
 
+  const windowsPowerShellCommand = buildTeamSharingWindowsHookCommand({
+    runtime: 'codex',
+    hookEventName: 'Stop',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+    projectDir: 'C:\\Users\\Agent User\\repo\\magclaw',
+    packageVersion: '0.1.41',
+    sourceCommit: 'abc123def456',
+  });
+  assert.match(windowsPowerShellCommand, /^& 'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
+  assert.match(windowsPowerShellCommand, /--runtime 'codex'/);
+  assert.match(windowsPowerShellCommand, /--cwd 'C:\\Users\\Agent User\\repo\\magclaw'/);
+  assert.match(windowsPowerShellCommand, /--package-version '0\.1\.41'/);
+  assert.doesNotMatch(windowsPowerShellCommand, /\$\{|"/);
+
   const result = await installTeamSharingHookConfig({
     runtime: 'codex',
     configPath: hookConfig,
@@ -751,4 +766,20 @@ test('team sharing hook command and config installer preserve existing hooks', a
   assert.ok(installed.hooks.Stop[0].hooks.some((item) => item.command.includes('team-sharing sync')));
   assert.ok(installed.hooks.PreCompact[0].hooks.some((item) => item.command.includes('--hook-event PreCompact')));
   assert.ok(installed.hooks.SessionStart[0].hooks.some((item) => item.command.includes('--hook-event SessionStart')));
+
+  const windowsHookConfig = path.join(home, '.codex', 'windows-hooks.json');
+  const windowsResult = await installTeamSharingHookConfig({
+    runtime: 'codex',
+    configPath: windowsHookConfig,
+    platform: 'win32',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+    projectDir: 'C:\\Users\\Agent User\\repo\\magclaw',
+  });
+  const windowsInstalled = JSON.parse(await readFile(windowsHookConfig, 'utf8'));
+  const windowsHook = windowsInstalled.hooks.Stop[0].hooks.find((item) => item.command.includes('team-sharing.cmd'));
+
+  assert.equal(windowsResult.ok, true);
+  assert.match(windowsHook.command, /^"C:\\Users\\Agent User\\bin\\team-sharing\.cmd" sync/);
+  assert.match(windowsHook.commandWindows, /^& 'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
+  assert.match(windowsHook.commandWindows, /--hook-event 'Stop'/);
 });
