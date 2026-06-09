@@ -330,6 +330,113 @@ test('system route group returns bootstrap state with route query options', asyn
   assert.match(res.headers['server-timing'], /total;dur=\d/);
 });
 
+test('system route group reuses duplicate bootstrap snapshots for burst requests', async () => {
+  let hydrateCalls = 0;
+  let projectCalls = 0;
+  const deps = routeDeps({
+    hydrateBootstrapWindow: async () => {
+      hydrateCalls += 1;
+      deps.state.updatedAt = '2026-06-08T00:00:01.000Z';
+      return { messages: { messages: [] } };
+    },
+    publicBootstrapState: (_req, options) => {
+      projectCalls += 1;
+      deps.state.updatedAt = '2026-06-08T00:00:02.000Z';
+      return { bootstrap: { options }, projectCalls };
+    },
+  });
+
+  const firstRes = makeResponse();
+  assert.equal(await handleSystemApi(
+    { method: 'GET', url: '/api/bootstrap?spaceType=channel&spaceId=chan_all', headers: {}, on: () => {} },
+    firstRes,
+    new URL('http://local/api/bootstrap?spaceType=channel&spaceId=chan_all'),
+    deps,
+  ), true);
+
+  const secondRes = makeResponse();
+  assert.equal(await handleSystemApi(
+    { method: 'GET', url: '/api/bootstrap?spaceType=channel&spaceId=chan_all', headers: {}, on: () => {} },
+    secondRes,
+    new URL('http://local/api/bootstrap?spaceType=channel&spaceId=chan_all'),
+    deps,
+  ), true);
+
+  assert.equal(hydrateCalls, 1);
+  assert.equal(projectCalls, 1);
+  assert.equal(firstRes.data, secondRes.data);
+  assert.equal(secondRes.data.projectCalls, 1);
+  assert.match(secondRes.headers['server-timing'], /cache;dur=\d/);
+  assert.doesNotMatch(secondRes.headers['server-timing'], /project;dur=\d/);
+});
+
+test('system route group invalidates bootstrap burst cache when state changes', async () => {
+  let projectCalls = 0;
+  const deps = routeDeps({
+    publicBootstrapState: () => {
+      projectCalls += 1;
+      return { projectCalls };
+    },
+  });
+  const request = { method: 'GET', url: '/api/bootstrap?spaceType=channel&spaceId=chan_all', headers: {}, on: () => {} };
+  const url = new URL('http://local/api/bootstrap?spaceType=channel&spaceId=chan_all');
+
+  assert.equal(await handleSystemApi(request, makeResponse(), url, deps), true);
+  deps.state.updatedAt = '2026-06-08T00:00:01.000Z';
+  const changedRes = makeResponse();
+  assert.equal(await handleSystemApi(request, changedRes, url, deps), true);
+
+  assert.equal(projectCalls, 2);
+  assert.equal(changedRes.data.projectCalls, 2);
+  assert.match(changedRes.headers['server-timing'], /project;dur=\d/);
+});
+
+test('system route group does not share cached bootstrap snapshots across actors', async () => {
+  let projectCalls = 0;
+  const deps = routeDeps({
+    cloudAuth: {
+      currentActor: (req) => {
+        const userId = String(req?.headers?.['x-test-user'] || 'user_a');
+        return {
+          user: { id: userId },
+          member: {
+            id: `mem_${userId}`,
+            workspaceId: 'wsp_1',
+            humanId: `hum_${userId}`,
+            role: 'member',
+          },
+        };
+      },
+    },
+    publicBootstrapState: (req) => {
+      projectCalls += 1;
+      return { projectCalls, userId: req.headers['x-test-user'] };
+    },
+  });
+  const url = new URL('http://local/api/bootstrap?spaceType=channel&spaceId=chan_all');
+
+  const firstRes = makeResponse();
+  assert.equal(await handleSystemApi(
+    { method: 'GET', url: '/api/bootstrap?spaceType=channel&spaceId=chan_all', headers: { 'x-test-user': 'user_a' }, on: () => {} },
+    firstRes,
+    url,
+    deps,
+  ), true);
+
+  const secondRes = makeResponse();
+  assert.equal(await handleSystemApi(
+    { method: 'GET', url: '/api/bootstrap?spaceType=channel&spaceId=chan_all', headers: { 'x-test-user': 'user_b' }, on: () => {} },
+    secondRes,
+    url,
+    deps,
+  ), true);
+
+  assert.equal(projectCalls, 2);
+  assert.equal(firstRes.data.userId, 'user_a');
+  assert.equal(secondRes.data.userId, 'user_b');
+  assert.match(secondRes.headers['server-timing'], /project;dur=\d/);
+});
+
 test('system event stream opens without a full bootstrap state patch', async () => {
   let publicBootstrapCalls = 0;
   let hydrateCalls = 0;

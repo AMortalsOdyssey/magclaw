@@ -17,6 +17,9 @@ const SHARE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 const SHARE_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const SHARE_AVATAR_FETCH_TIMEOUT_MS = 8000;
 const PNG_SIGNATURE_HEX = '89504e470d0a1a0a';
+const BOOTSTRAP_ROUTE_CACHE_TTL_MS = 1000;
+const BOOTSTRAP_ROUTE_CACHE_MAX_ENTRIES = 64;
+const bootstrapRouteCaches = new WeakMap();
 
 function formatServerTimingDuration(ms) {
   const safeMs = Math.max(0, Number(ms) || 0);
@@ -42,6 +45,112 @@ function createServerTiming() {
       return { 'server-timing': this.header() };
     },
   };
+}
+
+function collectionLength(value) {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function headerValue(req, name) {
+  return String(req?.headers?.[name] || '').trim();
+}
+
+function bootstrapWorkspaceRef(req, url) {
+  return String(
+    headerValue(req, 'x-magclaw-workspace-id')
+    || headerValue(req, 'x-magclaw-server-slug')
+    || url.searchParams.get('workspaceId')
+    || url.searchParams.get('serverSlug')
+    || '',
+  ).trim();
+}
+
+function canonicalSearchParams(searchParams) {
+  return [...searchParams.entries()]
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+      leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+    ));
+}
+
+function bootstrapRouteStateToken(state = {}) {
+  const cloud = state.cloud || {};
+  return [
+    `v:${String(state.version || '')}`,
+    `u:${String(state.updatedAt || '')}`,
+    `c:${collectionLength(state.channels)}`,
+    `d:${collectionLength(state.dms)}`,
+    `m:${collectionLength(state.messages)}`,
+    `r:${collectionLength(state.replies)}`,
+    `t:${collectionLength(state.tasks)}`,
+    `a:${collectionLength(state.agents)}`,
+    `h:${collectionLength(state.humans)}`,
+    `cm:${collectionLength(cloud.members || cloud.workspaceMembers)}`,
+  ].join('|');
+}
+
+function bootstrapRouteActorKey(req, deps, url) {
+  const actor = typeof deps?.cloudAuth?.currentActor === 'function'
+    ? deps.cloudAuth.currentActor(req)
+    : null;
+  const user = actor?.user || {};
+  const member = actor?.member || {};
+  const workspaceRef = bootstrapWorkspaceRef(req, url);
+  return [
+    `user:${String(user.id || '')}`,
+    `member:${String(member.id || '')}`,
+    `workspace:${String(member.workspaceId || workspaceRef || '')}`,
+    `human:${String(member.humanId || '')}`,
+    `role:${String(member.role || '')}`,
+  ].join('|');
+}
+
+function bootstrapRouteCacheKey(req, url, deps, state) {
+  return JSON.stringify({
+    actor: bootstrapRouteActorKey(req, deps, url),
+    workspaceRef: bootstrapWorkspaceRef(req, url),
+    query: canonicalSearchParams(url.searchParams),
+    state: bootstrapRouteStateToken(state),
+  });
+}
+
+function bootstrapRouteCacheForState(state) {
+  if (!state || typeof state !== 'object') return null;
+  let cache = bootstrapRouteCaches.get(state);
+  if (!cache) {
+    cache = new Map();
+    bootstrapRouteCaches.set(state, cache);
+  }
+  return cache;
+}
+
+function getCachedBootstrapRouteSnapshot(state, key) {
+  const cache = bootstrapRouteCacheForState(state);
+  if (!cache) return null;
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= performance.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.snapshot;
+}
+
+function setCachedBootstrapRouteSnapshot(state, key, snapshot) {
+  const cache = bootstrapRouteCacheForState(state);
+  if (!cache) return;
+  const nowMs = performance.now();
+  for (const [entryKey, entry] of cache) {
+    if (entry.expiresAt <= nowMs) cache.delete(entryKey);
+  }
+  while (cache.size >= BOOTSTRAP_ROUTE_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (!oldestKey) break;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, {
+    snapshot,
+    expiresAt: nowMs + BOOTSTRAP_ROUTE_CACHE_TTL_MS,
+  });
 }
 
 function isLoopbackRequest(req) {
@@ -314,6 +423,14 @@ export async function handleSystemApi(req, res, url, deps) {
     if (selectedAgentId) options.selectedAgentId = selectedAgentId;
     const selectedHumanId = url.searchParams.get('selectedHumanId') || '';
     if (selectedHumanId) options.selectedHumanId = selectedHumanId;
+    const cacheKey = bootstrapRouteCacheKey(req, url, deps, state);
+    const cacheStarted = timing.start();
+    const cachedSnapshot = getCachedBootstrapRouteSnapshot(state, cacheKey);
+    if (cachedSnapshot) {
+      timing.mark('cache', cacheStarted);
+      sendJson(res, 200, cachedSnapshot, timing.headers());
+      return true;
+    }
     const hydrateStarted = timing.start();
     const hydration = typeof hydrateBootstrapWindow === 'function'
       ? await hydrateBootstrapWindow(req, options)
@@ -321,9 +438,20 @@ export async function handleSystemApi(req, res, url, deps) {
     timing.mark('hydrate', hydrateStarted);
     if (hydration) req.magclawBootstrapHydration = hydration;
     const bootstrapOptions = hydration ? { ...options, hydration } : options;
+    const hydratedCacheKey = bootstrapRouteCacheKey(req, url, deps, state);
+    if (hydratedCacheKey !== cacheKey) {
+      const hydratedCachedSnapshot = getCachedBootstrapRouteSnapshot(state, hydratedCacheKey);
+      if (hydratedCachedSnapshot) {
+        const hydratedCacheStarted = timing.start();
+        timing.mark('cache', hydratedCacheStarted);
+        sendJson(res, 200, hydratedCachedSnapshot, timing.headers());
+        return true;
+      }
+    }
     const projectStarted = timing.start();
     const snapshot = (publicBootstrapState || publicState)(req, bootstrapOptions);
     timing.mark('project', projectStarted);
+    setCachedBootstrapRouteSnapshot(state, bootstrapRouteCacheKey(req, url, deps, state), snapshot);
     sendJson(res, 200, snapshot, timing.headers());
     return true;
   }

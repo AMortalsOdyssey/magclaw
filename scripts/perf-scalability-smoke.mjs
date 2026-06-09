@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import { handleSystemApi } from '../server/api/system-routes.js';
 import { createStateCore } from '../server/state-core.js';
 import { createSystemServices } from '../server/system-services.js';
 
@@ -118,6 +119,8 @@ const BUDGETS = Object.freeze({
   bootstrapProfileHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROFILE_HEAVY_BYTES || 120_000),
   bootstrapReadByHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_READ_BY_HEAVY_BYTES || 100_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 80),
+  bootstrapRouteDuplicateProjects: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_ROUTE_DUPLICATE_PROJECTS || 1),
+  bootstrapRouteDuplicateHydrates: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_ROUTE_DUPLICATE_HYDRATES || 1),
   directoryPageBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_BYTES || 80_000),
   directoryPageMs: Number(process.env.MAGCLAW_PERF_DIRECTORY_PAGE_MS || 250),
   directoryTotalBytes: Number(process.env.MAGCLAW_PERF_DIRECTORY_TOTAL_BYTES || 280_000),
@@ -806,6 +809,64 @@ function makeSystemServices(state) {
     ROOT: process.cwd(),
     npmPackageVersions: { latest: (_packageName, fallback = '') => fallback, refreshAll: () => {} },
   });
+}
+
+function makeRouteResponse() {
+  return {
+    statusCode: 0,
+    data: null,
+    headers: {},
+  };
+}
+
+async function measureDuplicateBootstrapRouteBurst(state, services) {
+  const requests = 5;
+  let hydrateCalls = 0;
+  let projectCalls = 0;
+  const deps = {
+    getState: () => state,
+    hydrateBootstrapWindow: async () => {
+      hydrateCalls += 1;
+      if (hydrateCalls === 1) state.updatedAt = '2026-06-08T00:00:01.000Z';
+      return null;
+    },
+    publicBootstrapState: (...args) => {
+      projectCalls += 1;
+      if (projectCalls === 1) state.updatedAt = '2026-06-08T00:00:02.000Z';
+      return services.publicBootstrapState(...args);
+    },
+    publicState: (...args) => services.publicState(...args),
+    sendError: (res, statusCode, message) => {
+      res.statusCode = statusCode;
+      res.error = message;
+    },
+    sendJson: (res, statusCode, data, headers = {}) => {
+      res.statusCode = statusCode;
+      res.data = data;
+      res.headers = headers;
+    },
+  };
+  const url = new URL(`http://local/api/bootstrap?${BOOTSTRAP_QUERY}`);
+  const started = performance.now();
+  let lastHeaders = {};
+  for (let index = 0; index < requests; index += 1) {
+    const res = makeRouteResponse();
+    await handleSystemApi(
+      { method: 'GET', url: `/api/bootstrap?${BOOTSTRAP_QUERY}`, headers: {}, on: () => {} },
+      res,
+      url,
+      deps,
+    );
+    lastHeaders = res.headers || {};
+  }
+  return {
+    requests,
+    hydrateCalls,
+    projectCalls,
+    cacheHits: requests - projectCalls,
+    ms: Math.round(performance.now() - started),
+    lastServerTiming: String(lastHeaders['server-timing'] || ''),
+  };
 }
 
 async function measureHeartbeat(state) {
@@ -1598,6 +1659,7 @@ async function main() {
   const directoryBroadSearch = measureDirectorySearch({ query: 'agent', limit: 5 });
   const membersDirectoryPage = measureMembersDirectoryPage();
   const membersRailWindow = await measureMembersRailWindow();
+  const bootstrapRouteDuplicateBurst = await measureDuplicateBootstrapRouteBurst(state, services);
   const bootstrapProfileHeavyAgents = measureProfileHeavyBootstrapAgents();
   const bootstrapReadByHeavy = measureReadByHeavyBootstrap();
   const bootstrapAllChannel = (snapshot.channels || []).find((channel) => (
@@ -1705,6 +1767,10 @@ async function main() {
 
   assertBudget(bootstrap.ms <= BUDGETS.bootstrapMs, `bootstrap ${bootstrap.ms}ms exceeds ${BUDGETS.bootstrapMs}ms`);
   assertBudget(bootstrap.bytes <= BUDGETS.bootstrapBytes, `bootstrap ${bootstrap.bytes} bytes exceeds ${BUDGETS.bootstrapBytes}`);
+  assertBudget(bootstrapRouteDuplicateBurst.projectCalls <= BUDGETS.bootstrapRouteDuplicateProjects, `duplicate bootstrap route burst projected ${bootstrapRouteDuplicateBurst.projectCalls} times`);
+  assertBudget(bootstrapRouteDuplicateBurst.hydrateCalls <= BUDGETS.bootstrapRouteDuplicateHydrates, `duplicate bootstrap route burst hydrated ${bootstrapRouteDuplicateBurst.hydrateCalls} times`);
+  assertBudget(bootstrapRouteDuplicateBurst.cacheHits === bootstrapRouteDuplicateBurst.requests - 1, 'duplicate bootstrap route burst did not reuse cached snapshots');
+  assertBudget(/cache;dur=/.test(bootstrapRouteDuplicateBurst.lastServerTiming), 'duplicate bootstrap route burst did not expose cache timing');
   assertBudget(bootstrapProfileHeavyAgents.bytes <= BUDGETS.bootstrapProfileHeavyBytes, `profile-heavy bootstrap ${bootstrapProfileHeavyAgents.bytes} bytes exceeds ${BUDGETS.bootstrapProfileHeavyBytes}`);
   assertBudget(bootstrapProfileHeavyAgents.selectedHasProfileDetails, 'profile-heavy bootstrap dropped selected Agent profile details');
   assertBudget(!bootstrapProfileHeavyAgents.backgroundProfileFieldLeaked, 'profile-heavy bootstrap leaked non-selected Agent profile details');
@@ -1883,6 +1949,7 @@ async function main() {
     directoryBroadSearch,
     membersDirectoryPage,
     membersRailWindow,
+    bootstrapRouteDuplicateBurst,
     bootstrapProfileHeavyAgents,
     bootstrapReadByHeavy,
     heartbeat,

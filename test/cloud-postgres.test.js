@@ -2115,6 +2115,101 @@ test('postgres store pages message history with keyset SQL', async () => {
   assert.equal(page.pagination.nextBeforeId, 'msg_8');
 });
 
+test('postgres bootstrap window hydration keeps state timestamp for unchanged rows', async () => {
+  const createdAt = '2026-05-13T00:00:00.000Z';
+  const originalStateUpdatedAt = '2026-05-14T00:00:00.000Z';
+  let body = 'unchanged';
+  let updatedAt = createdAt;
+  const messageRecord = () => ({
+    id: 'msg_1',
+    workspaceId: 'wsp_main',
+    spaceType: 'channel',
+    spaceId: 'chan_main',
+    spaceSeq: 1,
+    authorType: 'human',
+    authorId: 'hum_owner',
+    body,
+    attachmentIds: [],
+    mentionedAgentIds: [],
+    mentionedHumanIds: [],
+    replyCount: 0,
+    savedBy: [],
+    readBy: [],
+    reactions: [],
+    followedBy: [],
+    createdAt,
+    updatedAt,
+  });
+  const pool = {
+    async connect() {
+      return {
+        async query(sql) {
+          if (sql.includes('FROM "magclaw"."cloud_messages"')) {
+            return {
+              rows: [{
+                id: 'msg_1',
+                workspace_id: 'wsp_main',
+                space_type: 'channel',
+                space_id: 'chan_main',
+                space_seq: 1,
+                author_type: 'human',
+                author_id: 'hum_owner',
+                body,
+                attachment_ids: [],
+                mentioned_agent_ids: [],
+                mentioned_human_ids: [],
+                reply_count: 0,
+                saved_by: [],
+                read_by: [],
+                reactions: [],
+                followed_by: [],
+                created_at: createdAt,
+                updated_at: updatedAt,
+              }],
+            };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+  });
+  const state = {
+    updatedAt: originalStateUpdatedAt,
+    cloud: {},
+    channels: [],
+    messages: [messageRecord()],
+    replies: [],
+  };
+
+  const unchanged = await store.loadConversationWindowIntoState(state, {
+    workspaceId: 'wsp_main',
+    spaceType: 'channel',
+    spaceId: 'chan_main',
+    messageLimit: 1,
+  });
+  assert.equal(unchanged.changed, false);
+  assert.equal(state.updatedAt, originalStateUpdatedAt);
+
+  body = 'changed';
+  updatedAt = '2026-05-13T00:00:01.000Z';
+  const changed = await store.loadConversationWindowIntoState(state, {
+    workspaceId: 'wsp_main',
+    spaceType: 'channel',
+    spaceId: 'chan_main',
+    messageLimit: 1,
+  });
+  assert.equal(changed.changed, true);
+  assert.notEqual(state.updatedAt, originalStateUpdatedAt);
+  assert.equal(state.messages.find((message) => message.id === 'msg_1')?.body, 'changed');
+});
+
 test('postgres store pages thread replies with workspace parent cursor SQL', async () => {
   const queries = [];
   const createdAt = '2026-05-13T00:00:00.000Z';

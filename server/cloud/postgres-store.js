@@ -2501,11 +2501,29 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  function sameRecordPayload(left, right) {
+    if (left === right) return true;
+    try {
+      return JSON.stringify(left) === JSON.stringify(right);
+    } catch {
+      return false;
+    }
+  }
+
   function mergeRecordsIntoState(state, key, records) {
-    if (!records?.length) return;
+    if (!records?.length) return false;
     const byId = new Map(safeArray(state[key]).map((record) => [record?.id, record]).filter(([id]) => id));
-    for (const record of records) byId.set(record.id, record);
+    let changed = false;
+    for (const record of records) {
+      if (!record?.id) continue;
+      const previous = byId.get(record.id);
+      if (previous && sameRecordPayload(previous, record)) continue;
+      byId.set(record.id, record);
+      changed = true;
+    }
+    if (!changed) return false;
     state[key] = [...byId.values()].sort(compareRecordCreatedAsc);
+    return true;
   }
 
   function resolveHydrationSpaceId(state, workspaceId, cleanSpaceType, requestedSpaceId = '') {
@@ -2531,6 +2549,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const cleanSpaceType = spaceType(options.spaceType);
     const spaceId = resolveHydrationSpaceId(state, workspaceId, cleanSpaceType, options.spaceId);
     const result = { messages: null, replies: null };
+    let changed = false;
     if (workspaceId && spaceId) {
       result.messages = await listSpaceMessagesPage({
         workspaceId,
@@ -2538,23 +2557,24 @@ export function createCloudPostgresStore(optionsInput = {}) {
         spaceId,
         limit: options.messageLimit || MESSAGE_PAGE_DEFAULT_LIMIT,
       });
-      mergeRecordsIntoState(state, 'messages', result.messages.messages);
+      changed = mergeRecordsIntoState(state, 'messages', result.messages.messages) || changed;
     }
     const threadMessageId = String(options.threadMessageId || '').trim();
     if (workspaceId && threadMessageId) {
       const parent = safeArray(state.messages).find((message) => message.id === threadMessageId)
         || await getMessageById(threadMessageId, { workspaceId });
       if (parent) {
-        mergeRecordsIntoState(state, 'messages', [parent]);
+        changed = mergeRecordsIntoState(state, 'messages', [parent]) || changed;
         result.replies = await listThreadRepliesPage({
           workspaceId,
           parentMessageId: parent.id,
           limit: options.replyLimit || MESSAGE_PAGE_DEFAULT_LIMIT,
         });
-        mergeRecordsIntoState(state, 'replies', result.replies.replies);
+        changed = mergeRecordsIntoState(state, 'replies', result.replies.replies) || changed;
       }
     }
-    state.updatedAt = requiredIso();
+    if (changed) state.updatedAt = requiredIso();
+    result.changed = changed;
     return result;
   }
 
