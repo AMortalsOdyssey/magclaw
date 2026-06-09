@@ -403,6 +403,18 @@ function activeGoalObjective(goalEventRef = {}) {
   return compactPresentationText(goalEventRef.current?.presentation?.goal?.objective || '', 8000);
 }
 
+function codexResponseItemPhase(item = {}, payload = {}) {
+  return compactPresentationText(payload.phase || item.phase || '', 80).toLowerCase();
+}
+
+function isCodexCommentaryPhase(phase = '') {
+  return phase === 'commentary';
+}
+
+function isCodexFinalAnswerPhase(phase = '') {
+  return phase === 'final_answer' || phase === 'final';
+}
+
 function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
@@ -593,6 +605,8 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
     if (payload.type !== 'message') continue;
     const role = String(payload.role || '').toLowerCase();
     if (!['user', 'assistant'].includes(role)) continue;
+    const phase = codexResponseItemPhase(item, payload);
+    if (role === 'assistant' && isCodexCommentaryPhase(phase)) continue;
     const text = redactTeamSharingText(textFromContentBlocks(payload.content));
     if (!text) continue;
     if (role === 'user') {
@@ -605,6 +619,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
           text: goalContext.objective,
           createdAt,
           toolCalls: [],
+          hidden: true,
           isGoalRequest: true,
           presentation: buildGoalPresentation({
             objective: goalContext.objective,
@@ -663,7 +678,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       role,
       text,
       createdAt,
-      keepAssistant: false,
+      keepAssistant: isCodexFinalAnswerPhase(phase),
       toolCalls: context.toolNames.length ? context.toolNames.map((name) => ({ name })) : [],
       ...(goalReplyPresentation ? { presentation: goalReplyPresentation } : {}),
     });
@@ -817,14 +832,19 @@ function visibleTeamSharingTranscriptEvents(events = []) {
   let latestUserOrdinal = 0;
   const forced = [];
   for (const event of events) {
+    if (event.hidden) {
+      continue;
+    }
     if (event.role === 'user') {
       users.push(event);
       latestUserOrdinal = Math.max(latestUserOrdinal, Number(event.sourceOrdinal || 0));
       continue;
     }
     if (event.presentation?.mode && event.presentation.mode !== 'normal') {
-      forced.push(event);
-      continue;
+      if (event.presentation.mode !== 'goal' || !event.presentation.goal?.reply) {
+        forced.push(event);
+        continue;
+      }
     }
     if (event.keepAssistant) {
       forced.push(event);

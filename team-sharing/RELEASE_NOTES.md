@@ -1,5 +1,10 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.1.62 - 2026-06-09 - Goal thread cleanup
+### bug fix
+- Codex Goal continuation prompts are treated as hidden context, so the original objective is no longer reposted into MagClaw threads on resumed goal turns.
+- Codex commentary-phase Goal updates are no longer uploaded as thread replies; Team Sharing keeps the final answer for each Goal turn.
+
 ## 0.1.57 - 2026-06-08 - Update health records
 ### new
 - Team Sharing updates now record explicit Health Records after smoke verification.

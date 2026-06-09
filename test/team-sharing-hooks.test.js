@@ -82,30 +82,28 @@ test('team sharing hook parser uses explicit session title and keeps only final 
   assert.equal(parsed.events[1].rawEventId, parsed.events[1].eventId);
 });
 
-test('team sharing hook parser marks Codex goal replies and preserves each progress reply', () => {
+test('team sharing hook parser marks Codex goal replies while dropping commentary progress', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-goal-progress', cwd: '/repo/magclaw' } }),
     JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '帮我修复 Team Sharing 登录态' }] } }),
     JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'function_call', name: 'create_goal', call_id: 'call_goal_progress', arguments: JSON.stringify({ objective: '修复 Team Sharing 登录态' }) } }),
     JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_goal_progress', output: JSON.stringify({ objective: '修复 Team Sharing 登录态', status: 'active' }) } }),
-    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '我会先改三个核心点：SESSION_TTL_MS、fingerprint、链接保护。' }] } }),
-    JSON.stringify({ timestamp: '2026-06-01T12:00:05.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已完成并推送：登录态 TTL 和链接鉴权已修复。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:04.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: '我会先改三个核心点：SESSION_TTL_MS、fingerprint、链接保护。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:05.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: '已完成并推送：登录态 TTL 和链接鉴权已修复。' }] } }),
   ].join('\n');
 
   const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
 
   assert.deepEqual(parsed.events.map((event) => event.text), [
     '帮我修复 Team Sharing 登录态',
-    '我会先改三个核心点：SESSION_TTL_MS、fingerprint、链接保护。',
     '已完成并推送：登录态 TTL 和链接鉴权已修复。',
   ]);
-  assert.deepEqual(parsed.events.map((event) => event.ordinal), [1, 4, 5]);
+  assert.deepEqual(parsed.events.map((event) => event.ordinal), [1, 5]);
   assert.equal(parsed.events[0].presentation.mode, 'goal');
   assert.equal(parsed.events[1].presentation.mode, 'goal');
   assert.equal(parsed.events[1].presentation.goal.reply, true);
   assert.equal(parsed.events[1].presentation.goal.objective, '修复 Team Sharing 登录态');
-  assert.equal(parsed.events[2].presentation.mode, 'goal');
-  assert.equal(parsed.events[2].presentation.goal.reply, true);
+  assert.doesNotMatch(JSON.stringify(parsed.events), /我会先改三个核心点/);
 });
 
 test('team sharing hook parser preserves user guidance while dropping intermediate Codex replies', () => {
@@ -388,7 +386,7 @@ test('team sharing hook parser marks matching Codex goal requests and separates 
   assert.equal(generatedReply.presentation.goal.objective, '真正执行目标：验证 Goal metadata 云端展示');
 });
 
-test('team sharing hook parser normalizes Codex internal goal context', () => {
+test('team sharing hook parser hides Codex internal goal context and commentary', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-goal-internal', cwd: '/repo/magclaw' } }),
     JSON.stringify({
@@ -414,17 +412,19 @@ test('team sharing hook parser normalizes Codex internal goal context', () => {
         }],
       },
     }),
-    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '阶段结果：SSE 首包已经减小。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'commentary', content: [{ type: 'output_text', text: '我先看 SSE 首包和 resync 触发条件。' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: '阶段结果：SSE 首包已经减小。' }] } }),
   ].join('\n');
 
   const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
 
-  assert.equal(parsed.events[0].role, 'user');
-  assert.equal(parsed.events[0].text, '把正式环境性能优化作为今天最重要的目标，在不牺牲体验的情况下提升响应速度。');
+  assert.equal(parsed.events.length, 1);
+  assert.equal(parsed.events[0].role, 'assistant');
+  assert.equal(parsed.events[0].text, '阶段结果：SSE 首包已经减小。');
   assert.equal(parsed.events[0].presentation.mode, 'goal');
-  assert.equal(parsed.events[0].presentation.goal.source, 'user');
-  assert.equal(parsed.events[0].presentation.goal.objectiveMatchesUser, true);
-  assert.doesNotMatch(JSON.stringify(parsed.events), /codex_internal_context|Continuation behavior|higher-priority instructions/);
+  assert.equal(parsed.events[0].presentation.goal.reply, true);
+  assert.equal(parsed.events[0].presentation.goal.objective, '把正式环境性能优化作为今天最重要的目标，在不牺牲体验的情况下提升响应速度。');
+  assert.doesNotMatch(JSON.stringify(parsed.events), /codex_internal_context|Continuation behavior|higher-priority instructions|我先看 SSE/);
 });
 
 test('team sharing hook parser extracts Claude Code questions and approved plans', () => {
@@ -626,7 +626,7 @@ test('team sharing sync package is incremental and idempotent from local cursor'
   assert.equal(pkg.cursor.lastEventId, pkg.body.events[0].eventId);
 });
 
-test('team sharing sync package uploads each Codex goal continuation after cursor advances', () => {
+test('team sharing sync package uploads only final Codex goal replies after cursor advances', () => {
   const goalContext = (createdAt, suffix) => JSON.stringify({
     timestamp: createdAt,
     type: 'response_item',
@@ -658,11 +658,11 @@ test('team sharing sync package uploads each Codex goal continuation after curso
   });
 
   assert.deepEqual(firstPkg.body.events.map((event) => event.text), [
-    '持续优化正式环境响应速度',
     '第一阶段结果：SSE 首包只保留 heartbeat。',
   ]);
-  assert.equal(firstPkg.body.events[1].presentation.mode, 'goal');
-  assert.equal(firstPkg.body.events[1].presentation.goal.reply, true);
+  assert.equal(firstPkg.body.events[0].presentation.mode, 'goal');
+  assert.equal(firstPkg.body.events[0].presentation.goal.reply, true);
+  assert.equal(firstPkg.body.events[0].presentation.goal.objective, '持续优化正式环境响应速度');
   assert.equal(firstPkg.cursor.lastOrdinal, 2);
 
   const secondTranscript = [
@@ -679,12 +679,12 @@ test('team sharing sync package uploads each Codex goal continuation after curso
   });
 
   assert.deepEqual(secondPkg.body.events.map((event) => event.text), [
-    '持续优化正式环境响应速度',
     '第二阶段结果：resync 只在必要时触发。',
   ]);
-  assert.equal(secondPkg.body.events[1].presentation.mode, 'goal');
-  assert.equal(secondPkg.body.events[1].presentation.goal.reply, true);
-  assert.equal(secondPkg.body.fromOrdinal, 3);
+  assert.equal(secondPkg.body.events[0].presentation.mode, 'goal');
+  assert.equal(secondPkg.body.events[0].presentation.goal.reply, true);
+  assert.equal(secondPkg.body.events[0].presentation.goal.objective, '持续优化正式环境响应速度');
+  assert.equal(secondPkg.body.fromOrdinal, 4);
   assert.equal(secondPkg.body.toOrdinal, 4);
   assert.equal(secondPkg.cursor.lastOrdinal, 4);
   assert.doesNotMatch(JSON.stringify(secondPkg.body.events), /第一阶段结果|codex_internal_context|Continuation behavior/);
