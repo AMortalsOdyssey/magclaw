@@ -1482,24 +1482,48 @@ export function createSystemServices(deps) {
   }
 
   function compareMemberDirectorySortParts(a, b) {
-    const timeDiff = memberDirectorySortTimestamp(a?.invitedAt) - memberDirectorySortTimestamp(b?.invitedAt);
+    const leftTime = Number.isFinite(a?.time) ? a.time : memberDirectorySortTimestamp(a?.invitedAt);
+    const rightTime = Number.isFinite(b?.time) ? b.time : memberDirectorySortTimestamp(b?.invitedAt);
+    const timeDiff = leftTime - rightTime;
     if (timeDiff) return timeDiff;
     return String(a?.id || '').localeCompare(String(b?.id || ''));
   }
 
-  function acceptedInvitationForDirectoryMember(member = {}, invitations = [], humansById = new Map()) {
+  function earlierDirectoryInvitation(left = null, right = null) {
+    if (!left) return right || null;
+    if (!right) return left;
+    return compareMemberDirectorySortParts(
+      { invitedAt: left.createdAt, time: memberDirectorySortTimestamp(left.createdAt), id: left.id },
+      { invitedAt: right.createdAt, time: memberDirectorySortTimestamp(right.createdAt), id: right.id },
+    ) <= 0 ? left : right;
+  }
+
+  function setEarlierDirectoryInvitation(map, key, invitation) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) return;
+    map.set(normalizedKey, earlierDirectoryInvitation(map.get(normalizedKey), invitation));
+  }
+
+  function acceptedInvitationDirectoryIndex(invitations = []) {
+    const byAcceptedBy = new Map();
+    const byEmail = new Map();
+    for (const invitation of records(invitations)) {
+      if (!invitation?.acceptedAt) continue;
+      setEarlierDirectoryInvitation(byAcceptedBy, invitation.acceptedBy, invitation);
+      setEarlierDirectoryInvitation(byEmail, String(invitation.email || '').trim().toLowerCase(), invitation);
+    }
+    return { byAcceptedBy, byEmail };
+  }
+
+  function acceptedInvitationForDirectoryMember(member = {}, invitationIndex = {}, humansById = new Map()) {
     const email = memberDirectoryEmail(member, humansById).toLowerCase();
     const userId = String(member?.user?.id || member?.userId || '').trim();
-    return records(invitations)
-      .filter((invitation) => {
-        if (!invitation?.acceptedAt) return false;
-        if (userId && invitation.acceptedBy === userId) return true;
-        return email && String(invitation.email || '').trim().toLowerCase() === email;
-      })
-      .sort((a, b) => compareMemberDirectorySortParts(
-        { invitedAt: a.createdAt, id: a.id },
-        { invitedAt: b.createdAt, id: b.id },
-      ))[0] || null;
+    const byAcceptedBy = invitationIndex?.byAcceptedBy instanceof Map ? invitationIndex.byAcceptedBy : new Map();
+    const byEmail = invitationIndex?.byEmail instanceof Map ? invitationIndex.byEmail : new Map();
+    return earlierDirectoryInvitation(
+      userId ? byAcceptedBy.get(userId) : null,
+      email ? byEmail.get(email) : null,
+    );
   }
 
   function compactMembersDirectoryUser(user = null, human = {}) {
@@ -1571,18 +1595,23 @@ export function createSystemServices(deps) {
   }
 
   function memberDirectorySortParts(row = {}, humansById = new Map()) {
+    if (row.sortParts && typeof row.sortParts === 'object') return row.sortParts;
     if (row.type === 'invitation') {
+      const invitedAt = row.invitation?.createdAt;
       return {
         group: 1,
-        invitedAt: row.invitation?.createdAt,
+        invitedAt,
+        time: memberDirectorySortTimestamp(invitedAt),
         id: row.invitation?.id || row.invitation?.email || '',
       };
     }
     const member = row.member || {};
     const human = memberDirectoryHumanRecord(member, humansById);
+    const invitedAt = row.invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt;
     return {
       group: 0,
-      invitedAt: row.invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt,
+      invitedAt,
+      time: memberDirectorySortTimestamp(invitedAt),
       id: row.invitation?.id || member.id || member.userId || memberDirectoryEmail(member, humansById),
     };
   }
@@ -1593,6 +1622,13 @@ export function createSystemServices(deps) {
     const groupDiff = left.group - right.group;
     if (groupDiff) return groupDiff;
     return compareMemberDirectorySortParts(left, right);
+  }
+
+  function membersDirectoryRowsAlreadySorted(rows = [], humansById = new Map()) {
+    for (let index = 1; index < rows.length; index += 1) {
+      if (compareMembersDirectoryRows(rows[index - 1], rows[index], humansById) > 0) return false;
+    }
+    return true;
   }
 
   function compactMembersDirectoryRow(row = {}, humansById = new Map()) {
@@ -1625,38 +1661,58 @@ export function createSystemServices(deps) {
       || !invitation?.workspaceId
       || String(invitation.workspaceId) === workspaceId
     ));
+    const acceptedInvitationIndex = acceptedInvitationDirectoryIndex(invitations);
     const activeMembers = records(cloud?.members)
       .filter((member) => (
         (!workspaceId || !member?.workspaceId || String(member.workspaceId) === workspaceId)
         && String(member?.status || 'active') === 'active'
       ));
     const activeEmails = new Set(activeMembers.map((member) => memberDirectoryEmail(member, humansById).toLowerCase()).filter(Boolean));
+    const nowMs = Date.now();
     const rows = [
       ...activeMembers.map((member) => {
-        const invitation = acceptedInvitationForDirectoryMember(member, invitations, humansById);
+        const invitation = acceptedInvitationForDirectoryMember(member, acceptedInvitationIndex, humansById);
         const human = memberDirectoryHumanRecord(member, humansById);
+        const sortAt = invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '';
         return {
           type: 'member',
           member,
           invitation,
-          sortAt: invitation?.createdAt || member.createdAt || member.joinedAt || human.createdAt || human.joinedAt || '',
+          sortAt,
+          sortParts: {
+            group: 0,
+            invitedAt: sortAt,
+            time: memberDirectorySortTimestamp(sortAt),
+            id: invitation?.id || member.id || member.userId || memberDirectoryEmail(member, humansById),
+          },
         };
       }),
       ...invitations
         .filter((invitation) => !invitation.acceptedAt && !invitation.revokedAt)
-        .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > Date.now())
+        .filter((invitation) => !invitation.expiresAt || Date.parse(invitation.expiresAt) > nowMs)
         .filter((invitation) => !activeEmails.has(String(invitation.email || '').trim().toLowerCase()))
-        .map((invitation) => ({
-          type: 'invitation',
-          invitation,
-          sortAt: invitation.createdAt || '',
-        })),
+        .map((invitation) => {
+          const sortAt = invitation.createdAt || '';
+          return {
+            type: 'invitation',
+            invitation,
+            sortAt,
+            sortParts: {
+              group: 1,
+              invitedAt: sortAt,
+              time: memberDirectorySortTimestamp(sortAt),
+              id: invitation.id || invitation.email || '',
+            },
+          };
+        }),
     ];
     const filteredRows = query
       ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById), query))
       : rows;
     return {
-      rows: filteredRows.sort((a, b) => compareMembersDirectoryRows(a, b, humansById)),
+      rows: membersDirectoryRowsAlreadySorted(filteredRows, humansById)
+        ? filteredRows
+        : filteredRows.sort((a, b) => compareMembersDirectoryRows(a, b, humansById)),
       humansById,
     };
   }

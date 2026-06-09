@@ -1798,6 +1798,70 @@ test('members directory compacts only visible page rows', () => {
   assert.equal(page.rows[0].member.human.name, 'Visible Human');
 });
 
+test('members directory indexes accepted invitations without leaking sort internals', () => {
+  const acceptedEarly = '2026-05-17T00:00:00.000Z';
+  const acceptedLate = '2026-05-18T00:00:00.000Z';
+  const page = makeServices((state) => {
+    state.humans = [
+      {
+        id: 'hum_1',
+        workspaceId: 'local',
+        userId: 'usr_1',
+        name: 'Visible Human',
+        email: 'visible@example.test',
+        createdAt: acceptedLate,
+      },
+    ];
+  }, {
+    publicCloudState: () => ({
+      auth: {
+        currentUser: { id: 'usr_1' },
+        currentMember: { id: 'mem_1', workspaceId: 'local', humanId: 'hum_1', role: 'owner' },
+        storageBackend: 'postgres',
+      },
+      workspace: { id: 'local', slug: 'local' },
+      members: [
+        {
+          id: 'mem_1',
+          workspaceId: 'local',
+          userId: 'usr_1',
+          humanId: 'hum_1',
+          role: 'owner',
+          status: 'active',
+          createdAt: acceptedLate,
+          user: { id: 'usr_1', name: 'Visible Human', email: 'visible@example.test' },
+        },
+      ],
+      invitations: [
+        {
+          id: 'inv_late',
+          workspaceId: 'local',
+          email: 'visible@example.test',
+          acceptedBy: 'usr_1',
+          acceptedAt: acceptedLate,
+          createdAt: acceptedLate,
+        },
+        {
+          id: 'inv_early',
+          workspaceId: 'local',
+          email: 'visible@example.test',
+          acceptedBy: 'usr_1',
+          acceptedAt: acceptedLate,
+          createdAt: acceptedEarly,
+        },
+      ],
+    }),
+  }).publicMembersDirectoryState({
+    url: '/api/members/directory?page=1&pageSize=10',
+    headers: {},
+  });
+
+  assert.equal(page.total, 1);
+  assert.equal(page.rows[0].member.id, 'mem_1');
+  assert.equal(page.rows[0].invitation.id, 'inv_early');
+  assert.equal(JSON.stringify(page).includes('sortParts'), false);
+});
+
 test('public state exposes configured public URL for share exports', () => {
   const previous = process.env.MAGCLAW_PUBLIC_URL;
   process.env.MAGCLAW_PUBLIC_URL = 'https://magclaw.multiego.me/';
