@@ -63,7 +63,7 @@ function operationTitle(operation = '') {
   if (operation === 'status') return 'MagClaw Team Sharing 状态';
   if (operation === 'doctor') return 'MagClaw Team Sharing 检查';
   if (operation === 'hooks') return 'MagClaw Team Sharing Hooks';
-  if (operation === 'skills') return 'MagClaw Team Sharing Skill';
+  if (operation === 'skills') return 'MagClaw Team Sharing Skills';
   if (operation === 'channel_setup') return 'MagClaw Team Sharing 接入指南';
   return 'MagClaw Team Sharing 已安装';
 }
@@ -138,16 +138,17 @@ function feedbackSections({ result = {} } = {}) {
         `项目配置：${lineStatus(projectOk, '已连接到当前 MagClaw 项目', '尚未检测到项目配置')}`,
         `登录状态：${lineStatus(loginOk, '已具备 Team Sharing 权限', '需要重新登录或批准设备登录')}`,
         `目标 Runtime：${targets.length ? targets.join(', ') : 'Codex / Claude Code'}`,
-        `Skill：${lineStatus(skillOk, '已安装 magclaw-team-sharing', '需要安装或修复 Skill')}`,
+        `Skills：${lineStatus(skillOk, '已安装 Team Sharing 插件/Skills 集合', '需要安装或修复 Team Sharing 插件/Skills')}`,
         `Hooks：${lineStatus(hooksOk, '已配置自动同步', '需要安装或修复 Hooks')}`,
       ],
     },
     {
       title: 'Skill 说明',
       items: [
-        '`magclaw-team-sharing` Skill 已安装到 Codex / Claude Code 可访问的位置。',
-        '它可以检索团队会话、读取共享上下文、整理结论，并把 Markdown/HTML 等产物发布成 MagClaw 分享链接。',
-        '使用示例：在 Codex 里说“帮我用 magclaw-team-sharing 搜索这个 Channel 里关于 NPM 发布的问题”。',
+        'Codex 已安装 `magclaw-team-sharing` 插件集合；Claude Code 已安装对应的多个 Team Sharing standalone skills。',
+        '集合能力覆盖项目接入、会话上报控制、团队检索、受保护链接读取、分享发布、局部编辑和链接管理。',
+        'Codex 插件更新后需要新开一个 Codex thread 才能加载新的插件 skills。',
+        '使用示例：在 Codex 里说“搜索 Team Sharing 里关于 NPM 发布的问题”。',
       ],
     },
     {
@@ -198,7 +199,7 @@ export function buildTeamSharingOnboardingFeedback({
     nextSteps: [
       '回到 Codex / Claude Code 正常工作，Hooks 会在会话节点自动同步清洗后的上下文。',
       '需要查看上报数据时，打开上面的 MagClaw Channel 链接。',
-      '需要复用团队上下文时，在 Agent 对话里直接让 magclaw-team-sharing 检索相关讨论。',
+      '需要复用团队上下文时，在 Agent 对话里直接让 Team Sharing 检索相关讨论。',
     ],
     expectations: [
       'Hooks 会在会话结束、压缩前或会话开始时自动尝试同步。',

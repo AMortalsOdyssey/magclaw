@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { appendFile, chmod, cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -25,10 +25,21 @@ export const TEAM_SHARING_INTEGRATION = 'team-sharing';
 const DEFAULT_PROFILE = 'default';
 const DEFAULT_SERVER_URL = 'https://magclaw.multiego.me';
 const TEAM_SHARING_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TEAM_SHARING_SKILL_TEMPLATE = path.join(TEAM_SHARING_PACKAGE_ROOT, 'skills', 'magclaw-team-sharing', 'SKILL.md');
+const TEAM_SHARING_PLUGIN_NAME = 'magclaw-team-sharing';
+const TEAM_SHARING_MARKETPLACE_NAME = 'magclaw';
+const TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT = path.join(TEAM_SHARING_PACKAGE_ROOT, 'codex-plugin');
 const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const TEAM_SHARING_AGENT_SKILL_IDS = Object.freeze([
+  'setup',
+  'session-reporting',
+  'search',
+  'read-link',
+  'share-artifact',
+  'edit-link',
+  'manage-links',
+]);
 
 function now() {
   return new Date().toISOString();
@@ -512,10 +523,9 @@ async function ensureProjectInstallIgnored(projectDir = '', runtimes = []) {
   for (const runtime of runtimes.map(normalizeRuntime)) {
     if (runtime === 'claude_code') {
       entries.add('.claude/settings.local.json');
-      entries.add('.claude/skills/magclaw-team-sharing/');
+      entries.add('.claude/skills/magclaw-team-sharing-*/');
     } else {
       entries.add('.codex/hooks.json');
-      entries.add('.agents/skills/magclaw-team-sharing/');
     }
   }
   let existing = '';
@@ -807,7 +817,7 @@ function currentTeamSharingSourceCommit(env = process.env) {
   return 'unknown';
 }
 
-async function teamSharingTemplateVars(env = process.env) {
+async function teamSharingTemplateVars(env = process.env, overrides = {}) {
   const packageJson = await readTeamSharingPackageJson();
   const explicitSourceCommit = cleanTemplateCommit(env.MAGCLAW_TEAM_SHARING_SOURCE_COMMIT || '');
   return {
@@ -815,6 +825,9 @@ async function teamSharingTemplateVars(env = process.env) {
     TEAM_SHARING_SOURCE_COMMIT: explicitSourceCommit !== 'unknown'
       ? explicitSourceCommit
       : cleanTemplateCommit(packageJson.gitHead || currentTeamSharingSourceCommit(env)),
+    TEAM_SHARING_SKILL_NAME_PREFIX: '',
+    TEAM_SHARING_SURFACE: 'template',
+    ...overrides,
   };
 }
 
@@ -824,14 +837,37 @@ function renderTeamSharingTemplate(text = '', vars = {}) {
   ));
 }
 
+async function renderTeamSharingTemplateFile(sourcePath, targetPath, vars = {}) {
+  const template = await readFile(sourcePath, 'utf8');
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, renderTeamSharingTemplate(template, vars));
+  return targetPath;
+}
+
+async function renderTeamSharingTemplateDirectory(sourceDir, targetDir, vars = {}) {
+  await rm(targetDir, { recursive: true, force: true });
+  await mkdir(targetDir, { recursive: true });
+  const written = [];
+  async function visit(sourceRoot, targetRoot) {
+    const entries = await readdir(sourceRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      const sourcePath = path.join(sourceRoot, entry.name);
+      const targetPath = path.join(targetRoot, entry.name);
+      if (entry.isDirectory()) {
+        await mkdir(targetPath, { recursive: true });
+        await visit(sourcePath, targetPath);
+      } else if (entry.isFile()) {
+        written.push(await renderTeamSharingTemplateFile(sourcePath, targetPath, vars));
+      }
+    }
+  }
+  await visit(sourceDir, targetDir);
+  return written;
+}
+
 function jsonStringContent(value = '') {
   const encoded = JSON.stringify(String(value || ''));
   return encoded.slice(1, -1);
-}
-
-async function teamSharingSkillMarkdown(env = process.env) {
-  const template = await readFile(TEAM_SHARING_SKILL_TEMPLATE, 'utf8');
-  return renderTeamSharingTemplate(template, await teamSharingTemplateVars(env));
 }
 
 async function readTeamSharingHookTemplateConfig(runtime, hookOptions = {}, env = process.env) {
@@ -3449,23 +3485,270 @@ function skillRootForTarget(runtime, flags = {}, env = process.env, installTarge
   return path.resolve(env.CODEX_HOME || path.join(home, '.codex'));
 }
 
-async function writeTeamSharingSkill(rootDir, env = process.env) {
-  const skillDir = path.join(rootDir, 'skills', 'magclaw-team-sharing');
-  await mkdir(skillDir, { recursive: true });
-  const skillPath = path.join(skillDir, 'SKILL.md');
-  await writeFile(skillPath, await teamSharingSkillMarkdown(env));
-  return skillPath;
+function teamSharingCodexPluginPaths(flags = {}, env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const marketplaceRoot = path.resolve(
+    flags.codexMarketplaceRoot
+      || flags.marketplaceRoot
+      || env.MAGCLAW_TEAM_SHARING_CODEX_MARKETPLACE_ROOT
+      || path.join(paths.sharingHome, 'codex-marketplace'),
+  );
+  return {
+    marketplaceName: TEAM_SHARING_MARKETPLACE_NAME,
+    marketplaceRoot,
+    marketplacePath: path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+    pluginPath: path.join(marketplaceRoot, 'plugins', TEAM_SHARING_PLUGIN_NAME),
+  };
+}
+
+function codexCommandForTeamSharing(flags = {}, env = process.env) {
+  return String(flags.codexCommand || env.MAGCLAW_TEAM_SHARING_CODEX_COMMAND || 'codex').trim() || 'codex';
+}
+
+function codexCommandResultOk(result = {}) {
+  if (result.ok) return true;
+  const text = `${result.stdout || ''}\n${result.stderr || ''}\n${result.error || ''}`;
+  return /already|exists|configured|installed/i.test(text);
+}
+
+function runCodexPluginCommand(args = [], flags = {}, env = process.env) {
+  const command = codexCommandForTeamSharing(flags, env);
+  if (flags.skipCodexPluginCommand || flags.skipCodexPluginCommands || env.MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND === '1') {
+    return { ok: true, skipped: true, command, args };
+  }
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return {
+    ok: result.status === 0,
+    command,
+    args,
+    status: result.status,
+    stdout: String(result.stdout || '').trim(),
+    stderr: String(result.stderr || '').trim(),
+    ...(result.error ? { error: result.error.message || String(result.error) } : {}),
+  };
+}
+
+function codexPluginInstalledInList(stdout = '') {
+  try {
+    const parsed = JSON.parse(stdout);
+    return [...(Array.isArray(parsed.installed) ? parsed.installed : []), ...(Array.isArray(parsed.available) ? parsed.available : [])]
+      .some((item) => item?.name === TEAM_SHARING_PLUGIN_NAME
+        && item?.marketplaceName === TEAM_SHARING_MARKETPLACE_NAME
+        && item?.installed !== false);
+  } catch {
+    return false;
+  }
+}
+
+async function writeTeamSharingCodexMarketplace(paths = {}, options = {}) {
+  const includePlugin = options.includePlugin !== false;
+  await mkdir(path.join(paths.marketplaceRoot, 'plugins'), { recursive: true });
+  await mkdir(path.dirname(paths.marketplacePath), { recursive: true });
+  const marketplace = {
+    name: TEAM_SHARING_MARKETPLACE_NAME,
+    interface: {
+      displayName: 'MagClaw',
+    },
+    plugins: includePlugin
+      ? [
+        {
+          name: TEAM_SHARING_PLUGIN_NAME,
+          source: {
+            source: 'local',
+            path: `./plugins/${TEAM_SHARING_PLUGIN_NAME}`,
+          },
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+          },
+          category: 'Developer Tools',
+        },
+      ]
+      : [],
+  };
+  await writeFile(paths.marketplacePath, `${JSON.stringify(marketplace, null, 2)}\n`);
+  return paths.marketplacePath;
+}
+
+function renderedPluginSkillPaths(pluginPath = '') {
+  return TEAM_SHARING_AGENT_SKILL_IDS.map((id) => ({
+    id,
+    name: id,
+    path: path.join(pluginPath, 'skills', id, 'SKILL.md'),
+  }));
+}
+
+function renderedClaudeSkillPaths(rootDir = '') {
+  return TEAM_SHARING_AGENT_SKILL_IDS.map((id) => ({
+    id,
+    name: `${TEAM_SHARING_PLUGIN_NAME}-${id}`,
+    path: path.join(rootDir, 'skills', `${TEAM_SHARING_PLUGIN_NAME}-${id}`, 'SKILL.md'),
+  }));
+}
+
+async function cleanupLegacyCodexTeamSharingSkill(rootDir) {
+  const legacyDir = path.join(rootDir, 'skills', TEAM_SHARING_PLUGIN_NAME);
+  const legacySkill = path.join(legacyDir, 'SKILL.md');
+  if (!existsSync(legacySkill)) return null;
+  const text = await readFile(legacySkill, 'utf8').catch(() => '');
+  if (!text.includes('package: @magclaw/team-sharing')) {
+    return { path: legacyDir, removed: false, reason: 'non_generated_skill_preserved' };
+  }
+  await rm(legacyDir, { recursive: true, force: true });
+  return { path: legacyDir, removed: true, reason: 'legacy_generated_skill_removed' };
+}
+
+async function installCodexTeamSharingPlugin(flags = {}, env = process.env, installTarget = null) {
+  const paths = teamSharingCodexPluginPaths(flags, env);
+  const vars = await teamSharingTemplateVars(env, {
+    TEAM_SHARING_SKILL_NAME_PREFIX: '',
+    TEAM_SHARING_SURFACE: 'codex-plugin',
+  });
+  const files = await renderTeamSharingTemplateDirectory(TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT, paths.pluginPath, vars);
+  const marketplacePath = await writeTeamSharingCodexMarketplace(paths);
+  const legacySkill = await cleanupLegacyCodexTeamSharingSkill(skillRootForTarget('codex', flags, env, installTarget));
+  const marketplaceAdd = runCodexPluginCommand(['plugin', 'marketplace', 'add', paths.marketplaceRoot], flags, env);
+  const pluginAdd = codexCommandResultOk(marketplaceAdd)
+    ? runCodexPluginCommand(['plugin', 'add', `${TEAM_SHARING_PLUGIN_NAME}@${TEAM_SHARING_MARKETPLACE_NAME}`], flags, env)
+    : { ok: false, skipped: true, reason: 'marketplace_add_failed' };
+  const ok = files.length > 0 && codexCommandResultOk(marketplaceAdd) && codexCommandResultOk(pluginAdd);
+  return {
+    ok,
+    target: 'codex',
+    runtime: 'codex',
+    type: 'codex_plugin',
+    pluginName: TEAM_SHARING_PLUGIN_NAME,
+    marketplaceName: TEAM_SHARING_MARKETPLACE_NAME,
+    marketplaceRoot: paths.marketplaceRoot,
+    marketplacePath,
+    pluginPath: paths.pluginPath,
+    installedSkills: renderedPluginSkillPaths(paths.pluginPath),
+    fileCount: files.length,
+    legacySkill,
+    commands: {
+      marketplaceAdd,
+      pluginAdd,
+    },
+  };
+}
+
+async function statusCodexTeamSharingPlugin(flags = {}, env = process.env, installTarget = null) {
+  const paths = teamSharingCodexPluginPaths(flags, env);
+  const installedSkills = renderedPluginSkillPaths(paths.pluginPath);
+  const localOk = existsSync(paths.marketplacePath)
+    && existsSync(path.join(paths.pluginPath, '.codex-plugin', 'plugin.json'))
+    && installedSkills.every((item) => existsSync(item.path));
+  const legacySkillPath = path.join(skillRootForTarget('codex', flags, env, installTarget), 'skills', TEAM_SHARING_PLUGIN_NAME, 'SKILL.md');
+  const list = runCodexPluginCommand(['plugin', 'list', '--json'], flags, env);
+  const installedInCodex = list.ok ? codexPluginInstalledInList(list.stdout) : false;
+  return {
+    ok: localOk && (list.ok && !list.skipped ? installedInCodex : true),
+    target: 'codex',
+    runtime: 'codex',
+    type: 'codex_plugin',
+    pluginName: TEAM_SHARING_PLUGIN_NAME,
+    marketplaceName: TEAM_SHARING_MARKETPLACE_NAME,
+    marketplaceRoot: paths.marketplaceRoot,
+    marketplacePath: paths.marketplacePath,
+    pluginPath: paths.pluginPath,
+    installedSkills: installedSkills.filter((item) => existsSync(item.path)),
+    expectedSkills: TEAM_SHARING_AGENT_SKILL_IDS,
+    legacySkillPresent: existsSync(legacySkillPath),
+    codexList: list,
+    installedInCodex,
+  };
+}
+
+async function removeCodexTeamSharingPlugin(flags = {}, env = process.env, installTarget = null) {
+  const paths = teamSharingCodexPluginPaths(flags, env);
+  const pluginRemove = runCodexPluginCommand(['plugin', 'remove', `${TEAM_SHARING_PLUGIN_NAME}@${TEAM_SHARING_MARKETPLACE_NAME}`], flags, env);
+  const legacySkill = await cleanupLegacyCodexTeamSharingSkill(skillRootForTarget('codex', flags, env, installTarget));
+  const removed = [];
+  if (existsSync(paths.pluginPath)) {
+    await rm(paths.pluginPath, { recursive: true, force: true });
+    removed.push({ target: 'codex', type: 'codex_plugin', path: paths.pluginPath });
+  }
+  const marketplacePath = await writeTeamSharingCodexMarketplace(paths, { includePlugin: false });
+  if (legacySkill?.removed) removed.push({ target: 'codex', type: 'legacy_skill', path: legacySkill.path });
+  return {
+    ok: codexCommandResultOk(pluginRemove),
+    target: 'codex',
+    runtime: 'codex',
+    type: 'codex_plugin',
+    pluginName: TEAM_SHARING_PLUGIN_NAME,
+    marketplaceName: TEAM_SHARING_MARKETPLACE_NAME,
+    marketplaceRoot: paths.marketplaceRoot,
+    marketplacePath,
+    pluginPath: paths.pluginPath,
+    removed,
+    legacySkill,
+    command: pluginRemove,
+  };
+}
+
+async function disableCodexTeamSharingPlugin(flags = {}, env = process.env) {
+  const paths = teamSharingCodexPluginPaths(flags, env);
+  const pluginRemove = runCodexPluginCommand(['plugin', 'remove', `${TEAM_SHARING_PLUGIN_NAME}@${TEAM_SHARING_MARKETPLACE_NAME}`], flags, env);
+  return {
+    ok: codexCommandResultOk(pluginRemove),
+    target: 'codex',
+    runtime: 'codex',
+    type: 'codex_plugin',
+    pluginName: TEAM_SHARING_PLUGIN_NAME,
+    marketplaceName: TEAM_SHARING_MARKETPLACE_NAME,
+    marketplaceRoot: paths.marketplaceRoot,
+    pluginPath: paths.pluginPath,
+    disabled: [{ target: 'codex', type: 'codex_plugin', pluginName: TEAM_SHARING_PLUGIN_NAME }],
+    command: pluginRemove,
+  };
+}
+
+async function installClaudeTeamSharingSkills(rootDir, env = process.env) {
+  const vars = await teamSharingTemplateVars(env, {
+    TEAM_SHARING_SKILL_NAME_PREFIX: `${TEAM_SHARING_PLUGIN_NAME}-`,
+    TEAM_SHARING_SURFACE: 'claude-standalone',
+  });
+  const installedSkills = [];
+  for (const id of TEAM_SHARING_AGENT_SKILL_IDS) {
+    const targetDir = path.join(rootDir, 'skills', `${TEAM_SHARING_PLUGIN_NAME}-${id}`);
+    await renderTeamSharingTemplateDirectory(path.join(TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT, 'skills', id), targetDir, vars);
+    installedSkills.push({ id, name: `${TEAM_SHARING_PLUGIN_NAME}-${id}`, path: path.join(targetDir, 'SKILL.md') });
+  }
+  return installedSkills;
 }
 
 export async function installTeamSharingSkill(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: true });
   const targets = selectedTargets(flags, env);
   const ignored = installTarget.scope === 'project' ? await ensureProjectInstallIgnored(installTarget.projectDir, targets) : [];
-  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored, installed: [] };
+  const output = { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', ignored, installed: [], surfaces: [] };
   for (const runtime of targets) {
-    output.installed.push({ target: runtime, path: await writeTeamSharingSkill(skillRootForTarget(runtime, flags, env, installTarget), env) });
+    if (runtime === 'codex') {
+      const surface = await installCodexTeamSharingPlugin(flags, env, installTarget);
+      output.surfaces.push(surface);
+      if (surface.ok) output.installed.push({ target: runtime, type: surface.type, path: surface.pluginPath, pluginName: surface.pluginName });
+      continue;
+    }
+    if (runtime === 'claude_code') {
+      const root = skillRootForTarget(runtime, flags, env, installTarget);
+      const installedSkills = await installClaudeTeamSharingSkills(root, env);
+      const surface = {
+        ok: installedSkills.length === TEAM_SHARING_AGENT_SKILL_IDS.length,
+        target: runtime,
+        runtime,
+        type: 'standalone_skills',
+        root,
+        installedSkills,
+      };
+      output.surfaces.push(surface);
+      if (surface.ok) output.installed.push({ target: runtime, type: surface.type, paths: installedSkills.map((item) => item.path) });
+    }
   }
-  output.ok = output.installed.length > 0;
+  output.ok = output.surfaces.length > 0 && output.surfaces.every((surface) => surface.ok);
   output.feedback = buildTeamSharingOnboardingFeedback({
     operation: 'skills',
     ok: output.ok,
@@ -3478,20 +3761,43 @@ export async function statusTeamSharingSkill(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const targets = selectedTargets(flags, env);
   const installed = [];
+  const surfaces = [];
   for (const runtime of targets) {
-    const skillPath = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing', 'SKILL.md');
-    if (existsSync(skillPath)) installed.push({ target: runtime, path: skillPath });
+    if (runtime === 'codex') {
+      const surface = await statusCodexTeamSharingPlugin(flags, env, installTarget);
+      surfaces.push(surface);
+      if (surface.ok) installed.push({ target: runtime, type: surface.type, path: surface.pluginPath, pluginName: surface.pluginName });
+      continue;
+    }
+    if (runtime === 'claude_code') {
+      const root = skillRootForTarget(runtime, flags, env, installTarget);
+      const expected = renderedClaudeSkillPaths(root);
+      const installedSkills = expected.filter((item) => existsSync(item.path));
+      const surface = {
+        ok: installedSkills.length === expected.length,
+        target: runtime,
+        runtime,
+        type: 'standalone_skills',
+        root,
+        expectedSkills: expected.map((item) => item.name),
+        installedSkills,
+      };
+      surfaces.push(surface);
+      if (surface.ok) installed.push({ target: runtime, type: surface.type, paths: installedSkills.map((item) => item.path) });
+    }
   }
+  const ok = surfaces.length > 0 && surfaces.every((surface) => surface.ok);
   return {
-    ok: installed.length === targets.length,
+    ok,
     scope: installTarget.scope,
     projectDir: installTarget.projectDir || '',
     expectedTargets: targets,
     installed,
+    surfaces,
     feedback: buildTeamSharingOnboardingFeedback({
       operation: 'skills',
-      ok: installed.length === targets.length,
-      skill: { ok: installed.length === targets.length, installed },
+      ok,
+      skill: { ok, installed, surfaces },
     }),
   };
 }
@@ -3499,28 +3805,57 @@ export async function statusTeamSharingSkill(flags = {}, env = process.env) {
 export async function removeTeamSharingSkill(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const removed = [];
+  const surfaces = [];
   for (const runtime of selectedTargets(flags, env)) {
-    const skillDir = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing');
-    if (existsSync(skillDir)) {
-      await rm(skillDir, { recursive: true, force: true });
-      removed.push({ target: runtime, path: skillDir });
+    if (runtime === 'codex') {
+      const surface = await removeCodexTeamSharingPlugin(flags, env, installTarget);
+      surfaces.push(surface);
+      removed.push(...surface.removed);
+      continue;
+    }
+    if (runtime === 'claude_code') {
+      const root = skillRootForTarget(runtime, flags, env, installTarget);
+      const surface = { ok: true, target: runtime, runtime, type: 'standalone_skills', root, removed: [] };
+      for (const item of renderedClaudeSkillPaths(root)) {
+        const skillDir = path.dirname(item.path);
+        if (existsSync(skillDir)) {
+          await rm(skillDir, { recursive: true, force: true });
+          surface.removed.push({ target: runtime, type: 'standalone_skill', path: skillDir, name: item.name });
+        }
+      }
+      surfaces.push(surface);
+      removed.push(...surface.removed);
     }
   }
-  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', removed };
+  return { ok: surfaces.every((surface) => surface.ok), scope: installTarget.scope, projectDir: installTarget.projectDir || '', removed, surfaces };
 }
 
 export async function disableTeamSharingSkill(flags = {}, env = process.env) {
   const installTarget = await resolveInstallTarget(flags, env, { prompt: false });
   const disabled = [];
+  const surfaces = [];
   for (const runtime of selectedTargets(flags, env)) {
-    const skillPath = path.join(skillRootForTarget(runtime, flags, env, installTarget), 'skills', 'magclaw-team-sharing', 'SKILL.md');
-    const disabledPath = `${skillPath}.disabled`;
-    if (existsSync(skillPath)) {
-      await rename(skillPath, disabledPath);
-      disabled.push({ target: runtime, path: disabledPath });
+    if (runtime === 'codex') {
+      const surface = await disableCodexTeamSharingPlugin(flags, env);
+      surfaces.push(surface);
+      disabled.push(...surface.disabled);
+      continue;
+    }
+    if (runtime === 'claude_code') {
+      const root = skillRootForTarget(runtime, flags, env, installTarget);
+      const surface = { ok: true, target: runtime, runtime, type: 'standalone_skills', root, disabled: [] };
+      for (const item of renderedClaudeSkillPaths(root)) {
+        const disabledPath = `${item.path}.disabled`;
+        if (existsSync(item.path)) {
+          await rename(item.path, disabledPath);
+          surface.disabled.push({ target: runtime, type: 'standalone_skill', path: disabledPath, name: item.name });
+        }
+      }
+      surfaces.push(surface);
+      disabled.push(...surface.disabled);
     }
   }
-  return { ok: true, scope: installTarget.scope, projectDir: installTarget.projectDir || '', disabled };
+  return { ok: surfaces.every((surface) => surface.ok), scope: installTarget.scope, projectDir: installTarget.projectDir || '', disabled, surfaces };
 }
 
 export async function setupTeamSharing(flags = {}, env = process.env) {

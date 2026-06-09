@@ -1,0 +1,39 @@
+{
+  "name": "magclaw-team-sharing",
+  "version": "0.2.0",
+  "description": "Team Sharing skills for searching, reading, sharing, editing, and controlling MagClaw team context from agent sessions.",
+  "author": {
+    "name": "MagClaw",
+    "url": "https://magclaw.multiego.me"
+  },
+  "homepage": "https://magclaw.multiego.me",
+  "repository": "https://github.com/AMortalsOdyssey/magclaw",
+  "license": "UNLICENSED",
+  "keywords": [
+    "magclaw",
+    "team-sharing",
+    "agent-context",
+    "skills"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "MagClaw Team Sharing",
+    "shortDescription": "Search, read, share, and manage MagClaw team context",
+    "longDescription": "Use MagClaw Team Sharing to connect projects, sync agent sessions through hooks, retrieve team discussions, read protected share/context links, publish artifacts, patch existing shares, and manage session reporting.",
+    "developerName": "MagClaw",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Search Team Sharing for yesterday's discussion.",
+      "Read this MagClaw share link.",
+      "Turn this summary into a Team Sharing link."
+    ],
+    "websiteURL": "https://magclaw.multiego.me",
+    "brandColor": "#06B6D4",
+    "screenshots": []
+  }
+}

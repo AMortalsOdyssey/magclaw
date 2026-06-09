@@ -66,7 +66,7 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
 });
 
-test('team-sharing package includes install-time skill and hook templates', () => {
+test('team-sharing package includes install-time plugin bundle and hook templates', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './team-sharing'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -76,9 +76,15 @@ test('team-sharing package includes install-time skill and hook templates', () =
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/team-sharing.js'));
   assert.ok(files.includes('src/team-sharing.js'));
-  assert.ok(files.includes('skills/magclaw-team-sharing/SKILL.md'));
+  assert.ok(files.includes('codex-plugin/.codex-plugin/plugin.json'));
+  for (const skill of ['setup', 'session-reporting', 'search', 'read-link', 'share-artifact', 'edit-link', 'manage-links']) {
+    assert.ok(files.includes(`codex-plugin/skills/${skill}/SKILL.md`));
+  }
+  assert.ok(files.includes('codex-plugin/skills/search/references/answer-style.md'));
+  assert.ok(files.includes('codex-plugin/skills/share-artifact/references/default-html-style.md'));
   assert.ok(files.includes('hooks/codex-hooks.json.template'));
   assert.ok(files.includes('hooks/claude-settings.local.json.template'));
+  assert.equal(files.some((file) => file.startsWith('skills/')), false);
   assert.equal(files.some((file) => file.startsWith('.agents/')), false);
   assert.equal(files.some((file) => file.startsWith('.claude/')), false);
   assert.equal(files.some((file) => file.startsWith('.codex/')), false);
