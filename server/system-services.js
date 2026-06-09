@@ -1073,9 +1073,13 @@ export function createSystemServices(deps) {
 
   function humansByIdForMembers(humans = [], members = [], options = {}) {
     const includeAll = options.includeAll === true;
-    const memberHumanIds = includeAll
-      ? null
-      : new Set(records(members).map((member) => String(member?.humanId || member?.human?.id || '')).filter(Boolean));
+    const memberHumanIds = includeAll ? null : new Set();
+    if (memberHumanIds) {
+      for (const member of records(members)) {
+        const id = String(member?.humanId || member?.human?.id || '');
+        if (id) memberHumanIds.add(id);
+      }
+    }
     const result = new Map();
     for (const human of records(humans)) {
       const id = String(human?.id || '');
@@ -1259,33 +1263,78 @@ export function createSystemServices(deps) {
     return String(value || '').trim().toLowerCase();
   }
 
-  function directorySearchText(values = []) {
+  function directorySearchHasWhitespace(query = '') {
+    return /\s/.test(String(query || ''));
+  }
+
+  function directorySearchNeedsCaseFold(query = '') {
+    const value = String(query || '');
+    return Boolean(value) && value.toUpperCase() !== value;
+  }
+
+  function directorySearchContext(value = '') {
+    if (value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'query')) {
+      return value;
+    }
+    const query = normalizeDirectorySearchQuery(value);
+    return {
+      query,
+      hasWhitespace: directorySearchHasWhitespace(query),
+      needsCaseFold: directorySearchNeedsCaseFold(query),
+    };
+  }
+
+  function directorySearchContextQuery(search = '') {
+    if (search && typeof search === 'object' && Object.prototype.hasOwnProperty.call(search, 'query')) {
+      return String(search.query || '');
+    }
+    return String(search || '');
+  }
+
+  function directorySearchContextHasWhitespace(search = '') {
+    if (search && typeof search === 'object' && Object.prototype.hasOwnProperty.call(search, 'hasWhitespace')) {
+      return Boolean(search.hasWhitespace);
+    }
+    return directorySearchHasWhitespace(search);
+  }
+
+  function directorySearchContextNeedsCaseFold(search = '') {
+    if (search && typeof search === 'object' && Object.prototype.hasOwnProperty.call(search, 'needsCaseFold')) {
+      return Boolean(search.needsCaseFold);
+    }
+    return directorySearchNeedsCaseFold(search);
+  }
+
+  function directorySearchText(values = [], search = null) {
+    const shouldLowercase = !search || directorySearchContextNeedsCaseFold(search);
     return records(values)
-      .map((value) => String(value || '').trim().toLowerCase())
+      .map((value) => {
+        const text = String(value || '').trim();
+        return shouldLowercase ? text.toLowerCase() : text;
+      })
       .filter(Boolean)
       .join(' ');
   }
 
-  function directorySearchMatches(text, query) {
+  function directorySearchMatches(text, search) {
+    const query = directorySearchContextQuery(search);
     if (!query) return true;
     return String(text || '').includes(query);
   }
 
-  function directorySearchSingleValueMatches(value, query) {
+  function directorySearchSingleValueMatches(value, search) {
+    const query = directorySearchContextQuery(search);
     if (!query) return true;
     if (value === undefined || value === null || value === '') return false;
     const text = String(value);
     if (!text) return false;
     if (text.includes(query)) return true;
+    if (!directorySearchContextNeedsCaseFold(search)) return false;
     const lowered = text.toLowerCase();
     return lowered !== text && lowered.includes(query);
   }
 
-  function directorySearchHasWhitespace(query = '') {
-    return /\s/.test(String(query || ''));
-  }
-
-  function agentDirectorySearchText(agent = {}) {
+  function agentDirectorySearchText(agent = {}, search = null) {
     return directorySearchText([
       agent.id,
       agent.name,
@@ -1295,23 +1344,24 @@ export function createSystemServices(deps) {
       agent.model,
       agent.creatorName,
       agent.creatorEmail,
-    ]);
+    ], search);
   }
 
-  function agentDirectorySearchMatches(agent = {}, query = '') {
+  function agentDirectorySearchMatches(agent = {}, search = '') {
+    const query = directorySearchContextQuery(search);
     if (!query) return true;
-    if (directorySearchHasWhitespace(query)) return directorySearchMatches(agentDirectorySearchText(agent), query);
-    return directorySearchSingleValueMatches(agent.id, query)
-      || directorySearchSingleValueMatches(agent.name, query)
-      || directorySearchSingleValueMatches(agent.description, query)
-      || directorySearchSingleValueMatches(agent.runtime, query)
-      || directorySearchSingleValueMatches(agent.runtimeId, query)
-      || directorySearchSingleValueMatches(agent.model, query)
-      || directorySearchSingleValueMatches(agent.creatorName, query)
-      || directorySearchSingleValueMatches(agent.creatorEmail, query);
+    if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(agentDirectorySearchText(agent, search), search);
+    return directorySearchSingleValueMatches(agent.id, search)
+      || directorySearchSingleValueMatches(agent.name, search)
+      || directorySearchSingleValueMatches(agent.description, search)
+      || directorySearchSingleValueMatches(agent.runtime, search)
+      || directorySearchSingleValueMatches(agent.runtimeId, search)
+      || directorySearchSingleValueMatches(agent.model, search)
+      || directorySearchSingleValueMatches(agent.creatorName, search)
+      || directorySearchSingleValueMatches(agent.creatorEmail, search);
   }
 
-  function humanDirectorySearchText(human = {}) {
+  function humanDirectorySearchText(human = {}, search = null) {
     return directorySearchText([
       human.id,
       human.name,
@@ -1322,24 +1372,25 @@ export function createSystemServices(deps) {
       human.role,
       human.thirdPartyName,
       human.third_party_name,
-    ]);
+    ], search);
   }
 
-  function humanDirectorySearchMatches(human = {}, query = '') {
+  function humanDirectorySearchMatches(human = {}, search = '') {
+    const query = directorySearchContextQuery(search);
     if (!query) return true;
-    if (directorySearchHasWhitespace(query)) return directorySearchMatches(humanDirectorySearchText(human), query);
-    return directorySearchSingleValueMatches(human.id, query)
-      || directorySearchSingleValueMatches(human.name, query)
-      || directorySearchSingleValueMatches(human.email, query)
-      || directorySearchSingleValueMatches(human.authUserId, query)
-      || directorySearchSingleValueMatches(human.userId, query)
-      || directorySearchSingleValueMatches(human.identityReference, query)
-      || directorySearchSingleValueMatches(human.role, query)
-      || directorySearchSingleValueMatches(human.thirdPartyName, query)
-      || directorySearchSingleValueMatches(human.third_party_name, query);
+    if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(humanDirectorySearchText(human, search), search);
+    return directorySearchSingleValueMatches(human.id, search)
+      || directorySearchSingleValueMatches(human.name, search)
+      || directorySearchSingleValueMatches(human.email, search)
+      || directorySearchSingleValueMatches(human.authUserId, search)
+      || directorySearchSingleValueMatches(human.userId, search)
+      || directorySearchSingleValueMatches(human.identityReference, search)
+      || directorySearchSingleValueMatches(human.role, search)
+      || directorySearchSingleValueMatches(human.thirdPartyName, search)
+      || directorySearchSingleValueMatches(human.third_party_name, search);
   }
 
-  function memberDirectorySearchText(member = {}, human = null) {
+  function memberDirectorySearchText(member = {}, human = null, search = null) {
     return directorySearchText([
       member.id,
       member.userId,
@@ -1359,30 +1410,31 @@ export function createSystemServices(deps) {
       human?.userId,
       human?.thirdPartyName,
       human?.third_party_name,
-    ]);
+    ], search);
   }
 
-  function memberDirectorySearchMatches(member = {}, human = null, query = '') {
+  function memberDirectorySearchMatches(member = {}, human = null, search = '') {
+    const query = directorySearchContextQuery(search);
     if (!query) return true;
-    if (directorySearchHasWhitespace(query)) return directorySearchMatches(memberDirectorySearchText(member, human), query);
-    return directorySearchSingleValueMatches(member.id, query)
-      || directorySearchSingleValueMatches(member.userId, query)
-      || directorySearchSingleValueMatches(member.humanId, query)
-      || directorySearchSingleValueMatches(member.email, query)
-      || directorySearchSingleValueMatches(member.role, query)
-      || directorySearchSingleValueMatches(member.user?.id, query)
-      || directorySearchSingleValueMatches(member.user?.name, query)
-      || directorySearchSingleValueMatches(member.user?.email, query)
-      || directorySearchSingleValueMatches(member.user?.thirdPartyName, query)
-      || directorySearchSingleValueMatches(member.user?.third_party_name, query)
-      || directorySearchSingleValueMatches(member.human?.name, query)
-      || directorySearchSingleValueMatches(member.human?.email, query)
-      || directorySearchSingleValueMatches(human?.name, query)
-      || directorySearchSingleValueMatches(human?.email, query)
-      || directorySearchSingleValueMatches(human?.authUserId, query)
-      || directorySearchSingleValueMatches(human?.userId, query)
-      || directorySearchSingleValueMatches(human?.thirdPartyName, query)
-      || directorySearchSingleValueMatches(human?.third_party_name, query);
+    if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(memberDirectorySearchText(member, human, search), search);
+    return directorySearchSingleValueMatches(member.id, search)
+      || directorySearchSingleValueMatches(member.userId, search)
+      || directorySearchSingleValueMatches(member.humanId, search)
+      || directorySearchSingleValueMatches(member.email, search)
+      || directorySearchSingleValueMatches(member.role, search)
+      || directorySearchSingleValueMatches(member.user?.id, search)
+      || directorySearchSingleValueMatches(member.user?.name, search)
+      || directorySearchSingleValueMatches(member.user?.email, search)
+      || directorySearchSingleValueMatches(member.user?.thirdPartyName, search)
+      || directorySearchSingleValueMatches(member.user?.third_party_name, search)
+      || directorySearchSingleValueMatches(member.human?.name, search)
+      || directorySearchSingleValueMatches(member.human?.email, search)
+      || directorySearchSingleValueMatches(human?.name, search)
+      || directorySearchSingleValueMatches(human?.email, search)
+      || directorySearchSingleValueMatches(human?.authUserId, search)
+      || directorySearchSingleValueMatches(human?.userId, search)
+      || directorySearchSingleValueMatches(human?.thirdPartyName, search)
+      || directorySearchSingleValueMatches(human?.third_party_name, search);
   }
 
   function directorySearchTypes(value = '') {
@@ -1408,19 +1460,20 @@ export function createSystemServices(deps) {
 
   function directorySearchSnapshot({ agents = [], humans = [], cloud = null, query = '', limit = DIRECTORY_SEARCH_LIMIT_DEFAULT, types = null } = {}) {
     const selectedTypes = types instanceof Set ? types : directorySearchTypes();
+    const search = directorySearchContext(query);
     const agentMatches = selectedTypes.has('agents')
-      ? limitedDirectorySearch(agents, (agent) => agentDirectorySearchMatches(agent, query), limit)
+      ? limitedDirectorySearch(agents, (agent) => agentDirectorySearchMatches(agent, search), limit)
       : { records: [], total: 0 };
     const humanMatches = selectedTypes.has('humans')
-      ? limitedDirectorySearch(humans, (human) => humanDirectorySearchMatches(human, query), limit)
+      ? limitedDirectorySearch(humans, (human) => humanDirectorySearchMatches(human, search), limit)
       : { records: [], total: 0 };
     const humansById = selectedTypes.has('members')
-      ? new Map(records(humans).map((human) => [String(human?.id || ''), human]).filter(([id]) => id))
+      ? humansByIdForMembers(humans, cloud?.members, { includeAll: true })
       : new Map();
     const memberMatches = selectedTypes.has('members')
       ? limitedDirectorySearch(
           cloud?.members,
-          (member) => memberDirectorySearchMatches(member, humansById.get(String(member?.humanId || '')), query),
+          (member) => memberDirectorySearchMatches(member, humansById.get(String(member?.humanId || '')), search),
           limit,
         )
       : { records: [], total: 0 };
@@ -1567,7 +1620,7 @@ export function createSystemServices(deps) {
     return record;
   }
 
-  function memberDirectoryRowSearchText(row = {}, humansById = new Map()) {
+  function memberDirectoryRowSearchText(row = {}, humansById = new Map(), search = null) {
     if (row.type === 'invitation') {
       const invitation = row.invitation || {};
       return directorySearchText([
@@ -1576,7 +1629,7 @@ export function createSystemServices(deps) {
         invitation.name,
         invitation.role,
         invitation.status,
-      ]);
+      ], search);
     }
     const member = row.member || {};
     return directorySearchText([
@@ -1591,7 +1644,7 @@ export function createSystemServices(deps) {
       member.user?.email,
       member.human?.name,
       member.human?.email,
-    ]);
+    ], search);
   }
 
   function memberDirectorySortParts(row = {}, humansById = new Map()) {
@@ -1706,8 +1759,9 @@ export function createSystemServices(deps) {
           };
         }),
     ];
-    const filteredRows = query
-      ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById), query))
+    const search = query ? directorySearchContext(query) : null;
+    const filteredRows = search
+      ? rows.filter((row) => directorySearchMatches(memberDirectoryRowSearchText(row, humansById, search), search))
       : rows;
     return {
       rows: membersDirectoryRowsAlreadySorted(filteredRows, humansById)
@@ -2548,7 +2602,7 @@ export function createSystemServices(deps) {
     const publicAgents = search.agents.map(publicAgentRecord).map(compactBootstrapAgentRecord);
     const publicHumans = search.humans.map(compactBootstrapHumanRecord);
     const publicCloud = compactBootstrapCloudState(search.cloud, {
-      humansById: new Map(scopedHumans.map((human) => [String(human?.id || ''), human]).filter(([id]) => id)),
+      humansById: humansByIdForMembers(scopedHumans, search.cloud?.members),
     });
     const directory = directoryMetadata({
       scope: 'search',
