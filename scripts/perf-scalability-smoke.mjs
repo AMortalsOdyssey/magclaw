@@ -72,15 +72,15 @@ const BOOTSTRAP_MESSAGE_TUPLE_FIELDS = Object.freeze([
   'authorType',
   'authorId',
   'body',
-  'readBy',
-  'replyCount',
   'createdAt',
-  'updatedAt',
+  'readBy',
+  'bodyTruncated',
+  'replyCount',
   'taskId',
   'savedBy',
   'metadata',
   'eventType',
-  'bodyTruncated',
+  'updatedAt',
 ]);
 const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -90,13 +90,13 @@ const BOOTSTRAP_REPLY_TUPLE_FIELDS = Object.freeze([
   'authorType',
   'authorId',
   'body',
-  'readBy',
   'createdAt',
-  'updatedAt',
+  'readBy',
+  'bodyTruncated',
   'savedBy',
   'metadata',
   'eventType',
-  'bodyTruncated',
+  'updatedAt',
 ]);
 const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'id',
@@ -114,7 +114,7 @@ const BOOTSTRAP_TASK_TUPLE_FIELDS = Object.freeze([
   'metadata',
 ]);
 const BUDGETS = Object.freeze({
-  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 190_000),
+  bootstrapBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_BYTES || 180_000),
   bootstrapProfileHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_PROFILE_HEAVY_BYTES || 120_000),
   bootstrapReadByHeavyBytes: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_READ_BY_HEAVY_BYTES || 100_000),
   bootstrapMs: Number(process.env.MAGCLAW_PERF_BOOTSTRAP_MS || 80),
