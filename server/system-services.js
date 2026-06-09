@@ -519,6 +519,38 @@ export function createSystemServices(deps) {
     return !readByIncludesHuman(record.readBy, humanId);
   }
 
+  function createUnreadConversationCollector({
+    currentHumanId,
+    limit = BOOTSTRAP_UNREAD_CANDIDATE_LIMIT,
+    recordVisible = null,
+  } = {}) {
+    const normalizedLimit = Math.floor(Number(limit) || 0);
+    const heap = [];
+    let count = 0;
+    const add = (kind, record) => {
+      if (normalizedLimit <= 0 || !record?.id) return;
+      if (!conversationRecordUnreadForHuman(record, currentHumanId)) return;
+      if (recordVisible && !recordVisible(record)) return;
+      count += 1;
+      addBoundedNewestRecord(heap, {
+        id: `${kind}:${record.id}`,
+        kind,
+        record,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      }, normalizedLimit);
+    };
+    return {
+      add,
+      snapshot() {
+        return {
+          candidates: heap.slice(),
+          count,
+        };
+      },
+    };
+  }
+
   function includeUnreadConversationRecords({
     currentHumanId,
     messages,
@@ -526,6 +558,8 @@ export function createSystemServices(deps) {
     messageById,
     replyById,
     recordVisible = null,
+    unreadCandidates: providedUnreadCandidates = null,
+    unreadCandidateCount: providedUnreadCandidateCount = 0,
   }) {
     const hydration = {
       limit: BOOTSTRAP_UNREAD_RECORD_LIMIT,
@@ -536,7 +570,7 @@ export function createSystemServices(deps) {
     const sourceMessages = Array.isArray(messages) ? messages : [];
     const sourceReplies = Array.isArray(replies) ? replies : [];
     const unreadCandidateHeap = [];
-    let unreadCandidateCount = 0;
+    let unreadCandidateCount = Math.max(0, Number(providedUnreadCandidateCount) || 0);
     const addUnreadCandidate = (kind, record) => {
       if (!record?.id) return;
       unreadCandidateCount += 1;
@@ -548,22 +582,30 @@ export function createSystemServices(deps) {
         updatedAt: record.updatedAt,
       }, BOOTSTRAP_UNREAD_CANDIDATE_LIMIT);
     };
-    for (const message of sourceMessages) {
-      if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
-      if (messageById.has(message.id)) continue;
-      if (recordVisible && !recordVisible(message)) continue;
-      addUnreadCandidate('message', message);
-    }
-    for (const reply of sourceReplies) {
-      if (!reply) continue;
-      if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
-      if (replyById.has(reply.id)) continue;
-      if (recordVisible && !recordVisible(reply)) continue;
-      addUnreadCandidate('reply', reply);
+    if (Array.isArray(providedUnreadCandidates)) {
+      for (const candidate of providedUnreadCandidates) {
+        if (!candidate?.record?.id || !candidate.kind) continue;
+        unreadCandidateHeap.push(candidate);
+      }
+    } else {
+      for (const message of sourceMessages) {
+        if (!conversationRecordUnreadForHuman(message, currentHumanId)) continue;
+        if (messageById.has(message.id)) continue;
+        if (recordVisible && !recordVisible(message)) continue;
+        addUnreadCandidate('message', message);
+      }
+      for (const reply of sourceReplies) {
+        if (!reply) continue;
+        if (!conversationRecordUnreadForHuman(reply, currentHumanId)) continue;
+        if (replyById.has(reply.id)) continue;
+        if (recordVisible && !recordVisible(reply)) continue;
+        addUnreadCandidate('reply', reply);
+      }
     }
     const unreadCandidates = unreadCandidateHeap.sort(compareNewestRecords);
     const parentIds = new Set();
     for (const candidate of unreadCandidates) {
+      if (recordVisible && !recordVisible(candidate.record)) continue;
       if (candidate.kind !== 'reply') continue;
       const parentId = String(candidate.record?.parentMessageId || '');
       if (parentId && !messageById.has(parentId)) parentIds.add(parentId);
@@ -582,6 +624,7 @@ export function createSystemServices(deps) {
     }
     let omitted = 0;
     for (const candidate of unreadCandidates) {
+      if (recordVisible && !recordVisible(candidate.record)) continue;
       const message = candidate.kind === 'message' ? candidate.record : null;
       const reply = candidate.kind === 'reply' ? candidate.record : null;
       const parent = reply ? parentById.get(String(reply.parentMessageId || '')) : null;
@@ -1908,6 +1951,18 @@ export function createSystemServices(deps) {
     const selectedChannel = spaceType === 'channel'
       ? scopedChannels.find((channel) => String(channel?.id || '') === spaceId)
       : null;
+    const unreadCandidateLimit = (
+      BOOTSTRAP_UNREAD_CANDIDATE_LIMIT
+      + BOOTSTRAP_UNREAD_RECORD_LIMIT
+      + messageLimit * 2
+      + threadRootLimit * 2
+      + threadReplyLimit
+    );
+    const unreadCollector = createUnreadConversationCollector({
+      currentHumanId,
+      limit: unreadCandidateLimit,
+      recordVisible: visibleConversationRecord,
+    });
 
     const [selectedMessagePage, threadRootMessagePage] = newestRecordPages(sourceMessages, [
       {
@@ -1926,7 +1981,11 @@ export function createSystemServices(deps) {
           || String(message.id || '') === threadMessageId)
         ),
       },
-    ]);
+    ], {
+      visit: (message) => {
+        unreadCollector.add('message', message);
+      },
+    });
     const selectedMessages = selectedMessagePage.records.slice().sort(compareOldestRecords);
     const fullMessageIds = new Set(selectedMessages.map((message) => String(message?.id || '')).filter(Boolean));
     const selectedMessageCursor = selectedMessages[0] || null;
@@ -1955,6 +2014,7 @@ export function createSystemServices(deps) {
         : [],
       {
         visit: (reply) => {
+          unreadCollector.add('reply', reply);
           if (!visibleConversationRecord(reply)) return;
           const parentMessageId = reply.parentMessageId;
           if (!messageById.has(parentMessageId)) return;
@@ -1980,6 +2040,7 @@ export function createSystemServices(deps) {
         : null);
     const replyById = new Map();
     for (const reply of [...latestReplyByParent.values(), ...selectedThreadReplies]) replyById.set(reply.id, reply);
+    const unreadCandidateSnapshot = unreadCollector.snapshot();
     const unreadHydration = includeUnreadConversationRecords({
       currentHumanId,
       messages: sourceMessages,
@@ -1987,6 +2048,8 @@ export function createSystemServices(deps) {
       messageById,
       replyById,
       recordVisible: visibleConversationRecord,
+      unreadCandidates: unreadCandidateSnapshot.candidates,
+      unreadCandidateCount: unreadCandidateSnapshot.count,
     });
 
     const taskIds = new Set();

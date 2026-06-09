@@ -181,6 +181,114 @@ test('bootstrap state bounds off-space unread hydration to newest records', () =
   assert.ok(Buffer.byteLength(JSON.stringify(snapshot), 'utf8') < 500_000);
 });
 
+test('bootstrap unread hydration keeps newest records from unsorted state arrays', () => {
+  const services = makeServices((state) => {
+    state.dms.push({
+      id: 'dm_unsorted',
+      workspaceId: 'local',
+      participantIds: ['hum_1', 'agt_unsorted'],
+      createdAt: '2026-05-18T00:10:00.000Z',
+      updatedAt: '2026-05-18T00:10:00.000Z',
+    });
+    const start = Date.parse('2026-05-18T00:10:00.000Z');
+    state.messages.push({
+      id: 'msg_unsorted_newest',
+      workspaceId: 'local',
+      spaceType: 'dm',
+      spaceId: 'dm_unsorted',
+      authorType: 'agent',
+      authorId: 'agt_unsorted',
+      body: 'newest unread',
+      readBy: [],
+      createdAt: new Date(start + 200 * 1000).toISOString(),
+      updatedAt: new Date(start + 200 * 1000).toISOString(),
+    });
+    for (let index = 0; index < 100; index += 1) {
+      const timestamp = new Date(start + index * 1000).toISOString();
+      state.messages.push({
+        id: `msg_unsorted_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_unsorted',
+        authorType: 'agent',
+        authorId: 'agt_unsorted',
+        body: `unsorted unread ${index}`,
+        readBy: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=20&threadRootLimit=40',
+    headers: {},
+  });
+  const messageIds = snapshot.messages.map((message) => message.id);
+  const unsortedIds = messageIds.filter((id) => id.startsWith('msg_unsorted'));
+
+  assert.equal(unsortedIds.length, 80);
+  assert.ok(messageIds.includes('msg_unsorted_newest'));
+  assert.ok(messageIds.includes('msg_unsorted_099'));
+  assert.equal(messageIds.includes('msg_unsorted_020'), false);
+  assert.equal(messageIds.includes('msg_unsorted_000'), false);
+});
+
+test('bootstrap unread hydration skips selected records without starving off-space candidates', () => {
+  const services = makeServices((state) => {
+    state.messages = [];
+    state.dms.push({
+      id: 'dm_offspace_bulk',
+      workspaceId: 'local',
+      participantIds: ['hum_1', 'agt_bulk'],
+      createdAt: '2026-05-18T00:10:00.000Z',
+      updatedAt: '2026-05-18T00:10:00.000Z',
+    });
+    const start = Date.parse('2026-05-18T00:10:00.000Z');
+    for (let index = 0; index < 80; index += 1) {
+      const timestamp = new Date(start + index * 1000).toISOString();
+      state.messages.push({
+        id: `msg_offspace_unread_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'dm',
+        spaceId: 'dm_offspace_bulk',
+        authorType: 'agent',
+        authorId: 'agt_bulk',
+        body: `off-space unread ${index}`,
+        readBy: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
+    for (let index = 0; index < 200; index += 1) {
+      const timestamp = new Date(start + (1000 + index) * 1000).toISOString();
+      state.messages.push({
+        id: `msg_selected_unread_${String(index).padStart(3, '0')}`,
+        workspaceId: 'local',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        authorType: 'agent',
+        authorId: 'agt_bulk',
+        body: `selected unread ${index}`,
+        readBy: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    }
+  });
+
+  const snapshot = services.publicBootstrapState({
+    url: '/api/events?spaceType=channel&spaceId=chan_all&messageLimit=200&threadRootLimit=20',
+    headers: {},
+  });
+  const messageIds = snapshot.messages.map((message) => message.id);
+  const offspaceIds = messageIds.filter((id) => id.startsWith('msg_offspace_unread_'));
+
+  assert.equal(offspaceIds.length, 80);
+  assert.ok(messageIds.includes('msg_offspace_unread_079'));
+  assert.equal(snapshot.bootstrap.unreadHydration.included, 80);
+});
+
 test('bootstrap unread hydration checks read markers without mapping arrays', () => {
   class ReadMarkers extends Array {
     static get [Symbol.species]() {
