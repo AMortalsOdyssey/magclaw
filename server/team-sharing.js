@@ -1385,8 +1385,29 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   if (!channelId) return { ok: false, code: 'missing_channel_id', error: 'channelId is required.' };
   if (!ensureChannelExists(state, channelId)) return { ok: false, code: 'channel_not_found', error: 'Channel not found.' };
 
+  const rawEvents = asArray(packageBody.events);
+  const rawMetadata = packageBody.metadata && typeof packageBody.metadata === 'object' ? packageBody.metadata : {};
+  const hookEvent = String(rawMetadata.hookEvent || rawMetadata.hook_event || packageBody.hookEvent || '').trim();
+  const isEmptySessionStart = hookEvent === 'SessionStart'
+    && rawEvents.length === 0
+    && Number(packageBody.fromOrdinal || 0) === 0
+    && Number(packageBody.toOrdinal || 0) === 0;
+  if (isEmptySessionStart) {
+    return {
+      ok: true,
+      duplicate: false,
+      skipped: true,
+      reason: 'empty_session_start',
+      sessionId,
+      messageId: '',
+      appendedEventCount: 0,
+      titleChanged: false,
+      abstractRevision: 0,
+    };
+  }
+
   const idempotencyKey = String(packageBody.idempotencyKey || '').trim()
-    || `${normalizeRuntime(packageBody.runtime)}:${packageBody.projectKey || ''}:${sessionId}:${packageBody.fromOrdinal || 0}:${packageBody.toOrdinal || 0}:${stableHash(JSON.stringify(packageBody.events || []))}`;
+    || `${normalizeRuntime(packageBody.runtime)}:${packageBody.projectKey || ''}:${sessionId}:${packageBody.fromOrdinal || 0}:${packageBody.toOrdinal || 0}:${stableHash(JSON.stringify(rawEvents))}`;
 
   const createdAt = now();
   const uploader = {
@@ -1503,7 +1524,7 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     if (identity) existingEventIdentities.set(identity, event);
   }
   const acceptedEvents = [];
-  for (const rawEvent of asArray(packageBody.events)) {
+  for (const rawEvent of rawEvents) {
     const event = normalizeTeamSharingEvent(rawEvent, sessionId);
     if (!event) continue;
     const duplicate = existingEvents.get(event.eventId);

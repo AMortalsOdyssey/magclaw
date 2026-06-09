@@ -545,7 +545,7 @@ test('team sharing hook parser accepts Codex session names from session metadata
   assert.equal(parsed.title, '确认 Zilliz BM25 支持');
 });
 
-test('team sharing sync package creates an empty SessionStart upload for channel visibility', () => {
+test('team sharing sync package skips empty SessionStart uploads for privacy', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-start', cwd: '/repo/magclaw' } }),
   ].join('\n');
@@ -560,13 +560,9 @@ test('team sharing sync package creates an empty SessionStart upload for channel
   });
 
   assert.equal(pkg.ok, true);
-  assert.equal(pkg.empty, false);
-  assert.equal(pkg.sessionStart, true);
-  assert.equal(pkg.body.sessionId, 'sess-start');
-  assert.equal(pkg.body.events.length, 0);
-  assert.equal(pkg.body.fromOrdinal, 0);
-  assert.equal(pkg.body.toOrdinal, 0);
-  assert.match(pkg.body.idempotencyKey, /^codex:magclaw:sess-start:session-start:/);
+  assert.equal(pkg.empty, true);
+  assert.equal(pkg.reason, 'empty_session_start');
+  assert.equal(pkg.body, null);
   assert.equal(pkg.cursor.lastOrdinal, 0);
 });
 

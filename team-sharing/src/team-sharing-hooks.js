@@ -934,31 +934,11 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
     const title = options.title || parsed.title;
     if (shouldCreateSessionStart) {
       const createdAt = options.now?.() || new Date().toISOString();
-      const body = {
-        runtime,
-        projectKey,
-        projectPathHash: stableHash(parsed.projectPath || projectKey),
-        sessionId: parsed.sessionId,
-        title,
-        workspaceId: options.workspaceId || '',
-        channelId: options.channelId || '',
-        channelPath: options.channelPath || '',
-        fromOrdinal: 0,
-        toOrdinal: 0,
-        idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:session-start:${stableHash(title || '')}`,
-        optionalLocalDigest: '',
-        events: [],
-        createdAt,
-        metadata: {
-          hookEvent,
-          emptySessionStart: true,
-        },
-      };
       return {
         ok: true,
-        empty: false,
-        sessionStart: true,
-        body,
+        empty: true,
+        reason: 'empty_session_start',
+        body: null,
         cursor: {
           runtime,
           sessionId: parsed.sessionId,

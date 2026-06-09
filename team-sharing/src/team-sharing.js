@@ -2154,11 +2154,12 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
   }
   const includeAuditContent = boolFlag(flags.auditContent ?? env.MAGCLAW_TEAM_SHARING_AUDIT_CONTENT, false);
   if (syncPackage.empty || !syncPackage.body) {
+    const emptyReason = syncPackage.reason || 'no_incremental_events';
     await writeAudit({
       ok: true,
       status: 'skipped',
       phase: 'build_package',
-      reason: 'no_incremental_events',
+      reason: emptyReason,
       cursor: syncPackage.cursor,
       upload: buildUploadAuditContent(syncPackage.body || {}, { includeContent: false }),
       summary: {
@@ -2167,7 +2168,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
         cloudIndexedDocumentCount: 0,
       },
     });
-    return { ok: true, empty: true, cursor: syncPackage.cursor };
+    return { ok: true, empty: true, reason: emptyReason, cursor: syncPackage.cursor };
   }
   const uploadAudit = buildUploadAuditContent(syncPackage.body, { includeContent: includeAuditContent });
   if (flags.dryRun || flags.dry_run) {

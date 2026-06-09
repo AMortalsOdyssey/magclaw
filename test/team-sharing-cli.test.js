@@ -1325,9 +1325,9 @@ test('team sharing cli sync audits cloud upload failures with status and error d
   }
 });
 
-test('team sharing cli sync uploads SessionStart even before transcript messages exist', async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-session-start-'));
-  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-session-start-home-'));
+test('team sharing cli sync skips empty SessionStart before transcript messages exist', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-empty-session-start-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-empty-session-start-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
   await loginTeamSharingProfile({
     serverUrl: 'https://magclaw.example',
@@ -1351,10 +1351,7 @@ test('team sharing cli sync uploads SessionStart even before transcript messages
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
     calls.push({ url, init, body: JSON.parse(init.body || '{}') });
-    return {
-      ok: true,
-      json: async () => ({ ok: true, appendedEventCount: 0, messageId: 'msg_start' }),
-    };
+    throw new Error('empty SessionStart should not upload before any transcript event exists');
   };
   try {
     const result = await syncTeamSharingTranscript({
@@ -1364,16 +1361,19 @@ test('team sharing cli sync uploads SessionStart even before transcript messages
       hookEvent: 'SessionStart',
       sessionTitle: '启动可见 session',
     }, env);
-    const cursor = JSON.parse(await readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'));
+    const auditRecord = JSON.parse((await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8')).trim());
 
     assert.equal(result.ok, true);
-    assert.equal(result.empty, undefined);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].body.sessionId, 'sess_session_start');
-    assert.equal(calls[0].body.title, '启动可见 session');
-    assert.equal(calls[0].body.events.length, 0);
-    assert.equal(calls[0].body.metadata.hookEvent, 'SessionStart');
-    assert.equal(cursor.sessions.codex.sess_session_start.lastOrdinal, 0);
+    assert.equal(result.empty, true);
+    assert.equal(result.reason, 'empty_session_start');
+    assert.equal(calls.length, 0);
+    assert.equal(auditRecord.status, 'skipped');
+    assert.equal(auditRecord.phase, 'build_package');
+    assert.equal(auditRecord.reason, 'empty_session_start');
+    await assert.rejects(
+      () => readFile(path.join(cwd, '.magclaw', 'team-sharing-cursor.json'), 'utf8'),
+      /ENOENT/,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

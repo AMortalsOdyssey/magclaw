@@ -130,6 +130,36 @@ test('team sharing sync creates one channel message, clean thread replies, abstr
   }
 });
 
+test('team sharing sync ignores legacy empty SessionStart packages before creating channel messages', async () => {
+  const state = baseState();
+  const makeId = makeIdFactory();
+  const result = await syncTeamSharingBatch(sampleSyncPackage({
+    sessionId: 'sess_empty_start',
+    idempotencyKey: 'codex:magclaw:sess_empty_start:session-start:title',
+    fromOrdinal: 0,
+    toOrdinal: 0,
+    events: [],
+    metadata: {
+      hookEvent: 'SessionStart',
+      emptySessionStart: true,
+    },
+  }), {
+    state,
+    makeId,
+    now: () => '2026-06-01T08:02:00.000Z',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'empty_session_start');
+  assert.equal(result.appendedEventCount, 0);
+  assert.equal(result.messageId, '');
+  assert.equal(state.messages.length, 0);
+  assert.equal(state.replies.length, 0);
+  assert.equal(state.teamSharing.sessions.sess_empty_start, undefined);
+  assert.equal(state.teamSharing.events.sess_empty_start, undefined);
+});
+
 test('team sharing sync deduplicates the same transcript event when parser ordinals change', async () => {
   const state = baseState();
   const makeId = makeIdFactory();
