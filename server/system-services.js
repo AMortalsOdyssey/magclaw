@@ -551,6 +551,13 @@ export function createSystemServices(deps) {
       collector: createNewestPageCollector(spec?.limit),
     }));
     if (!collectors.length && !visit) return [];
+    if (!collectors.length) {
+      for (const item of source) {
+        if (!item) continue;
+        visit(item);
+      }
+      return [];
+    }
     let previous = null;
     let monotonicOldestFirst = true;
     let index = 0;
