@@ -381,6 +381,60 @@ test('conversation realtime events merge records without a bootstrap resync fetc
   assert.equal(refreshTargets.length, 0);
 });
 
+test('run-event SSE updates tolerate snapshots without activity history', async () => {
+  const context = await createRealtimeHarness();
+  let railPatchCount = 0;
+  Object.assign(context, {
+    appState: { messages: [], replies: [] },
+    modal: null,
+    workspaceActivityDrawerOpen: false,
+    paneScrollSnapshot: () => ({}),
+    pageScrollSnapshot: () => ({}),
+    agentDetailInlineEditIsActive: () => false,
+    computerNameEditIsActive: () => false,
+    patchAgentDetailSurface: () => false,
+    patchRailSurface: () => {
+      railPatchCount += 1;
+      return true;
+    },
+    render: () => {
+      throw new Error('run-event update should patch the rail instead of full rendering');
+    },
+  });
+
+  assert.doesNotThrow(() => context.applyRealtimeJournalEvent({
+    seq: 1,
+    eventType: 'system_event',
+    payload: {
+      event: {
+        id: 'evt_realtime',
+        type: 'settings_updated',
+        message: 'Settings changed',
+        createdAt: '2026-06-09T00:00:00.000Z',
+      },
+    },
+  }));
+  assert.equal(context.appState.events.length, 1);
+  assert.equal(context.appState.events[0].id, 'evt_realtime');
+  assert.equal(railPatchCount, 1);
+
+  assert.doesNotThrow(() => context.applyRealtimeJournalEvent({
+    seq: 2,
+    eventType: 'run_event',
+    payload: {
+      event: {
+        id: 'evt_realtime',
+        type: 'settings_updated',
+        message: 'Duplicate event',
+        createdAt: '2026-06-09T00:00:01.000Z',
+      },
+    },
+  }));
+  assert.equal(context.appState.events.length, 1);
+  assert.equal(context.appState.events[0].id, 'evt_realtime');
+  assert.equal(railPatchCount, 1);
+});
+
 test('preserved conversation history does not overwrite fresher reply counts from SSE', async () => {
   const context = await createRealtimeHarness();
   const previousState = {

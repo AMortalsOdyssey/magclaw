@@ -2119,13 +2119,15 @@ function applyStateUpdate(nextState) {
 }
 
 function applyRunEventUpdate(incoming) {
-  if (!appState || appState.events.some((item) => item.id === incoming.id)) return;
+  if (!appState) return;
+  const events = Array.isArray(appState.events) ? appState.events : (appState.events = []);
+  if (events.some((item) => item.id === incoming.id)) return;
   const scrollSnapshot = {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
     page: pageScrollSnapshot(),
   };
-  appState.events.push(incoming);
+  events.push(incoming);
   if (modal) return;
   if (agentDetailInlineEditIsActive()) {
     patchRailSurface();
