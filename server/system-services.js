@@ -174,6 +174,7 @@ export function createSystemServices(deps) {
   let packageVersionPollingTimer = null;
   let packageVersionSnapshotCache = null;
   let packageVersionSnapshotInflight = null;
+  const recordTimestampRankCache = new WeakMap();
   const recordTimeCache = new WeakMap();
   const packageVersionSnapshotTtlMs = Math.max(1000, Number(packageVersionCacheTtlMs) || DEFAULT_PACKAGE_VERSION_WEB_CACHE_MS);
   const packageVersionPollingIntervalMs = Math.max(1000, Number(packageVersionPollIntervalMs) || packageVersionSnapshotTtlMs);
@@ -318,6 +319,17 @@ export function createSystemServices(deps) {
     ) ? text : '';
   }
 
+  function recordIsoTimestampRank(record, value = recordTimestampValue(record)) {
+    if (record && typeof record === 'object') {
+      const cached = recordTimestampRankCache.get(record);
+      if (cached?.value === value) return cached.rank;
+      const rank = isoTimestampRank(value);
+      recordTimestampRankCache.set(record, { value, rank });
+      return rank;
+    }
+    return isoTimestampRank(value);
+  }
+
   function recordTime(record, value = recordTimestampValue(record)) {
     if (record && typeof record === 'object') {
       const cached = recordTimeCache.get(record);
@@ -334,8 +346,8 @@ export function createSystemServices(deps) {
   function compareRecordTime(a, b) {
     const leftValue = recordTimestampValue(a);
     const rightValue = recordTimestampValue(b);
-    const leftIso = isoTimestampRank(leftValue);
-    const rightIso = isoTimestampRank(rightValue);
+    const leftIso = recordIsoTimestampRank(a, leftValue);
+    const rightIso = recordIsoTimestampRank(b, rightValue);
     if (leftIso && rightIso) {
       if (leftIso > rightIso) return 1;
       if (leftIso < rightIso) return -1;
