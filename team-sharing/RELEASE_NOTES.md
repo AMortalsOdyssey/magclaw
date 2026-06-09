@@ -1,5 +1,12 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.1.65 - 2026-06-09 - Shared runtime onboarding
+### new
+- New project hook installs now bootstrap and reuse the shared active Team Sharing runtime instead of falling back to a fresh npm latest wrapper.
+- Source-directory active packages record source commit metadata so stable hook commands still upload package version and commit context.
+### bug fix
+- Hook commands no longer include package version or source commit flags, reducing repeated trust prompts after Team Sharing updates.
+
 ## 0.1.62 - 2026-06-09 - Goal thread cleanup
 ### bug fix
 - Codex Goal continuation prompts are treated as hidden context, so the original objective is no longer reposted into MagClaw threads on resumed goal turns.
