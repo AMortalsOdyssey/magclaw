@@ -1100,13 +1100,17 @@ export function createSystemServices(deps) {
     const includeAll = options.includeAll === true;
     const memberHumanIds = includeAll ? null : new Set();
     if (memberHumanIds) {
-      for (const member of records(members)) {
+      const sourceMembers = Array.isArray(members) ? members : [];
+      for (const member of sourceMembers) {
+        if (!member) continue;
         const id = String(member?.humanId || member?.human?.id || '');
         if (id) memberHumanIds.add(id);
       }
     }
     const result = new Map();
-    for (const human of records(humans)) {
+    const sourceHumans = Array.isArray(humans) ? humans : [];
+    for (const human of sourceHumans) {
+      if (!human) continue;
       const id = String(human?.id || '');
       if (!id) continue;
       if (includeAll || memberHumanIds.has(id)) result.set(id, human);
@@ -1350,11 +1354,16 @@ export function createSystemServices(deps) {
   function directorySearchSingleValueMatches(value, search) {
     const query = directorySearchContextQuery(search);
     if (!query) return true;
+    return directorySearchSingleValueMatchesQuery(value, query, directorySearchContextNeedsCaseFold(search));
+  }
+
+  function directorySearchSingleValueMatchesQuery(value, query, needsCaseFold) {
+    if (!query) return true;
     if (value === undefined || value === null || value === '') return false;
     const text = String(value);
     if (!text) return false;
     if (text.includes(query)) return true;
-    if (!directorySearchContextNeedsCaseFold(search)) return false;
+    if (!needsCaseFold) return false;
     const lowered = text.toLowerCase();
     return lowered !== text && lowered.includes(query);
   }
@@ -1376,14 +1385,15 @@ export function createSystemServices(deps) {
     const query = directorySearchContextQuery(search);
     if (!query) return true;
     if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(agentDirectorySearchText(agent, search), search);
-    return directorySearchSingleValueMatches(agent.id, search)
-      || directorySearchSingleValueMatches(agent.name, search)
-      || directorySearchSingleValueMatches(agent.description, search)
-      || directorySearchSingleValueMatches(agent.runtime, search)
-      || directorySearchSingleValueMatches(agent.runtimeId, search)
-      || directorySearchSingleValueMatches(agent.model, search)
-      || directorySearchSingleValueMatches(agent.creatorName, search)
-      || directorySearchSingleValueMatches(agent.creatorEmail, search);
+    const needsCaseFold = directorySearchContextNeedsCaseFold(search);
+    return directorySearchSingleValueMatchesQuery(agent.id, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.description, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.runtime, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.runtimeId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.model, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.creatorName, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(agent.creatorEmail, query, needsCaseFold);
   }
 
   function humanDirectorySearchText(human = {}, search = null) {
@@ -1404,15 +1414,16 @@ export function createSystemServices(deps) {
     const query = directorySearchContextQuery(search);
     if (!query) return true;
     if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(humanDirectorySearchText(human, search), search);
-    return directorySearchSingleValueMatches(human.id, search)
-      || directorySearchSingleValueMatches(human.name, search)
-      || directorySearchSingleValueMatches(human.email, search)
-      || directorySearchSingleValueMatches(human.authUserId, search)
-      || directorySearchSingleValueMatches(human.userId, search)
-      || directorySearchSingleValueMatches(human.identityReference, search)
-      || directorySearchSingleValueMatches(human.role, search)
-      || directorySearchSingleValueMatches(human.thirdPartyName, search)
-      || directorySearchSingleValueMatches(human.third_party_name, search);
+    const needsCaseFold = directorySearchContextNeedsCaseFold(search);
+    return directorySearchSingleValueMatchesQuery(human.id, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.email, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.authUserId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.userId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.identityReference, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.role, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.thirdPartyName, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human.third_party_name, query, needsCaseFold);
   }
 
   function memberDirectorySearchText(member = {}, human = null, search = null) {
@@ -1442,24 +1453,25 @@ export function createSystemServices(deps) {
     const query = directorySearchContextQuery(search);
     if (!query) return true;
     if (directorySearchContextHasWhitespace(search)) return directorySearchMatches(memberDirectorySearchText(member, human, search), search);
-    return directorySearchSingleValueMatches(member.id, search)
-      || directorySearchSingleValueMatches(member.userId, search)
-      || directorySearchSingleValueMatches(member.humanId, search)
-      || directorySearchSingleValueMatches(member.email, search)
-      || directorySearchSingleValueMatches(member.role, search)
-      || directorySearchSingleValueMatches(member.user?.id, search)
-      || directorySearchSingleValueMatches(member.user?.name, search)
-      || directorySearchSingleValueMatches(member.user?.email, search)
-      || directorySearchSingleValueMatches(member.user?.thirdPartyName, search)
-      || directorySearchSingleValueMatches(member.user?.third_party_name, search)
-      || directorySearchSingleValueMatches(member.human?.name, search)
-      || directorySearchSingleValueMatches(member.human?.email, search)
-      || directorySearchSingleValueMatches(human?.name, search)
-      || directorySearchSingleValueMatches(human?.email, search)
-      || directorySearchSingleValueMatches(human?.authUserId, search)
-      || directorySearchSingleValueMatches(human?.userId, search)
-      || directorySearchSingleValueMatches(human?.thirdPartyName, search)
-      || directorySearchSingleValueMatches(human?.third_party_name, search);
+    const needsCaseFold = directorySearchContextNeedsCaseFold(search);
+    return directorySearchSingleValueMatchesQuery(member.id, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.userId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.humanId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.email, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.role, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.user?.id, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.user?.name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.user?.email, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.user?.thirdPartyName, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.user?.third_party_name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.human?.name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(member.human?.email, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.name, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.email, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.authUserId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.userId, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.thirdPartyName, query, needsCaseFold)
+      || directorySearchSingleValueMatchesQuery(human?.third_party_name, query, needsCaseFold);
   }
 
   function directorySearchTypes(value = '') {
@@ -1475,7 +1487,9 @@ export function createSystemServices(deps) {
   function limitedDirectorySearch(recordsInput, matcher, limit) {
     const matched = [];
     let total = 0;
-    for (const record of records(recordsInput)) {
+    const source = Array.isArray(recordsInput) ? recordsInput : [];
+    for (const record of source) {
+      if (!record) continue;
       if (!matcher(record)) continue;
       total += 1;
       if (matched.length < limit) matched.push(record);
@@ -2642,14 +2656,17 @@ export function createSystemServices(deps) {
       }, effectiveOptions);
     }
     const scopedHumans = scopedRecords('humans');
-    const rawCloud = cloud && typeof cloud === 'object' ? {
-      ...cloud,
-      members: records(cloud.members).filter((member) => (
-        !member?.workspaceId
-        || !cloud?.workspace?.id
-        || String(member.workspaceId) === String(cloud.workspace.id)
-      )),
-    } : cloud;
+    const rawCloud = cloud && typeof cloud === 'object' ? (() => {
+      const members = [];
+      const workspaceId = String(cloud?.workspace?.id || '');
+      const sourceMembers = Array.isArray(cloud.members) ? cloud.members : [];
+      for (const member of sourceMembers) {
+        if (!member) continue;
+        if (member.workspaceId && workspaceId && String(member.workspaceId) !== workspaceId) continue;
+        members.push(member);
+      }
+      return { ...cloud, members };
+    })() : cloud;
     const search = directorySearchSnapshot({
       agents: scopedAgents,
       humans: scopedHumans,
