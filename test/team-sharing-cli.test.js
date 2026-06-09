@@ -2436,8 +2436,10 @@ test('team sharing cli search and context use configured profile token', async (
     assert.equal(context.contextWebUrl, 'https://magclaw.example/team-sharing/context/sess_1?anchorEventId=evt_1&direction=around&limit=3&order=asc');
     assert.equal(context.contextPageUrl, context.contextWebUrl);
     assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/search');
+    assert.equal(calls[0].body.workspaceId, 'ws_team');
     assert.equal(calls[0].body.channelId, 'chan_team');
     assert.equal(calls[0].body.projectKey, 'magclaw');
+    assert.equal(calls[0].body.scope, 'hybrid');
     assert.equal(calls[0].body.searchMode, 'hybrid');
     assert.equal(calls[0].body.modeBias, 'keyword');
     assert.equal(calls[0].body.semanticQuery, '昨天关于 rerank 结论和 BM25 的验收');
@@ -2445,6 +2447,7 @@ test('team sharing cli search and context use configured profile token', async (
       useKeyword: true,
       useSemantic: true,
       modeBias: 'keyword',
+      scope: 'hybrid',
       source: 'team-sharing-cli',
       member: {
         names: ['蒋海波', '张三', '李四', '王五', '赵六'],
@@ -2468,6 +2471,39 @@ test('team sharing cli search and context use configured profile token', async (
     assert.match(calls[1].url, /\/api\/team-sharing\/context\/sess_1\?/);
     assert.match(calls[1].url, /limit=3/);
     assert.match(calls[1].url, /order=asc/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli search forwards explicit retrieval scope', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-search-scope-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-search-scope-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
+    return { ok: true, json: async () => ({ ok: true, results: [] }) };
+  };
+  try {
+    await searchTeamSharing({ cwd, query: 'BM25', scope: 'server' }, env);
+    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/search');
+    assert.equal(calls[0].body.scope, 'server');
+    assert.equal(calls[0].body.retrievalIntent.scope, 'server');
   } finally {
     globalThis.fetch = originalFetch;
   }

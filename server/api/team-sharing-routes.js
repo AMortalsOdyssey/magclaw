@@ -3103,6 +3103,94 @@ function normalizeTeamSharingSearchIntentBody(body = {}, nowValue = '') {
   };
 }
 
+function normalizeTeamSharingSearchScope(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['channel', 'current-channel', 'current_channel', 'local'].includes(clean)) return 'channel';
+  if (['server', 'workspace', 'all', 'all-server', 'server-wide', 'server_wide'].includes(clean)) return 'server';
+  return 'hybrid';
+}
+
+function teamSharingSearchScopes(scope = 'hybrid', channelId = '') {
+  const cleanScope = normalizeTeamSharingSearchScope(scope);
+  const cleanChannelId = String(channelId || '').trim();
+  if (cleanScope === 'channel' && cleanChannelId) {
+    return [{ retrievalScope: 'channel', channelId: cleanChannelId, excludeChannelId: '' }];
+  }
+  if (cleanScope === 'server' || !cleanChannelId) {
+    return [{ retrievalScope: 'server', channelId: '', excludeChannelId: '' }];
+  }
+  return [
+    { retrievalScope: 'channel', channelId: cleanChannelId, excludeChannelId: '' },
+    { retrievalScope: 'server', channelId: '', excludeChannelId: cleanChannelId },
+  ];
+}
+
+function annotateScopedCandidates(result = {}, scope = {}, currentChannelId = '') {
+  const cleanCurrentChannelId = String(currentChannelId || '').trim();
+  return {
+    ...(result || {}),
+    candidates: asArray(result?.candidates).map((candidate) => {
+      const candidateChannelId = String(candidate?.channelId || '').trim();
+      const sameChannel = Boolean(cleanCurrentChannelId && candidateChannelId === cleanCurrentChannelId);
+      return {
+        ...candidate,
+        retrievalScope: sameChannel ? 'channel' : 'server',
+        sameChannel,
+        scopeBoost: sameChannel ? 0.03 : 0,
+        scopeSource: scope.retrievalScope || '',
+      };
+    }),
+  };
+}
+
+function mergeScopedSearchResults(results = [], limit = 40) {
+  const failures = asArray(results).filter((result) => result && result.ok === false);
+  const byId = new Map();
+  asArray(results).forEach((result) => {
+    asArray(result?.candidates).forEach((candidate, index) => {
+      const id = String(candidate?.vectorDocumentId || '').trim();
+      if (!id) return;
+      const existing = byId.get(id) || {
+        ...candidate,
+        vectorScore: 0,
+        keywordScore: 0,
+        scopeBoost: 0,
+        rrfScore: 0,
+        retrievalSources: [],
+      };
+      existing.rrfScore += 1 / (30 + index + 1);
+      existing.vectorScore = Math.max(clamp01(existing.vectorScore), clamp01(candidate.vectorScore ?? candidate.score));
+      existing.keywordScore = Math.max(clamp01(existing.keywordScore), clamp01(candidate.keywordScore));
+      existing.scopeBoost = Math.max(clamp01(existing.scopeBoost), clamp01(candidate.scopeBoost));
+      existing.sameChannel = Boolean(existing.sameChannel || candidate.sameChannel);
+      existing.retrievalScope = existing.sameChannel ? 'channel' : (existing.retrievalScope || candidate.retrievalScope || 'server');
+      if (candidate.scopeSource && !existing.retrievalSources.includes(candidate.scopeSource)) {
+        existing.retrievalSources.push(candidate.scopeSource);
+      }
+      byId.set(id, {
+        ...existing,
+        ...candidate,
+        vectorScore: existing.vectorScore,
+        keywordScore: existing.keywordScore,
+        scopeBoost: existing.scopeBoost,
+        sameChannel: existing.sameChannel,
+        retrievalScope: existing.retrievalScope,
+        rrfScore: existing.rrfScore,
+        retrievalSources: existing.retrievalSources,
+      });
+    });
+  });
+  const candidates = [...byId.values()]
+    .sort((left, right) => right.rrfScore - left.rrfScore || right.keywordScore - left.keywordScore || right.vectorScore - left.vectorScore)
+    .slice(0, limit);
+  return {
+    ok: failures.length < asArray(results).length,
+    candidates,
+    degraded: asArray(results).some((result) => result?.degraded),
+    remoteError: failures[0]?.error || failures[0]?.code || asArray(results).find((result) => result?.remoteError)?.remoteError || '',
+  };
+}
+
 function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 0;
@@ -3624,12 +3712,13 @@ function uploaderMatchesFilter(doc = {}, uploaderIds = []) {
   return Boolean(docUploaderId && ids.has(docUploaderId));
 }
 
-function recentUploaderDocuments({ teamSharingState, uploaderIds = [], workspaceId = '', channelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
+function recentUploaderDocuments({ teamSharingState, uploaderIds = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
   const seen = new Set();
   const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
+    .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
     .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
@@ -3673,12 +3762,13 @@ function keywordSearchInputs({ query = '', keywordQuery = '', keywords = [], top
   return { phrases, terms };
 }
 
-function localVectorSearch({ teamSharingState, query = '', workspaceId = '', channelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+function localVectorSearch({ teamSharingState, query = '', workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const terms = queryTerms(query);
   const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
+    .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
     .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
@@ -3699,12 +3789,13 @@ function localVectorSearch({ teamSharingState, query = '', workspaceId = '', cha
   return { ok: true, candidates };
 }
 
-function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const { phrases, terms } = keywordSearchInputs({ query, keywordQuery, keywords, topics });
   const candidates = asArray(teamSharingState?.vectorDocuments)
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
+    .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
     .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
@@ -5844,108 +5935,92 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     if (!body.semanticQuery && !body.semantic_query) searchBody.semanticQuery = contentQuery;
     const intent = normalizeTeamSharingSearchIntentBody(searchBody, now?.());
     const searchMode = intent.searchMode;
+    const searchScope = normalizeTeamSharingSearchScope(body.scope || body.retrievalScope || body.retrievalIntent?.scope || '');
     const sortBy = normalizeTeamSharingSearchSort(body.sortBy || body.sort || body.orderBy);
     const dateRange = intent.dateRange;
     const uploaderIds = memberResolution.status === 'matched' ? memberResolution.uploaderIds : [];
     const memberOnly = uploaderIds.length > 0 && !intent.query && !intent.keywords.length && !intent.topics.length;
     const needsSemantic = !memberOnly && intent.useSemantic;
     const needsKeyword = !memberOnly && intent.useKeyword;
+    const currentChannelId = String(body.channelId || '').trim();
+    const projectKey = String(body.projectKey || '').trim();
+    const searchScopes = teamSharingSearchScopes(searchScope, currentChannelId);
+    const scopedSearchBase = (scope) => ({
+      teamSharingState,
+      workspaceId: effectiveWorkspaceId,
+      channelId: scope.channelId || '',
+      excludeChannelId: scope.excludeChannelId || '',
+      projectKey,
+      uploaderIds,
+      dateRange,
+      limit: candidateK,
+    });
     const semanticRemoteReady = needsSemantic && vectorSearch && (typeof zillizReady !== 'function' || zillizReady());
     if (needsSemantic && searchMode === 'semantic' && !semanticRemoteReady) {
       sendError(res, 503, 'Team sharing vector index is not ready.');
       return true;
     }
     const semanticPromise = needsSemantic
-      ? (semanticRemoteReady
-        ? vectorSearch({
-          teamSharingState,
-          query: intent.semanticQuery,
-          workspaceId: effectiveWorkspaceId,
-          channelId: body.channelId || '',
-          projectKey: body.projectKey || '',
-          uploaderIds,
-          dateRange,
-          limit: candidateK,
-          actor,
-          searchMode,
-          modeBias: intent.modeBias,
-          keywords: intent.keywords,
-          topics: intent.topics,
-        }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing vector search failed.' }))
-        : Promise.resolve(localVectorSearch({
-          teamSharingState,
-          query: intent.semanticQuery,
-          workspaceId: effectiveWorkspaceId,
-          channelId: body.channelId || '',
-          projectKey: body.projectKey || '',
-          uploaderIds,
-          dateRange,
-          limit: candidateK,
-        })))
+      ? Promise.all(searchScopes.map(async (scope) => {
+        const result = semanticRemoteReady
+          ? await vectorSearch({
+            ...scopedSearchBase(scope),
+            query: intent.semanticQuery,
+            actor,
+            searchMode,
+            modeBias: intent.modeBias,
+            keywords: intent.keywords,
+            topics: intent.topics,
+          }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing vector search failed.' }))
+          : localVectorSearch({
+            ...scopedSearchBase(scope),
+            query: intent.semanticQuery,
+          });
+        return annotateScopedCandidates(result, scope, currentChannelId);
+      })).then((results) => mergeScopedSearchResults(results, candidateK))
       : Promise.resolve({ ok: true, candidates: [] });
     const keywordPromise = needsKeyword
       ? (async () => {
         const canUseRemoteKeyword = keywordSearch && (typeof keywordSearchReady !== 'function' || keywordSearchReady());
-        if (canUseRemoteKeyword) {
-          const remote = await keywordSearch({
-            teamSharingState,
-            query: intent.keywordQuery || intent.query,
-            keywordQuery: intent.keywordQuery,
-            keywords: intent.keywords,
-            topics: intent.topics,
-            workspaceId: effectiveWorkspaceId,
-            channelId: body.channelId || '',
-            projectKey: body.projectKey || '',
-            uploaderIds,
-            dateRange,
-            limit: candidateK,
-            actor,
-            searchMode,
-            modeBias: intent.modeBias,
-          }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing keyword search failed.' }));
-          if (remote?.ok) return remote;
+        const results = await Promise.all(searchScopes.map(async (scope) => {
+          if (canUseRemoteKeyword) {
+            const remote = await keywordSearch({
+              ...scopedSearchBase(scope),
+              query: intent.keywordQuery || intent.query,
+              keywordQuery: intent.keywordQuery,
+              keywords: intent.keywords,
+              topics: intent.topics,
+              actor,
+              searchMode,
+              modeBias: intent.modeBias,
+            }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing keyword search failed.' }));
+            if (remote?.ok) return annotateScopedCandidates(remote, scope, currentChannelId);
+            const fallback = localKeywordSearch({
+              ...scopedSearchBase(scope),
+              query: intent.query,
+              keywordQuery: intent.keywordQuery,
+              keywords: intent.keywords,
+              topics: intent.topics,
+            });
+            return annotateScopedCandidates({ ...fallback, degraded: true, remoteError: remote?.error || remote?.code || 'keyword_search_failed' }, scope, currentChannelId);
+          }
           const fallback = localKeywordSearch({
-            teamSharingState,
+            ...scopedSearchBase(scope),
             query: intent.query,
             keywordQuery: intent.keywordQuery,
             keywords: intent.keywords,
             topics: intent.topics,
-            workspaceId: effectiveWorkspaceId,
-            channelId: body.channelId || '',
-            projectKey: body.projectKey || '',
-            uploaderIds,
-            dateRange,
-            limit: candidateK,
           });
-          return { ...fallback, degraded: true, remoteError: remote?.error || remote?.code || 'keyword_search_failed' };
-        }
-        const fallback = localKeywordSearch({
-          teamSharingState,
-          query: intent.query,
-          keywordQuery: intent.keywordQuery,
-          keywords: intent.keywords,
-          topics: intent.topics,
-          workspaceId: effectiveWorkspaceId,
-          channelId: body.channelId || '',
-          projectKey: body.projectKey || '',
-          uploaderIds,
-          dateRange,
-          limit: candidateK,
-        });
-        return { ...fallback, degraded: Boolean(keywordSearch), remoteError: keywordSearch ? 'keyword_search_not_ready' : '' };
+          return annotateScopedCandidates({ ...fallback, degraded: Boolean(keywordSearch), remoteError: keywordSearch ? 'keyword_search_not_ready' : '' }, scope, currentChannelId);
+        }));
+        return mergeScopedSearchResults(results, candidateK);
       })()
       : Promise.resolve({ ok: true, candidates: [] });
     const [semantic, keyword] = memberOnly
       ? [
-          recentUploaderDocuments({
-            teamSharingState,
-            uploaderIds,
-            workspaceId: effectiveWorkspaceId,
-            channelId: body.channelId || '',
-            projectKey: body.projectKey || '',
-            dateRange,
-            limit: candidateK,
-          }),
+          mergeScopedSearchResults(searchScopes.map((scope) => annotateScopedCandidates(recentUploaderDocuments({
+            ...scopedSearchBase(scope),
+          }), scope, currentChannelId)), candidateK),
           { ok: true, candidates: [] },
         ]
       : await Promise.all([semanticPromise, keywordPromise]);
@@ -5988,6 +6063,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       rerankResults,
       keywordCandidates: keyword.candidates || [],
       searchMode,
+      scope: searchScope,
       modeBias: intent.modeBias,
       sortBy,
       minScore: body.minScore,
@@ -6012,6 +6088,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       resultCount: ranked.results.length,
       candidateCount: filteredCandidates.length,
       searchMode,
+      scope: searchScope,
       modeBias: intent.modeBias,
       sortBy,
       keywordCount: intent.keywords.length,
@@ -6042,6 +6119,11 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         return {
           vectorDocumentId: item.vectorDocumentId,
           sourceKind,
+          workspaceId: String(item.workspaceId || '').trim(),
+          channelId: String(item.channelId || '').trim(),
+          projectKey: String(item.projectKey || '').trim(),
+          retrievalScope: String(item.retrievalScope || '').trim(),
+          sameChannel: Boolean(item.sameChannel),
           sessionId: item.sessionId,
           shareId: String(item.shareId || '').trim(),
           shareSectionId: String(item.shareSectionId || '').trim(),
@@ -6071,6 +6153,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       semanticCandidateCount: asArray(semantic?.candidates).length,
       keywordCandidateCount: asArray(keyword?.candidates).length,
       searchMode,
+      scope: searchScope,
       modeBias: intent.modeBias,
       sortBy,
       dateRange,
@@ -6082,6 +6165,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         useKeyword: needsKeyword,
         useSemantic: needsSemantic,
         modeBias: intent.modeBias,
+        scope: searchScope,
         ...(memberResolution.status !== 'none' ? { member: {
           uploaderIds,
           status: memberResolution.status,

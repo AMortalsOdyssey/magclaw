@@ -263,13 +263,14 @@ function zillizOrEquals(fieldName = '', values = []) {
   return clauses.length === 1 ? clauses[0] : `(${clauses.join(' || ')})`;
 }
 
-function buildZillizFilter({ workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null } = {}) {
+function buildZillizFilter({ workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null } = {}) {
   const range = dateRange && typeof dateRange === 'object' ? dateRange : {};
   const from = dateBound(range, ['from', 'start', 'since', 'updatedAfter', 'updated_after']);
   const to = dateBound(range, ['to', 'end', 'until', 'updatedBefore', 'updated_before']);
   return [
     workspaceId ? `workspace_id == "${zillizFilterValue(workspaceId)}"` : '',
     channelId ? `channel_id == "${zillizFilterValue(channelId)}"` : '',
+    excludeChannelId ? `channel_id != "${zillizFilterValue(excludeChannelId)}"` : '',
     projectKey ? `project_key == "${zillizFilterValue(projectKey)}"` : '',
     sessionId ? `session_id == "${zillizFilterValue(sessionId)}"` : '',
     layer ? `layer == "${zillizFilterValue(layer)}"` : '',
@@ -636,8 +637,8 @@ export function createZillizTeamSharingClient(options = {}) {
     }
   }
   return {
-    async search({ queryVector = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
-      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
+    async search({ queryVector = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+      const filter = buildZillizFilter({ workspaceId, channelId, excludeChannelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
       const data = await zillizRequest('/v2/vectordb/entities/search', {
         ...commonBody(),
         data: [queryVector],
@@ -651,8 +652,8 @@ export function createZillizTeamSharingClient(options = {}) {
         candidates: flattenZillizRows(data).map(zillizCandidate).filter((item) => item.vectorDocumentId),
       };
     },
-    async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
-      const filter = buildZillizFilter({ workspaceId, channelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
+    async keywordSearch({ query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', sessionId = '', layer = '', sourceKind = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+      const filter = buildZillizFilter({ workspaceId, channelId, excludeChannelId, projectKey, sessionId, layer, sourceKind, uploaderIds, dateRange });
       const queries = zillizKeywordQueries({ query, keywordQuery, keywords, topics });
       if (!queries.length) return { ok: true, candidates: [] };
       const results = await Promise.all(queries.map((keyword) => zillizRequest('/v2/vectordb/entities/search', {

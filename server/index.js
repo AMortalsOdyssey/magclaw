@@ -1858,7 +1858,7 @@ function teamSharingApiDeps() {
       const expected = process.env.MAGCLAW_TEAM_SHARING_SYNC_TOKEN || '';
       return safeTokenEqual(bearerToken(req), expected);
     },
-    keywordSearch: async ({ query, keywordQuery, keywords, topics, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
+    keywordSearch: async ({ query, keywordQuery, keywords, topics, channelId, excludeChannelId, projectKey, dateRange, limit, actor, workspaceId }) => {
       try {
         if (typeof zillizClient.keywordSearch !== 'function') return { ok: false, code: 'keyword_search_unavailable' };
         return zillizClient.keywordSearch({
@@ -1868,6 +1868,7 @@ function teamSharingApiDeps() {
           topics,
           workspaceId: workspaceId || workspaceIdFromActor(actor),
           channelId,
+          excludeChannelId,
           projectKey,
           dateRange,
           limit,
@@ -1877,13 +1878,14 @@ function teamSharingApiDeps() {
       }
     },
     keywordSearchReady: zillizConfigured,
-    vectorSearch: async ({ query, channelId, projectKey, dateRange, limit, actor, workspaceId }) => {
+    vectorSearch: async ({ query, channelId, excludeChannelId, projectKey, dateRange, limit, actor, workspaceId }) => {
       try {
         const embedded = await embeddingClient.embed(query || '');
         return zillizClient.search({
           queryVector: embedded.embedding,
           workspaceId: workspaceId || workspaceIdFromActor(actor),
           channelId,
+          excludeChannelId,
           projectKey,
           dateRange,
           limit,

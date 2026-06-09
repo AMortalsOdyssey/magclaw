@@ -75,6 +75,13 @@ function normalizeSearchMode(value = '') {
   return 'hybrid';
 }
 
+function normalizeSearchScope(value = '') {
+  const clean = String(value || '').trim().toLowerCase();
+  if (['channel', 'current-channel', 'current_channel', 'local'].includes(clean)) return 'channel';
+  if (['server', 'workspace', 'all', 'all-server', 'server-wide', 'server_wide'].includes(clean)) return 'server';
+  return 'hybrid';
+}
+
 function normalizeSearchSort(value = '') {
   const clean = String(value || '').trim().toLowerCase();
   if (['recent', 'recency', 'latest', 'time', 'updated_at', 'updated-at'].includes(clean)) return 'recent';
@@ -196,6 +203,7 @@ function buildSearchIntent({ query = '', flags = {}, env = process.env } = {}) {
   const keywordOnly = booleanFlag(flags.keywordOnly || flags.keywordsOnly || flags.exactOnly);
   const semanticOnly = booleanFlag(flags.semanticOnly || flags.vectorOnly || flags.fuzzyOnly);
   const retrievalMode = keywordOnly ? 'keyword' : semanticOnly ? 'semantic' : 'hybrid';
+  const scope = normalizeSearchScope(flags.searchScope || flags.retrievalScope || flags.scope || flags.channelScope || '');
   const topics = uniqueSearchList([
     ...normalizeSearchList(flags.topics),
     ...normalizeSearchList(flags.topic),
@@ -223,6 +231,7 @@ function buildSearchIntent({ query = '', flags = {}, env = process.env } = {}) {
     dateRange,
     searchMode: retrievalMode,
     modeBias,
+    scope,
     useKeyword: retrievalMode !== 'semantic',
     useSemantic: retrievalMode !== 'keyword',
     keywordQuery: uniqueSearchList([
@@ -2445,16 +2454,19 @@ export async function searchTeamSharing(flags = {}, env = process.env) {
       memberQuery: memberFilters.memberQuery || undefined,
       memberNames: memberFilters.memberNames,
       memberIds: memberFilters.memberIds,
+      workspaceId: flags.workspaceId || flags.workspace || project.config.workspaceId || '',
       channelId: flags.channelId || project.config.channelId || '',
       projectKey: flags.projectKey || project.config.projectKey || '',
       dateRange: intent.dateRange,
       timePreference: intent.timePreference,
+      scope: intent.scope,
       searchMode: intent.searchMode,
       modeBias: intent.modeBias,
       retrievalIntent: {
         useKeyword: intent.useKeyword,
         useSemantic: intent.useSemantic,
         modeBias: intent.modeBias,
+        scope: intent.scope,
         source: 'team-sharing-cli',
         ...(retrievalMember ? { member: retrievalMember } : {}),
       },

@@ -1808,6 +1808,8 @@ export function rankTeamSharingCandidates(params = {}) {
     rerankScores: {},
     keywordScores: {},
     hotnessScores: {},
+    scopeBoosts: {},
+    retrievalScopes: {},
     finalScores: {},
     selectedTop5: [],
   };
@@ -1829,6 +1831,7 @@ export function rankTeamSharingCandidates(params = {}) {
     const semanticScore = 0.75 * rerankScore + 0.25 * vectorScore;
     const fusionScore = clamp01(Number(candidate.rrfScore || 0) * 20);
     const hotnessScore = hotnessFor(teamSharingState, candidate.vectorDocumentId, params.now, params.hotness);
+    const scopeBoost = clamp01(candidate.scopeBoost);
     const weights = modeBias === 'keyword'
       ? { semantic: 0.48, keyword: 0.34, freshness: 0.05, fusion: 0.05 }
       : modeBias === 'semantic'
@@ -1838,11 +1841,14 @@ export function rankTeamSharingCandidates(params = {}) {
       + (weights.keyword * keywordScore)
       + (weights.freshness * freshnessScore)
       + (weights.fusion * fusionScore)
+      + scopeBoost
       + hotnessScore;
     trace.vectorCandidates.push(candidate.vectorDocumentId);
     trace.rerankScores[candidate.vectorDocumentId] = rerankScore;
     trace.keywordScores[candidate.vectorDocumentId] = keywordScore;
     trace.hotnessScores[candidate.vectorDocumentId] = hotnessScore;
+    trace.scopeBoosts[candidate.vectorDocumentId] = scopeBoost;
+    trace.retrievalScopes[candidate.vectorDocumentId] = candidate.retrievalScope || '';
     trace.finalScores[candidate.vectorDocumentId] = finalScore;
     return {
       ...candidate,

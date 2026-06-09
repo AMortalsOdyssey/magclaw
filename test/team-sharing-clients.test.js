@@ -206,6 +206,42 @@ test('zilliz client searches and upserts team-sharing vector documents with scop
   assert.equal(calls[1].init.headers.authorization, 'Bearer zilliz-secret');
 });
 
+test('zilliz client can exclude the current channel for server-wide recall', async () => {
+  const calls = [];
+  const client = createZillizTeamSharingClient({
+    endpoint: 'https://zilliz.example',
+    token: 'zilliz-secret',
+    database: 'ai_social_memory',
+    collection: 'magclaw_team_sharing_v1',
+    fetch: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      return jsonResponse({ data: [[]] });
+    },
+  });
+
+  await client.search({
+    queryVector: [0.1, 0.2, 0.3],
+    workspaceId: 'ws_team',
+    excludeChannelId: 'chan_team',
+    projectKey: 'magclaw',
+    limit: 20,
+  });
+  await client.keywordSearch({
+    query: 'server wide recall',
+    workspaceId: 'ws_team',
+    excludeChannelId: 'chan_team',
+    projectKey: 'magclaw',
+    limit: 20,
+  });
+
+  assert.match(calls[0].body.filter, /workspace_id == "ws_team"/);
+  assert.match(calls[0].body.filter, /channel_id != "chan_team"/);
+  assert.match(calls[0].body.filter, /project_key == "magclaw"/);
+  assert.match(calls[1].body.filter, /workspace_id == "ws_team"/);
+  assert.match(calls[1].body.filter, /channel_id != "chan_team"/);
+  assert.match(calls[1].body.filter, /project_key == "magclaw"/);
+});
+
 test('zilliz client runs BM25 keyword search by default', async () => {
   const calls = [];
   const client = createZillizTeamSharingClient({

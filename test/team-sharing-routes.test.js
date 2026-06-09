@@ -219,9 +219,13 @@ function createContextPageHarness(html = '', options = {}) {
 
 test('team sharing route syncs a batch and search returns reranked top results', async () => {
   const indexed = [];
+  const indexBatches = [];
   const deps = routeDeps({
     readJson: async () => syncBody(),
-    indexTeamSharingDocuments: async ({ documents }) => indexed.push(...documents),
+    indexTeamSharingDocuments: async ({ workspaceId, sessionId, documents }) => {
+      indexBatches.push({ workspaceId, sessionId, documents });
+      indexed.push(...documents);
+    },
     summarizeSession: async () => ({
       l0: '云端权威摘要：Team Sharing 先做 Zilliz 召回，再进行 rerank，并把原文打开行为写入 feedback。',
       topics: [{
@@ -242,10 +246,16 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.equal(syncRes.statusCode, 202);
   assert.equal(syncRes.data.appendedEventCount, 2);
   assert.equal(deps.persistCalls[0].workspaceId, 'ws_route');
+  assert.equal(deps.state.teamSharing.sessions.sess_route.workspaceId, 'ws_route');
+  assert.equal(deps.state.teamSharing.sessions.sess_route.channelId, 'chan_team');
   assert.equal(deps.state.messages[0].authorType, 'human');
   assert.equal(deps.state.messages[0].authorId, 'hum_route');
   assert.equal(deps.state.replies[1].authorType, 'agent');
   assert.equal(deps.state.replies[1].authorId, 'team_sharing_codex');
+  assert.deepEqual(indexBatches.map((batch) => ({ workspaceId: batch.workspaceId, sessionId: batch.sessionId })), [
+    { workspaceId: 'ws_route', sessionId: 'sess_route' },
+  ]);
+  assert.ok(indexed.every((doc) => doc.workspaceId === 'ws_route' && doc.channelId === 'chan_team'));
   assert.ok(indexed.some((doc) => doc.layer === 'L0' && doc.sessionId === 'sess_route'));
   assert.ok(indexed.some((doc) => doc.layer === 'L0' && /云端权威摘要/.test(doc.text || '')));
   assert.ok(indexed.some((doc) => doc.layer === 'L1' && doc.topicId === 'rerank-feedback'));
@@ -279,6 +289,182 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.match(searchRes.data.results[0].contextWebUrl, /anchorEventId=evt_1/);
   assert.equal(searchRes.data.results[0].contextPageUrl, searchRes.data.results[0].contextWebUrl);
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
+});
+
+test('team sharing default hybrid search recalls current channel and other server channels before rerank', async () => {
+  const calls = [];
+  const deps = routeDeps({
+    vectorSearch: async ({ teamSharingState, workspaceId, channelId, excludeChannelId, projectKey }) => {
+      calls.push({ type: 'vector', workspaceId, channelId, excludeChannelId, projectKey });
+      return {
+        ok: true,
+        candidates: teamSharingState.vectorDocuments
+          .filter((doc) => doc.active !== false)
+          .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
+          .filter((doc) => !channelId || doc.channelId === channelId)
+          .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
+          .filter((doc) => !projectKey || doc.projectKey === projectKey)
+          .filter((doc) => doc.layer === 'L0')
+          .map((doc) => ({
+            ...doc,
+            vectorScore: doc.channelId === 'chan_other' ? 0.95 : 0.4,
+            keywordScore: 0,
+            freshnessScore: 0.5,
+          })),
+      };
+    },
+    keywordSearch: async ({ workspaceId, channelId, excludeChannelId, projectKey }) => {
+      calls.push({ type: 'keyword', workspaceId, channelId, excludeChannelId, projectKey });
+      return { ok: true, candidates: [] };
+    },
+    keywordSearchReady: () => true,
+    rerank: async ({ candidates }) => candidates.map((candidate, index) => ({
+      index,
+      score: candidate.channelId === 'chan_other' ? 0.98 : 0.3,
+    })),
+  });
+  deps.state.channels.push({ id: 'chan_other', name: 'other-team' });
+  await syncRouteSession(deps, syncBody());
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_other_channel',
+    channelId: 'chan_other',
+    idempotencyKey: 'route:sync:other-channel',
+    title: 'Other channel rerank notes',
+    events: [
+      { eventId: 'evt_other_1', ordinal: 1, role: 'user', text: 'Other channel has the strongest rerank answer.', createdAt: '2026-06-01T09:45:00.000Z' },
+    ],
+  });
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: 'rerank answer',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.scope, 'hybrid');
+  assert.ok(calls.some((call) => call.type === 'vector' && call.channelId === 'chan_team' && !call.excludeChannelId));
+  assert.ok(calls.some((call) => call.type === 'vector' && !call.channelId && call.excludeChannelId === 'chan_team'));
+  assert.ok(calls.some((call) => call.type === 'keyword' && call.channelId === 'chan_team' && !call.excludeChannelId));
+  assert.ok(calls.some((call) => call.type === 'keyword' && !call.channelId && call.excludeChannelId === 'chan_team'));
+  assert.equal(searchRes.data.results[0].channelId, 'chan_other');
+  assert.equal(searchRes.data.results[0].sameChannel, false);
+  assert.equal(searchRes.data.results[0].retrievalScope, 'server');
+  assert.ok(searchRes.data.results.some((item) => item.channelId === 'chan_team' && item.sameChannel === true && item.retrievalScope === 'channel'));
+});
+
+test('team sharing search scope can force channel-only or server-wide recall', async () => {
+  const calls = [];
+  const deps = routeDeps({
+    vectorSearch: async ({ workspaceId, channelId, excludeChannelId, projectKey }) => {
+      calls.push({ type: 'vector', workspaceId, channelId, excludeChannelId, projectKey });
+      return { ok: true, candidates: [] };
+    },
+    keywordSearch: async ({ workspaceId, channelId, excludeChannelId, projectKey }) => {
+      calls.push({ type: 'keyword', workspaceId, channelId, excludeChannelId, projectKey });
+      return { ok: true, candidates: [] };
+    },
+    keywordSearchReady: () => true,
+    rerank: null,
+  });
+
+  const channelRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    channelRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: 'rerank',
+        channelId: 'chan_team',
+        scope: 'channel',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.equal(channelRes.statusCode, 200);
+  assert.equal(channelRes.data.scope, 'channel');
+  assert.ok(calls.every((call) => call.channelId === 'chan_team' && !call.excludeChannelId));
+
+  calls.length = 0;
+  const serverRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    serverRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: 'rerank',
+        channelId: 'chan_team',
+        scope: 'server',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.equal(serverRes.statusCode, 200);
+  assert.equal(serverRes.data.scope, 'server');
+  assert.ok(calls.every((call) => !call.channelId && !call.excludeChannelId));
+});
+
+test('team sharing local fallback applies hybrid current-channel and server-wide scopes', async () => {
+  const deps = routeDeps({
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+    zillizReady: () => false,
+  });
+  deps.state.channels.push({ id: 'chan_other', name: 'other-team' });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_local_current_channel',
+    idempotencyKey: 'route:local:current-channel',
+    title: 'Current channel local fallback',
+    events: [
+      { eventId: 'evt_local_current_1', ordinal: 1, role: 'user', text: 'current channel local fallback marker', createdAt: '2026-06-01T09:45:00.000Z' },
+    ],
+  });
+  await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_local_other_channel',
+    channelId: 'chan_other',
+    idempotencyKey: 'route:local:other-channel',
+    title: 'Other channel local fallback',
+    events: [
+      { eventId: 'evt_local_other_1', ordinal: 1, role: 'user', text: 'other channel local fallback marker', createdAt: '2026-06-01T09:46:00.000Z' },
+    ],
+  });
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: 'other channel local fallback marker',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.scope, 'hybrid');
+  assert.ok(searchRes.data.results.some((item) => item.channelId === 'chan_other' && item.sameChannel === false && item.retrievalScope === 'server'));
+  assert.ok(searchRes.data.results.some((item) => item.channelId === 'chan_team' && item.sameChannel === true && item.retrievalScope === 'channel'));
 });
 
 test('team sharing route exposes a session workspace with abstract, topics, and activities JSON', async () => {
@@ -941,7 +1127,7 @@ test('team sharing hybrid search fuses semantic and keyword candidates before re
   assert.equal(searchRes.statusCode, 200);
   assert.equal(searchRes.data.searchMode, 'hybrid');
   assert.equal(searchRes.data.timePreference, 'yesterday');
-  assert.deepEqual(searchRes.data.retrievalIntent, { useKeyword: true, useSemantic: true, modeBias: 'hybrid' });
+  assert.deepEqual(searchRes.data.retrievalIntent, { useKeyword: true, useSemantic: true, modeBias: 'hybrid', scope: 'hybrid' });
   assert.equal(seen.semanticQuery, '昨天关于 rerank 反馈和 BM25 的融合点');
   assert.ok(seen.keywordQuery.includes('rerank'));
   assert.ok(seen.keywordQueryRaw.includes('BM25'));

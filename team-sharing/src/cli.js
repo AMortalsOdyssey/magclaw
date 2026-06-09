@@ -169,7 +169,7 @@ function renderTeamSharingHelp() {
     '  doctor   Check local config, server auth, hooks, skill, and upgrade state',
     '  upgrade  Compatibility alias for update --check --force',
     '  update   Check, stage, activate, and sync Team Sharing package updates',
-    '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic)',
+    '  search   Query shared team sharing (--time yesterday, --keyword A, --topics A,B, --mode hybrid|keyword|semantic, --scope hybrid|channel|server)',
     '  context  Read original context around an anchor',
     '  read-link Read a protected MagClaw share/context URL with the Team Sharing CLI login',
     '  edit-link Patch one section of an existing MagClaw share URL',

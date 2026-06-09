@@ -1,5 +1,13 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.1.67 - 2026-06-09 - Server-wide hybrid recall
+### new
+- Team Sharing search now defaults to server-wide hybrid recall: current channel plus other channels in the same server/workspace, fused and reranked together.
+- `team-sharing search` accepts `--scope hybrid`, `--scope channel`, and `--scope server`; `hybrid` remains the default.
+### changed
+- Search requests now include the configured `workspaceId` explicitly while the server still enforces the token/actor workspace as the authority.
+- Results expose `workspaceId`, `channelId`, `projectKey`, `retrievalScope`, and `sameChannel` so clients can distinguish current-channel hits from same-server cross-channel hits.
+
 ## 0.1.65 - 2026-06-09 - Shared runtime onboarding
 ### new
 - New project hook installs now bootstrap and reuse the shared active Team Sharing runtime instead of falling back to a fresh npm latest wrapper.
