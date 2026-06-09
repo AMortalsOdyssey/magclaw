@@ -2210,6 +2210,11 @@ export function createSystemServices(deps) {
     const visibleConversationRecord = (record) => Boolean(record)
       && inCurrentWorkspace(record)
       && conversationVisible(record);
+    const selectedSpaceConversationRecord = (record) => {
+      if (!record || record.spaceType !== spaceType || String(record.spaceId) !== spaceId) return false;
+      if (!inCurrentWorkspace(record)) return false;
+      return spaceType !== 'dm' || conversationVisible(record);
+    };
     const sourceMessages = Array.isArray(currentState.messages) ? currentState.messages : [];
     const sourceReplies = Array.isArray(currentState.replies) ? currentState.replies : [];
     const selectedChannel = spaceType === 'channel'
@@ -2231,19 +2236,21 @@ export function createSystemServices(deps) {
     const [selectedMessagePage, threadRootMessagePage] = newestRecordPages(sourceMessages, [
       {
         limit: messageLimit,
-        predicate: (message) => visibleConversationRecord(message)
-          && message.spaceType === spaceType
-          && String(message.spaceId) === spaceId,
+        predicate: selectedSpaceConversationRecord,
       },
       {
         limit: threadRootLimit,
-        predicate: (message) => (
-          visibleConversationRecord(message)
-          && (Number(message.replyCount || 0) > 0
-          || message.taskId
-          || hasRecords(message.savedBy)
-          || String(message.id || '') === threadMessageId)
-        ),
+        predicate: (message) => {
+          if (
+            Number(message?.replyCount || 0) <= 0
+            && !message?.taskId
+            && !hasRecords(message?.savedBy)
+            && String(message?.id || '') !== threadMessageId
+          ) {
+            return false;
+          }
+          return visibleConversationRecord(message);
+        },
       },
     ], {
       visit: (message) => {
@@ -2273,16 +2280,16 @@ export function createSystemServices(deps) {
       threadMessageId
         ? [{
             limit: threadReplyLimit,
-            predicate: (reply) => visibleConversationRecord(reply)
-              && String(reply?.parentMessageId || '') === threadMessageId,
+            predicate: (reply) => String(reply?.parentMessageId || '') === threadMessageId
+              && visibleConversationRecord(reply),
           }]
         : [],
       {
         visit: (reply) => {
           unreadCollector.add('reply', reply);
-          if (!visibleConversationRecord(reply)) return;
           const parentMessageId = reply.parentMessageId;
           if (!messageById.has(parentMessageId)) return;
+          if (!visibleConversationRecord(reply)) return;
           const previous = latestReplyByParent.get(parentMessageId);
           if (!previous || compareNewestRecords(reply, previous) < 0) latestReplyByParent.set(parentMessageId, reply);
         },
