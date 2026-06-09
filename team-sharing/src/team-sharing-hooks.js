@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  buildTeamSharingPrivacyContext,
+  redactTeamSharingLocalText,
+} from './team-sharing-privacy.js';
 
 const CODEX_HOOK_EVENTS = Object.freeze(['Stop', 'PreCompact', 'SessionStart']);
 const CLAUDE_HOOK_EVENTS = Object.freeze(['Stop', 'SessionEnd', 'PreCompact', 'SessionStart']);
@@ -13,15 +17,8 @@ function stableHash(value = '') {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
 }
 
-function redactTeamSharingText(value = '') {
-  return String(value || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/(?:api[_-]?key|token|secret|password|密钥|秘钥|口令|令牌)\s*[：:=]\s*["']?[^\s"',;，。)）]+/gi, '[redacted-secret]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]')
-    .replace(/([?&](?:key|api[_-]?key|token|access_token|secret)=)[^\s"'&)）]+/gi, '$1[redacted-secret]')
-    .replace(/(App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1$2[redacted-secret]')
-    .trim();
+function redactTeamSharingText(value = '', context = {}) {
+  return redactTeamSharingLocalText(value, context).trim();
 }
 
 function iso(value, fallback = new Date().toISOString()) {
@@ -101,8 +98,8 @@ function parseJsonValue(value, fallback = null) {
   }
 }
 
-function compactPresentationText(value = '', limit = 4000) {
-  return redactTeamSharingText(value).slice(0, limit).trim();
+function compactPresentationText(value = '', limit = 4000, context = {}) {
+  return redactTeamSharingText(value, context).slice(0, limit).trim();
 }
 
 function maskSessionIdForTitle(value = '') {
@@ -120,7 +117,7 @@ function fallbackSessionTitle(runtime = 'codex', sessionId = '', seed = '') {
   return `${normalizeRuntime(runtime)} session ${maskSessionIdForTitle(identifier)}`;
 }
 
-function codexSessionTitleFromPayload(payload = {}) {
+function codexSessionTitleFromPayload(payload = {}, context = {}) {
   if (!payload || typeof payload !== 'object') return '';
   const candidates = [
     payload.thread_name,
@@ -137,15 +134,15 @@ function codexSessionTitleFromPayload(payload = {}) {
     payload.name,
   ];
   for (const candidate of candidates) {
-    const title = compactPresentationText(candidate, 180);
+    const title = compactPresentationText(candidate, 180, context);
     if (title) return title;
   }
   return '';
 }
 
-function extractProposedPlanText(value = '') {
+function extractProposedPlanText(value = '', context = {}) {
   const match = String(value || '').match(/<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i);
-  return match ? compactPresentationText(match[1], 12000) : '';
+  return match ? compactPresentationText(match[1], 12000, context) : '';
 }
 
 function decodeInternalContextMarkup(value = '') {
@@ -419,7 +416,7 @@ function codexTextEvent(item, context) {
   if (item?.type === 'session_meta' && item.payload) {
     context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
     context.projectPath = context.projectPath || item.payload.cwd || '';
-    context.title = context.title || codexSessionTitleFromPayload(item.payload);
+    context.title = context.title || codexSessionTitleFromPayload(item.payload, context.privacy);
     return null;
   }
   if (item?.type !== 'response_item') return null;
@@ -431,7 +428,7 @@ function codexTextEvent(item, context) {
   if (payload.type !== 'message') return null;
   const role = String(payload.role || '').toLowerCase();
   if (!['user', 'assistant'].includes(role)) return null;
-  const text = redactTeamSharingText(textFromContentBlocks(payload.content));
+  const text = redactTeamSharingText(textFromContentBlocks(payload.content), context.privacy);
   if (!text) return null;
   return {
     role,
@@ -452,7 +449,7 @@ function claudeTextEvent(item, context) {
   if (raw?.type === 'assistant' || raw?.type === 'user') {
     const textBlocks = claudeTextBlocksFromContent(raw.message?.content);
     const rawText = textBlocks.join('\n\n');
-    const text = redactTeamSharingText(raw.type === 'user' ? claudeVisibleUserText(rawText) : rawText);
+    const text = redactTeamSharingText(raw.type === 'user' ? claudeVisibleUserText(rawText) : rawText, context.privacy);
     if (!text) return null;
     return {
       role: raw.type === 'assistant' ? 'assistant' : 'user',
@@ -545,7 +542,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
     if (item?.type === 'session_meta' && item.payload) {
       context.sessionId = context.sessionId || item.payload.id || item.payload.session_id || '';
       context.projectPath = context.projectPath || item.payload.cwd || '';
-      context.title = context.title || codexSessionTitleFromPayload(item.payload);
+      context.title = context.title || codexSessionTitleFromPayload(item.payload, context.privacy);
       continue;
     }
     if (item?.type !== 'response_item') continue;
@@ -607,7 +604,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
     if (!['user', 'assistant'].includes(role)) continue;
     const phase = codexResponseItemPhase(item, payload);
     if (role === 'assistant' && isCodexCommentaryPhase(phase)) continue;
-    const text = redactTeamSharingText(textFromContentBlocks(payload.content));
+    const text = redactTeamSharingText(textFromContentBlocks(payload.content), context.privacy);
     if (!text) continue;
     if (role === 'user') {
       if (isCodexImplementationPlanPrompt(text)) continue;
@@ -653,7 +650,7 @@ function extractCodexTranscriptEvents(parsed = [], context = {}) {
       }
       continue;
     }
-    const proposedPlan = extractProposedPlanText(text);
+    const proposedPlan = extractProposedPlanText(text, context.privacy);
     if (proposedPlan) {
       assignTranscriptEvent(events, sourceOrdinalRef, {
         sourceOrdinal,
@@ -772,7 +769,7 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
           });
         }
       }
-      const text = redactTeamSharingText(textBlocks.join('\n\n'));
+      const text = redactTeamSharingText(textBlocks.join('\n\n'), context.privacy);
       if (text) {
         assignTranscriptEvent(events, sourceOrdinalRef, {
           role: 'assistant',
@@ -803,7 +800,7 @@ function extractClaudeTranscriptEvents(parsed = [], context = {}) {
         });
         if (pending) pendingToolUses.delete(toolUseId);
       }
-      const text = redactTeamSharingText(claudeVisibleUserText(textBlocks.join('\n\n')));
+      const text = redactTeamSharingText(claudeVisibleUserText(textBlocks.join('\n\n')), context.privacy);
       if (!text) continue;
       const goalCommand = stripGoalCommandPrefix(text);
       const event = assignTranscriptEvent(events, sourceOrdinalRef, {
@@ -873,12 +870,19 @@ function visibleTeamSharingTranscriptEvents(events = []) {
 export function parseTeamSharingTranscript(text = '', options = {}) {
   const runtime = normalizeRuntime(options.runtime);
   const parsed = parseJsonOrJsonl(text);
+  const privacy = buildTeamSharingPrivacyContext({
+    projectDir: options.projectDir,
+    projectPath: options.projectPath,
+    cwd: options.cwd,
+    env: options.env,
+  });
   const context = {
     runtime,
     sessionId: String(options.sessionId || '').trim(),
     projectPath: String(options.projectPath || options.projectDir || '').trim(),
-    title: String(options.title || '').trim(),
+    title: redactTeamSharingText(String(options.title || '').trim(), privacy),
     toolNames: [],
+    privacy,
   };
   const extractedEvents = runtime === 'claude_code'
     ? extractClaudeTranscriptEvents(parsed, context)
@@ -921,17 +925,23 @@ export function parseTeamSharingTranscript(text = '', options = {}) {
 
 export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {}) {
   const runtime = normalizeRuntime(options.runtime);
+  const privacy = buildTeamSharingPrivacyContext({
+    projectDir: options.projectDir,
+    projectPath: options.projectPath,
+    cwd: options.cwd,
+    env: options.env,
+  });
   const parsed = parseTeamSharingTranscript(text, options);
   const lastOrdinal = Math.max(0, Number(options.lastOrdinal || 0));
   const minCreatedAt = String(options.minCreatedAt || '').trim();
   const projectKey = String(options.projectKey || path.basename(parsed.projectPath || process.cwd()) || 'default').trim();
+  const title = redactTeamSharingText(options.title || parsed.title, privacy);
   const incrementalEvents = parsed.events
     .filter((event) => Number(event.ordinal || 0) > lastOrdinal)
     .filter((event) => !minCreatedAt || String(event.createdAt || '') >= minCreatedAt);
   const hookEvent = String(options.hookEvent || options.hookEventName || '').trim();
   const shouldCreateSessionStart = hookEvent === 'SessionStart' && lastOrdinal === 0;
   if (!incrementalEvents.length) {
-    const title = options.title || parsed.title;
     if (shouldCreateSessionStart) {
       const createdAt = options.now?.() || new Date().toISOString();
       return {
@@ -1004,7 +1014,7 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
     projectKey,
     projectPathHash: stableHash(parsed.projectPath || projectKey),
     sessionId: parsed.sessionId,
-    title: options.title || parsed.title,
+    title,
     workspaceId: options.workspaceId || '',
     channelId: options.channelId || '',
     channelPath: options.channelPath || '',
@@ -1012,7 +1022,7 @@ export function buildTeamSharingSyncPackageFromTranscript(text = '', options = {
     toOrdinal,
     idempotencyKey: `${runtime}:${projectKey}:${parsed.sessionId}:${fromOrdinal}:${toOrdinal}:${batchHash}`,
     optionalLocalDigest: [
-      options.localDigest || '',
+      redactTeamSharingText(options.localDigest || '', privacy),
       parsed.toolNames.length ? `Tool summary: ${parsed.toolNames.join(', ')}` : '',
     ].filter(Boolean).join('\n'),
     events: incrementalEvents,

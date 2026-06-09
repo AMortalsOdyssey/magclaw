@@ -291,6 +291,56 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
 });
 
+test('team sharing route sync redacts local paths and accounts before storing or indexing', async () => {
+  const indexed = [];
+  const windowsProject = String.raw`D:\公司\正式项目\memory-experiment`;
+  const macProject = '/Users/tt/code/myproject/magclaw';
+  const deps = routeDeps({
+    indexTeamSharingDocuments: async ({ documents }) => {
+      indexed.push(...documents);
+    },
+  });
+  await syncRouteSession(deps, {
+    runtime: 'codex',
+    projectKey: 'memory-experiment',
+    sessionId: 'sess_route_privacy',
+    title: `Hook check in ${windowsProject}`,
+    channelId: 'chan_team',
+    idempotencyKey: 'route:sync:privacy',
+    optionalLocalDigest: `本地摘要补充 ${macProject}/team-sharing/src/team-sharing.js by tt@example.com`,
+    events: [
+      {
+        eventId: 'evt_privacy_1',
+        ordinal: 1,
+        role: 'user',
+        text: `当前项目 ${windowsProject}，配置 ${windowsProject}\\.codex\\hooks.json，账号 tt@MacBook-Pro，邮箱 tt@example.com，token=secret-123`,
+        createdAt: '2026-06-01T09:58:00.000Z',
+      },
+      {
+        eventId: 'evt_privacy_2',
+        ordinal: 2,
+        role: 'assistant',
+        text: `我会检查 ${macProject}/team-sharing/src/team-sharing.js`,
+        createdAt: '2026-06-01T09:59:00.000Z',
+      },
+    ],
+  });
+
+  const stored = JSON.stringify({
+    session: deps.state.teamSharing.sessions.sess_route_privacy,
+    events: deps.state.teamSharing.events.sess_route_privacy,
+    messages: deps.state.messages,
+    replies: deps.state.replies,
+    vectorDocuments: deps.state.teamSharing.vectorDocuments,
+    indexed,
+  });
+
+  assert.match(stored, /\[local-project\]|\[local-path\]/);
+  assert.doesNotMatch(stored, /D:\\公司\\正式项目\\memory-experiment|D:\\\\公司\\\\正式项目\\\\memory-experiment/);
+  assert.doesNotMatch(stored, /\/Users\/tt\/code\/myproject\/magclaw/);
+  assert.doesNotMatch(stored, /tt@MacBook-Pro|tt@example\.com|secret-123|token=/);
+});
+
 test('team sharing default hybrid search recalls current channel and other server channels before rerank', async () => {
   const calls = [];
   const deps = routeDeps({

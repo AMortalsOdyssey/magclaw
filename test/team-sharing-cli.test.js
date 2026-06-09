@@ -1620,6 +1620,61 @@ test('team sharing audit content is opt-in for local debugging', async () => {
   assert.doesNotMatch(JSON.stringify(auditRecord), /team-sharing-token-secret/);
 });
 
+test('team sharing cli sync redacts local paths and accounts from uploads and audit content', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-privacy-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-privacy-home-'));
+  const env = { HOME: home, USERPROFILE: String.raw`C:\Users\tt`, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const windowsProject = String.raw`D:\公司\正式项目\memory-experiment`;
+  const macProject = '/Users/tt/code/myproject/magclaw';
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'memory-experiment',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_cli_privacy', cwd: windowsProject, thread_name: `Hook check in ${windowsProject}` } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `当前项目 ${windowsProject}，配置 ${windowsProject}\\.codex\\hooks.json，账号 tt@MacBook-Pro，邮箱 tt@example.com，token=secret-123` }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: `我会检查 ${macProject}/team-sharing/src/team-sharing.js` }] } }),
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      status: 202,
+      statusText: 'Accepted',
+      json: async () => ({ ok: true, appendedEventCount: calls[calls.length - 1].body.events.length, abstractRevision: 1, indexedDocumentCount: 2, messageId: 'msg_privacy' }),
+    };
+  };
+  try {
+    const result = await syncTeamSharingTranscript({ cwd, transcript, runtime: 'codex', hookEvent: 'Stop', integration: 'team-sharing', auditContent: true }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const serializedUpload = JSON.stringify(calls[0].body);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.match(serializedUpload, /\[local-project\]|\[local-path\]/);
+    assert.match(auditText, /\[local-project\]|\[local-path\]/);
+    assert.doesNotMatch(serializedUpload, /D:\\公司\\正式项目\\memory-experiment|D:\\\\公司\\\\正式项目\\\\memory-experiment/);
+    assert.doesNotMatch(serializedUpload, /\/Users\/tt\/code\/myproject\/magclaw/);
+    assert.doesNotMatch(serializedUpload, /tt@MacBook-Pro|tt@example\.com|secret-123|token=/);
+    assert.doesNotMatch(auditText, /D:\\公司\\正式项目\\memory-experiment|D:\\\\公司\\\\正式项目\\\\memory-experiment|\/Users\/tt\/code\/myproject\/magclaw|tt@MacBook-Pro|tt@example\.com|secret-123|token=/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing sync skips pre-enable history and uploads only new events from old sessions', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-no-backfill-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-no-backfill-home-'));

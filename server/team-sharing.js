@@ -1,5 +1,9 @@
 import crypto from 'node:crypto';
 import { validateChannelImportPath } from './integrations/feishu-connect/route-token.js';
+import {
+  buildTeamSharingPrivacyContext,
+  redactTeamSharingLocalText,
+} from '../team-sharing/src/team-sharing-privacy.js';
 
 const DEFAULT_MAX_HOTNESS_BOOST = 0.18;
 const FEEDBACK_WEIGHTS = Object.freeze({
@@ -12,11 +16,7 @@ const FEEDBACK_WEIGHTS = Object.freeze({
 });
 
 function redactSecrets(value = '') {
-  return String(value || '')
-    .replace(/(?:api[_-]?key|token|secret|password|密钥|秘钥|口令|令牌)\s*[：:=]\s*["']?[^\s"',;，。)）]+/gi, '[redacted-secret]')
-    .replace(/(?:App Secret|app_secret|client_secret)(\s*[：:=]\s*)[^\s"',;，。)）]+/gi, '$1[redacted-secret]')
-    .replace(/([?&](?:key|api[_-]?key|token|access_token|secret)=)[^\s"'&)）]+/gi, '$1[redacted-secret]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, 'Bearer [redacted-secret]');
+  return redactTeamSharingLocalText(value, buildTeamSharingPrivacyContext({ env: process.env }));
 }
 
 function cleanText(value = '') {

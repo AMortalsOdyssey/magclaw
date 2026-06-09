@@ -14,6 +14,11 @@ import {
   parseTeamSharingTranscript,
 } from './team-sharing-hooks.js';
 import { buildTeamSharingOnboardingFeedback } from './onboarding-feedback.js';
+import {
+  buildTeamSharingPrivacyContext,
+  redactTeamSharingLocalText,
+  sanitizeTeamSharingValue,
+} from './team-sharing-privacy.js';
 
 export const TEAM_SHARING_PACKAGE_NAME = '@magclaw/team-sharing';
 export const TEAM_SHARING_INTEGRATION = 'team-sharing';
@@ -657,24 +662,11 @@ function auditCharCount(value = '') {
 }
 
 function redactAuditText(value = '') {
-  return String(value || '')
-    .replace(/([?&](?:key|token|api_key|secret)=)[^&\s]+/gi, '$1[redacted]')
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[redacted]')
-    .replace(/\b((?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*)[^\s,;'"<>]+/gi, '$1[redacted]');
+  return redactTeamSharingLocalText(value, buildTeamSharingPrivacyContext({ env: process.env }));
 }
 
 function sanitizeAuditValue(value, key = '') {
-  const cleanKey = String(key || '').toLowerCase();
-  if (/token|authorization|secret|password|api[_-]?key/.test(cleanKey)) return '[redacted]';
-  if (typeof value === 'string') return redactAuditText(value);
-  if (Array.isArray(value)) return value.map((item) => sanitizeAuditValue(item, key));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [
-      childKey,
-      sanitizeAuditValue(childValue, childKey),
-    ]));
-  }
-  return value;
+  return sanitizeTeamSharingValue(value, key, buildTeamSharingPrivacyContext({ env: process.env }));
 }
 
 function compactAuditError(error) {
@@ -3317,9 +3309,9 @@ function hookCommandStatus(command = '', env = process.env) {
     : commandExistsInPath(token, env);
   const executable = Boolean(resolved && existsSync(resolved));
   return {
-    command: sanitizeAuditValue(token),
+    command: token,
     executable,
-    resolvedPath: executable ? sanitizeAuditValue(resolved) : '',
+    resolvedPath: executable ? resolved : '',
     reason: executable ? 'ok' : (hasPathSeparator ? 'command_path_missing' : 'command_not_found_in_path'),
   };
 }

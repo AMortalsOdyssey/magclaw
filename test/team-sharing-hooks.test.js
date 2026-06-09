@@ -67,6 +67,52 @@ test('team sharing hook parser extracts Codex user and assistant messages while 
   assert.doesNotMatch(JSON.stringify(parsed), /secret command output|cat secret/);
 });
 
+test('team sharing hook parser redacts local paths and accounts from Codex uploads', () => {
+  const windowsProject = String.raw`D:\公司\正式项目\memory-experiment`;
+  const macProject = '/Users/tt/code/myproject/magclaw';
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-local-privacy', cwd: windowsProject, thread_name: `Hook check in ${windowsProject}` } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `我这边还在 ${windowsProject}，hooks 文件是 ${windowsProject}\\.codex\\hooks.json，机器账号 tt@MacBook-Pro，邮箱 tt@example.com，token=secret-123` }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: `我会从 ${macProject}/team-sharing/src/team-sharing-hooks.js 检查。` }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex', projectDir: windowsProject });
+  const pkg = buildTeamSharingSyncPackageFromTranscript(transcript, {
+    runtime: 'codex',
+    projectKey: 'memory-experiment',
+    channelId: 'chan_team',
+    projectDir: windowsProject,
+  });
+  const serialized = JSON.stringify({ title: parsed.title, events: parsed.events, body: pkg.body });
+
+  assert.match(serialized, /\[local-project\]|\[local-path\]/);
+  assert.doesNotMatch(serialized, /D:\\公司\\正式项目\\memory-experiment|D:\\\\公司\\\\正式项目\\\\memory-experiment/);
+  assert.doesNotMatch(serialized, /\/Users\/tt\/code\/myproject\/magclaw/);
+  assert.doesNotMatch(serialized, /tt@MacBook-Pro|tt@example\.com|secret-123|token=/);
+});
+
+test('team sharing hook parser redacts local paths and accounts from Claude Code uploads', () => {
+  const windowsProject = String.raw`D:\公司\正式项目\memory-experiment`;
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'system', subtype: 'init', session_id: 'claude-local-privacy', cwd: windowsProject }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'user', cwd: windowsProject, message: { content: [{ type: 'text', text: `检查 ${windowsProject}\\.claude\\settings.local.json，账号 tt@MacBook-Pro，邮箱 tt@example.com` }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'assistant', cwd: windowsProject, message: { content: [{ type: 'text', text: `结果写在 /Users/tt/code/myproject/magclaw/team-sharing/src/team-sharing.js` }] } }),
+  ].join('\n');
+
+  const pkg = buildTeamSharingSyncPackageFromTranscript(transcript, {
+    runtime: 'claude_code',
+    projectKey: 'memory-experiment',
+    channelId: 'chan_team',
+    projectDir: windowsProject,
+  });
+  const serialized = JSON.stringify(pkg.body);
+
+  assert.match(serialized, /\[local-project\]|\[local-path\]/);
+  assert.doesNotMatch(serialized, /D:\\公司\\正式项目\\memory-experiment|D:\\\\公司\\\\正式项目\\\\memory-experiment/);
+  assert.doesNotMatch(serialized, /\/Users\/tt\/code\/myproject\/magclaw/);
+  assert.doesNotMatch(serialized, /tt@MacBook-Pro|tt@example\.com/);
+});
+
 test('team sharing hook parser uses explicit session title and keeps only final assistant reply', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-title', cwd: '/repo/magclaw' } }),
