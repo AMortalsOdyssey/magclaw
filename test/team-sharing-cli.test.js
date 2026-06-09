@@ -48,6 +48,10 @@ import {
   whoamiTeamSharingProfile,
 } from '../team-sharing/src/team-sharing.js';
 
+function escapeRegExp(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 test('team sharing onboarding feedback renders structured guidance without secrets or local paths', () => {
   const feedback = buildTeamSharingOnboardingFeedback({
     operation: 'setup',
@@ -704,7 +708,7 @@ test('team sharing cli login stores scoped token in user profile only', async ()
   assert.match(profileYaml, /token: team-sharing-token-secret/);
   assert.match(profileYaml, /token_expires_at: \d{4}-\d{2}-\d{2}T/);
   assert.match(profileYaml, /machine_fingerprint: mfp_[a-f0-9]{64}/);
-  assert.equal(paths.projectConfig.includes('.magclaw/team-sharing.yaml'), true);
+  assert.equal(path.normalize(paths.projectConfig).endsWith(path.join('.magclaw', 'team-sharing.yaml')), true);
 });
 
 test('team sharing status reports cached login that belongs to another server', async () => {
@@ -792,7 +796,8 @@ test('team sharing init writes editable yaml config and user project registry', 
   assert.match(yaml, /enabled_since: 2026-06-02T00:00:00.000Z/);
   assert.doesNotMatch(yaml, /token|api_key|secret/i);
   assert.match(registry, /magclaw/);
-  assert.match(registry, new RegExp(cwd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const registryConfig = parseTeamSharingYaml(registry);
+  assert.ok(Object.values(registryConfig.projects || {}).some((project) => project.path === cwd));
 });
 
 test('team sharing project registry keeps same-name projects as distinct entries', async () => {
@@ -1726,7 +1731,7 @@ test('team sharing hook install defaults to the shared active shim and bootstrap
     assert.equal(activePackageJson.gitHead, gitHead);
   }
   assert.match(activeState.active.bin, /versions/);
-  assert.match(command, new RegExp(`^${path.join(binDir, 'team-sharing').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sync`));
+  assert.match(command, new RegExp(`^"?${escapeRegExp(result.shim.path)}"? sync`));
   assert.doesNotMatch(command, /^team-sharing sync/);
   assert.doesNotMatch(command, /--package-version|--source-commit/);
 
@@ -1822,6 +1827,8 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.match(shim, /versions/);
   assert.doesNotMatch(shim, /^exec npm exec --yes --package '@magclaw\/team-sharing@latest'/m);
   assert.match(cmdShim, /team-sharing %\*/);
+  assert.doesNotMatch(cmdShim, /\^\&\^\&|\^\|\^\|/);
+  assert.match(cmdShim, /const active=data\.active\?data\.active\.bin:''/);
   assert.match(ps1Shim, /team-sharing @args/);
   assert.equal(hooks.codex.installed.length, 3);
   assert.equal(hooks.claude.installed.length, 4);
@@ -1835,10 +1842,10 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   const installedSkill = await readFile(path.join(cwd, '.agents', 'skills', 'magclaw-team-sharing', 'SKILL.md'), 'utf8');
   assert.match(skillTemplate, /\{\{TEAM_SHARING_VERSION\}\}/);
   assert.doesNotMatch(installedSkill, /\{\{TEAM_SHARING_VERSION\}\}|\{\{TEAM_SHARING_SOURCE_COMMIT\}\}/);
-  assert.match(installedSkill, new RegExp(`package: @magclaw/team-sharing@${packageJson.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} sourceCommit=`));
+  assert.match(installedSkill, new RegExp(`package: @magclaw/team-sharing@${escapeRegExp(packageJson.version)} sourceCommit=`));
   assert.match(installedSkill, /## Answer Style For Search Results/);
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes(path.join(binDir, 'team-sharing'))));
-  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('team-sharing sync')));
+  assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => /team-sharing(?:\.cmd)?"? sync/.test(hook.command)));
   assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('${')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.some((hook) => hook.command.includes('--integration team-sharing')));
   assert.ok(codexConfig.hooks.Stop[0].hooks.every((hook) => !hook.command.includes('--package-version')));

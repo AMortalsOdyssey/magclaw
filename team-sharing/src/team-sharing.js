@@ -866,7 +866,7 @@ function defaultTeamSharingHookCommand(flags = {}, env = process.env) {
 function teamSharingShimFiles({ npmPath = 'npm', packageSpec = `${TEAM_SHARING_PACKAGE_NAME}@latest` } = {}) {
   const cleanNpmPath = String(npmPath || 'npm').trim() || 'npm';
   const cleanPackageSpec = String(packageSpec || `${TEAM_SHARING_PACKAGE_NAME}@latest`).trim() || `${TEAM_SHARING_PACKAGE_NAME}@latest`;
-  const activeBinScript = "try{const fs=require('fs');const data=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write((data.active&&data.active.bin)||data.bin||'')}catch(e){}";
+  const activeBinScript = "try{const fs=require('fs');const data=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const active=data.active?data.active.bin:'';process.stdout.write(active?active:(data.bin?data.bin:''))}catch(e){}";
   return [
     {
       name: 'team-sharing',
