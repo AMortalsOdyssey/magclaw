@@ -1680,9 +1680,23 @@ test('server Owners can promote and demote other Owners without allowing self-de
     assert.equal(demotedAState.data.cloud.auth.capabilities.manage_computers, false);
     assert.equal(demotedAState.data.cloud.auth.capabilities.detect_runtime, false);
     assert.equal(demotedAState.data.cloud.auth.capabilities.manage_owner_role, false);
+    const demotedWorkspaceId = demotedAState.data.cloud.auth.currentMember.workspaceId;
+    const workspaceAllChannel = demotedAState.data.channels.find((channel) => (
+      channel.workspaceId === demotedWorkspaceId
+      && (channel.defaultChannel || channel.locked || channel.name === 'all')
+    ));
+    assert.ok(workspaceAllChannel);
 
     await request(server.baseUrl, '/api/runtime', { cookie: ownerA.cookie, expectStatus: 403 });
     await request(server.baseUrl, '/api/runtimes', { cookie: ownerA.cookie, expectStatus: 403 });
+    const memberChannelPath = await request(server.baseUrl, `/api/channels/${workspaceAllChannel.id}/feishu-import-path`, {
+      method: 'POST',
+      cookie: ownerA.cookie,
+      headers: { 'x-magclaw-server-slug': 'owner-team' },
+      body: JSON.stringify({}),
+    });
+    assert.match(memberChannelPath.data.path, /^mc:\/\/magclaw\/server\//);
+    assert.equal(memberChannelPath.data.channelId, workspaceAllChannel.id);
     const workspaceTree = await request(server.baseUrl, `/api/agents/${agent.data.agent.id}/workspace`, { cookie: ownerA.cookie });
     assert.equal(workspaceTree.data.agent.id, agent.data.agent.id);
     assert.ok(workspaceTree.data.entries.some((item) => item.path === 'MEMORY.md' && item.kind === 'file'));

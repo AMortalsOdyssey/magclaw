@@ -59,6 +59,11 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(drawerSource, /renderTeamSharingWorkspacePanel\(message\)/);
   assert.match(app, /team-sharing-workspace-action/);
   assert.match(app, /data-action="open-team-sharing-workspace-file"/);
+  assert.match(app, /data-action="copy-team-sharing-workspace-file-link"/);
+  assert.match(app, /function teamSharingWorkspaceFileUrl/);
+  assert.match(app, /project-tree-row-main/);
+  assert.match(app, /team-sharing-workspace-file-copy/);
+  assert.match(app, /Copy link/);
   assert.match(app, /toggle-team-sharing-workspace-folder/);
   assert.match(app, /data-action="jump-team-sharing-workspace-heading"/);
   assert.match(app, /data-action="set-team-sharing-workspace-preview-mode"/);
@@ -73,8 +78,17 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   assert.match(clickActionSource, /if \(action === 'back-to-team-sharing-thread'\)/);
   assert.match(clickActionSource, /if \(action === 'toggle-team-sharing-workspace-folder'\)/);
   assert.match(clickActionSource, /if \(action === 'jump-team-sharing-workspace-heading'\)/);
+  assert.match(clickActionSource, /if \(action === 'copy-team-sharing-workspace-file-link'\)/);
+  assert.match(clickActionSource, /tryCopyTextToClipboard\(teamSharingWorkspaceFileUrl\(path\)\)/);
+  assert.match(clickActionSource, /Team Sharing workspace file link copied/);
+  const copyFileLinkSource = clickActionSource.slice(
+    clickActionSource.indexOf("if (action === 'copy-team-sharing-workspace-file-link')"),
+    clickActionSource.indexOf("if (action === 'toggle-team-sharing-workspace-folder')"),
+  );
+  assert.doesNotMatch(copyFileLinkSource, /render\(\)/);
   assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);
   assert.doesNotMatch(app, /'open-team-sharing-workspace-file': \['Loading workspace file\.\.\.'/);
+  assert.doesNotMatch(app, /'copy-team-sharing-workspace-file-link': \[/);
   assert.match(app, /'jump-team-sharing-workspace-heading'/);
   assert.match(app, /team-sharing-workspace-preview/);
   assert.match(app, /function teamSharingContentSegmentsForRecord\(record = \{\}\)/);

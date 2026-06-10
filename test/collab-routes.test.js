@@ -113,6 +113,53 @@ test('collab route returns Team Sharing onboarding feedback with channel setup c
   assert.doesNotMatch(JSON.stringify(res.data.onboardingFeedback), /routeKey|route-key|token|Bearer/i);
 });
 
+test('collab route lets active workspace members copy a channel path without joining the channel', async () => {
+  const createdAt = '2026-05-02T00:00:00.000Z';
+  const deps = routeDeps({
+    currentActor: () => ({
+      user: { id: 'usr_member', email: 'member@example.test' },
+      member: {
+        id: 'wmem_member',
+        workspaceId: 'wsp_main',
+        userId: 'usr_member',
+        humanId: 'hum_member',
+        role: 'member',
+        status: 'active',
+      },
+    }),
+  });
+  deps.state.connection = { workspaceId: 'wsp_main' };
+  deps.state.cloud = {
+    workspaces: [{ id: 'wsp_main', slug: 'main-team', name: 'Main Team', createdAt }],
+    workspaceMembers: [
+      { id: 'wmem_member', workspaceId: 'wsp_main', userId: 'usr_member', humanId: 'hum_member', role: 'member', status: 'active', joinedAt: createdAt },
+    ],
+  };
+  deps.state.channels.push({
+    id: 'chan_private',
+    workspaceId: 'wsp_main',
+    name: 'private-notes',
+    humanIds: ['hum_other'],
+    agentIds: [],
+    memberIds: ['hum_other'],
+    archived: false,
+    metadata: {},
+  });
+
+  const res = makeResponse();
+  assert.equal(await handleCollabApi(
+    { method: 'POST' },
+    res,
+    new URL('http://local/api/channels/chan_private/feishu-import-path'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.data.serverId, 'wsp_main');
+  assert.equal(res.data.channelId, 'chan_private');
+  assert.match(res.data.path, /^mc:\/\/magclaw\/server\/wsp_main\/channel\/chan_private\?key=/);
+});
+
 test('collab route resolves signed channel paths only for member servers', async () => {
   const createdAt = '2026-05-02T00:00:00.000Z';
   const deps = routeDeps({

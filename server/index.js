@@ -1736,6 +1736,7 @@ function requiredRolesForAppApi(req, url) {
   if (req.method === 'POST' && (
     url.pathname === '/api/attachments'
     || url.pathname === '/api/dms'
+    || /^\/api\/channels\/[^/]+\/feishu-import-path$/.test(url.pathname)
     || url.pathname === '/api/inbox/read'
     || /^\/api\/spaces\/(channel|dm)\/[^/]+\/messages$/.test(url.pathname)
     || /^\/api\/messages\/[^/]+\/replies$/.test(url.pathname)

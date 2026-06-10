@@ -90,6 +90,14 @@ export async function handleCollabApi(req, res, url, deps) {
     ]).filter((id) => id.startsWith('hum_'));
   }
 
+  function actorIsActiveWorkspaceMember(auth, workspaceId = '') {
+    if (!auth?.member) return false;
+    const cleanWorkspaceId = String(workspaceId || '').trim();
+    const actorWorkspaceId = String(auth.member.workspaceId || '').trim();
+    const status = String(auth.member.status || 'active').trim();
+    return Boolean(actorWorkspaceId && (!cleanWorkspaceId || actorWorkspaceId === cleanWorkspaceId) && status === 'active');
+  }
+
   async function syncDurableChannelJoin(channel, memberId, req) {
     if (!memberId?.startsWith?.('hum_') || typeof upsertChannelMember !== 'function') return;
     await upsertChannelMember({
@@ -403,16 +411,24 @@ export async function handleCollabApi(req, res, url, deps) {
       sendError(res, 404, 'Channel not found.');
       return true;
     }
-    const { workspaceId, humanId } = actorContext(req);
-    const humanIds = channelHumanMembershipIds(channel);
-    if (humanIds.length && !humanIds.includes(humanId) && !isWorkspaceAllChannel(channel)) {
-      sendError(res, 403, 'Join this channel before copying its MagClaw path.');
-      return true;
+    const { auth, workspaceId, humanId } = actorContext(req);
+    const channelWorkspaceId = String(channel.workspaceId || workspaceId || '').trim();
+    if (auth) {
+      if (!actorIsActiveWorkspaceMember(auth, channelWorkspaceId)) {
+        sendError(res, 403, 'Workspace role is not allowed.');
+        return true;
+      }
+    } else {
+      const humanIds = channelHumanMembershipIds(channel);
+      if (humanIds.length && !humanIds.includes(humanId) && !isWorkspaceAllChannel(channel)) {
+        sendError(res, 403, 'Join this channel before copying its MagClaw path.');
+        return true;
+      }
     }
     const previousKey = channel.metadata?.integrations?.feishuImport?.routeKey || '';
     const routeKey = ensureChannelFeishuRouteKey(channel);
     const importPath = buildChannelImportPath({
-      serverId: workspaceId,
+      serverId: channelWorkspaceId || workspaceId,
       channelId: channel.id,
       routeKey,
     });

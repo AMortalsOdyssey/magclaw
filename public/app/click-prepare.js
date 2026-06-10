@@ -206,6 +206,7 @@ async function prepareDocumentClick(event) {
     'close-team-sharing-workspace',
     'back-to-team-sharing-thread',
     'open-team-sharing-workspace-file',
+    'copy-team-sharing-workspace-file-link',
     'toggle-team-sharing-workspace-folder',
     'jump-team-sharing-workspace-heading',
     'set-team-sharing-workspace-preview-mode',

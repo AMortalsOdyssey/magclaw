@@ -609,6 +609,89 @@ test('team sharing workspace normalizes legacy standalone original-context links
   assert.doesNotMatch(topicFile.content, /\n\s*- 原文：/);
 });
 
+test('team sharing route serves workspace files as login-protected dynamic html pages', async () => {
+  const deps = routeDeps({ readJson: async () => syncBody() });
+  await handleTeamSharingApi(
+    { method: 'POST' },
+    makeResponse(),
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  );
+
+  const scopedRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    scopedRes,
+    new URL('https://magclaw.example/s/server-route/team-sharing/workspace/sess_route/file?path=abstract.md'),
+    deps,
+  ), true);
+  assert.equal(scopedRes.statusCode, 200);
+  assert.match(scopedRes.headers['content-type'], /text\/html/);
+  assert.equal(scopedRes.headers['cache-control'], 'no-store');
+  assert.match(scopedRes.body, /MagClaw Team Sharing Workspace File/);
+  assert.match(scopedRes.body, /abstract\.md/);
+  assert.match(scopedRes.body, /<aside class="workspace-file-outline"/);
+  assert.match(scopedRes.body, /Key Topics/);
+  assert.match(scopedRes.body, /<pre class="workspace-file-raw"><code># MagClaw rerank route session/);
+  assert.match(scopedRes.body, /topics\/rerank-feedback\.md/);
+
+  const topicRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    topicRes,
+    new URL('https://magclaw.example/team-sharing/workspace/sess_route/file?path=topics%2Frerank-feedback.md'),
+    deps,
+  ), true);
+  assert.equal(topicRes.statusCode, 200);
+  assert.match(topicRes.body, /rerank-feedback\.md/);
+  assert.match(topicRes.body, /Original Context/);
+
+  const missingFile = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    missingFile,
+    new URL('http://local/s/server-route/team-sharing/workspace/sess_route/file?path=missing.md'),
+    deps,
+  ), true);
+  assert.equal(missingFile.statusCode, 404);
+
+  const loginRedirect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    loginRedirect,
+    new URL('https://magclaw.example/s/server-route/team-sharing/workspace/sess_route/file?path=abstract.md'),
+    { ...deps, currentActor: () => null, currentUser: () => null, validTeamSharingToken: () => false },
+  ), true);
+  assert.equal(loginRedirect.statusCode, 302);
+  assert.match(decodeURIComponent(loginRedirect.headers.location), /returnTo=\/s\/server-route\/team-sharing\/workspace\/sess_route\/file\?path=abstract.md/);
+
+  const joinRedirect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    joinRedirect,
+    new URL('https://magclaw.example/s/server-route/team-sharing/workspace/sess_route/file?path=abstract.md'),
+    {
+      ...deps,
+      currentActor: () => null,
+      currentUser: () => ({ id: 'usr_guest', email: 'guest@example.com', name: 'Guest' }),
+      validTeamSharingToken: () => false,
+    },
+  ), true);
+  assert.equal(joinRedirect.statusCode, 302);
+  assert.match(joinRedirect.headers.location, /^\/join\/mc_join_/);
+  assert.match(decodeURIComponent(joinRedirect.headers.location), /returnTo=\/s\/server-route\/team-sharing\/workspace\/sess_route\/file\?path=abstract.md/);
+  assert.equal(deps.state.cloud.joinLinks.at(-1).workspaceId, 'ws_route');
+
+  const wrongWorkspace = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    wrongWorkspace,
+    new URL('https://magclaw.example/s/server-route/team-sharing/workspace/sess_route/file?path=abstract.md'),
+    { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
+  ), true);
+  assert.equal(wrongWorkspace.statusCode, 403);
+});
+
 test('team sharing route rejects unauthenticated cloud sync unless scoped token is valid', async () => {
   const unauthorized = routeDeps({
     currentActor: () => null,
@@ -2429,6 +2512,18 @@ test('team sharing link inspection reports server access actions and token user 
     title: 'Other server context',
     runtime: 'codex',
   };
+  deps.state.teamSharing.abstracts.sess_other = {
+    sessionId: 'sess_other',
+    revision: 1,
+    abstractMarkdown: '# Other server context\n\n## Summary\n\n跨 server workspace 文件内容。',
+    topics: {
+      'linked-topic': {
+        topicId: 'linked-topic',
+        title: 'Linked Topic',
+        overviewMarkdown: '# Linked Topic\n\n可复制链接。',
+      },
+    },
+  };
   deps.state.teamSharing.events = {
     sess_other: [
       { eventId: 'evt_other_1', ordinal: 1, role: 'user', text: 'Other server question', cleanText: 'Other server question', createdAt: '2026-06-01T10:01:00.000Z' },
@@ -2551,6 +2646,21 @@ test('team sharing link inspection reports server access actions and token user 
   assert.equal(contextInspect.data.kind, 'context');
   assert.equal(contextInspect.data.target.sessionId, 'sess_other');
   assert.equal(contextInspect.data.auth.via, 'token_membership');
+
+  const workspaceFileInspect = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: authHeaders },
+    workspaceFileInspect,
+    new URL('https://magclaw.example/api/team-sharing/links/inspect?url=https%3A%2F%2Fmagclaw.example%2Fs%2Fother-server%2Fteam-sharing%2Fworkspace%2Fsess_other%2Ffile%3Fpath%3Dtopics%252Flinked-topic.md'),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(workspaceFileInspect.statusCode, 200);
+  assert.equal(workspaceFileInspect.data.ok, true);
+  assert.equal(workspaceFileInspect.data.kind, 'workspace_file');
+  assert.equal(workspaceFileInspect.data.target.sessionId, 'sess_other');
+  assert.equal(workspaceFileInspect.data.target.path, 'topics/linked-topic.md');
+  assert.equal(workspaceFileInspect.data.target.workspaceId, 'ws_other');
+  assert.equal(workspaceFileInspect.data.auth.via, 'token_membership');
 
   const contextRead = makeResponse();
   assert.equal(await handleTeamSharingApi(

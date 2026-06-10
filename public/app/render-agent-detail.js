@@ -1072,6 +1072,14 @@ function teamSharingWorkspaceFile(path = '') {
   return files.find((file) => file.path === path) || null;
 }
 
+function teamSharingWorkspaceFileUrl(path = '') {
+  const sessionId = String(teamSharingWorkspaceState?.sessionId || '').trim();
+  const filePath = String(path || teamSharingWorkspaceState?.selectedPath || 'abstract.md').trim() || 'abstract.md';
+  const slug = encodeURIComponent(currentServerSlug());
+  const params = new URLSearchParams({ path: filePath });
+  return `${window.location.origin}/s/${slug}/team-sharing/workspace/${encodeURIComponent(sessionId)}/file?${params.toString()}`;
+}
+
 function teamSharingWorkspaceFolderExpanded(path = '') {
   return teamSharingWorkspaceState?.expandedFolders?.[path] !== false;
 }
@@ -1147,20 +1155,30 @@ function renderTeamSharingWorkspaceTree(message) {
         const depth = String(entry.path || '').split('/').length - 1;
         return `
           <div class="project-tree-node">
-            <button
-              type="button"
-              class="project-tree-row ${isFolder ? 'is-folder' : 'is-file'} ${active ? 'active' : ''}"
-              style="--depth: ${Math.max(0, depth)}"
-              data-action="${isFolder ? 'toggle-team-sharing-workspace-folder' : 'open-team-sharing-workspace-file'}"
-              data-id="${escapeHtml(message.id)}"
-              data-path="${escapeHtml(entry.path)}"
-              title="${escapeHtml(entry.path)}"
-            >
-              <span class="project-tree-caret">${isFolder ? (expanded ? '▾' : '▸') : '·'}</span>
-              <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
-              <span class="project-tree-name">${escapeHtml(entry.name || entry.path)}</span>
-              ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
-            </button>
+            <div class="project-tree-row-wrap">
+              <button
+                type="button"
+                class="project-tree-row project-tree-row-main ${isFolder ? 'is-folder' : 'is-file'} ${active ? 'active' : ''}"
+                style="--depth: ${Math.max(0, depth)}"
+                data-action="${isFolder ? 'toggle-team-sharing-workspace-folder' : 'open-team-sharing-workspace-file'}"
+                data-id="${escapeHtml(message.id)}"
+                data-path="${escapeHtml(entry.path)}"
+                title="${escapeHtml(entry.path)}"
+              >
+                <span class="project-tree-caret">${isFolder ? (expanded ? '▾' : '▸') : '·'}</span>
+                <span class="project-tree-icon">${isFolder ? 'DIR' : 'FILE'}</span>
+                <span class="project-tree-name">${escapeHtml(entry.name || entry.path)}</span>
+                ${!isFolder ? `<small>${bytes(entry.bytes || 0)}</small>` : ''}
+              </button>
+              ${!isFolder ? `<button
+                type="button"
+                class="project-tree-row-copy team-sharing-workspace-file-copy"
+                data-action="copy-team-sharing-workspace-file-link"
+                data-path="${escapeHtml(entry.path)}"
+                title="Copy link"
+                aria-label="Copy link for ${escapeHtml(entry.path)}"
+              >Copy link</button>` : ''}
+            </div>
           </div>
         `;
       }).join('')}
@@ -1189,6 +1207,7 @@ function renderTeamSharingWorkspacePreview() {
       <div class="agent-workspace-filebar">
         <span>${escapeHtml(file.path)}</span>
         <div class="agent-workspace-file-actions">
+          <button type="button" data-action="copy-team-sharing-workspace-file-link" data-path="${escapeHtml(file.path)}">Copy link</button>
           <button type="button" class="${mode === 'raw' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="raw">Raw</button>
           <button type="button" class="${mode === 'preview' ? 'active' : ''}" data-action="set-team-sharing-workspace-preview-mode" data-mode="preview">Preview</button>
         </div>

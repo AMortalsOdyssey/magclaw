@@ -1870,6 +1870,12 @@ document.addEventListener('click', async (event) => {
         render();
       }
     }
+    if (action === 'copy-team-sharing-workspace-file-link') {
+      event.preventDefault();
+      const path = target.dataset.path || teamSharingWorkspaceState?.selectedPath || 'abstract.md';
+      const copied = await tryCopyTextToClipboard(teamSharingWorkspaceFileUrl(path));
+      toast(copied ? 'Team Sharing workspace file link copied' : 'Copy failed');
+    }
     if (action === 'toggle-team-sharing-workspace-folder') {
       const path = target.dataset.path || '';
       if (path) {

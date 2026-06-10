@@ -33,6 +33,32 @@
   font-weight: 900;
 }
 
+.project-tree-row-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-tree-row-copy {
+  min-height: 26px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.project-tree-row-copy:hover,
+.project-tree-row-copy:focus-visible {
+  border-color: var(--border);
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
 .project-tree-name {
   min-width: 0;
   overflow: hidden;

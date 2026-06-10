@@ -1256,6 +1256,55 @@ function renderMarkdownToHtml(markdown = '') {
   return out.join('\n');
 }
 
+function workspaceFileHeadingSlug(value = '', seen = {}) {
+  const base = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[`*_~[\]()]/g, '')
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'section';
+  const count = seen[base] || 0;
+  seen[base] = count + 1;
+  return count ? `${base}-${count + 1}` : base;
+}
+
+function workspaceFileOutline(markdown = '') {
+  const seen = {};
+  return String(markdown || '')
+    .split(/\r?\n/)
+    .map((line) => line.match(/^(#{1,3})\s+(.+?)\s*#*\s*$/))
+    .filter(Boolean)
+    .map((match) => {
+      const text = String(match[2] || '').trim().replace(/\[([^\]\n]+)\]\([^)]+\)/g, '$1');
+      return {
+        level: match[1].length,
+        text,
+        id: workspaceFileHeadingSlug(text, seen),
+      };
+    });
+}
+
+function renderWorkspaceFileOutline(markdown = '') {
+  const items = workspaceFileOutline(markdown).slice(0, 24);
+  if (!items.length) return '';
+  return `<aside class="workspace-file-outline" aria-label="Document outline">
+    <div class="outline-title">Outline</div>
+    ${items.map((item) => `<a class="level-${item.level}" href="#${htmlEscape(item.id)}">${htmlEscape(item.text)}</a>`).join('\n')}
+  </aside>`;
+}
+
+function renderWorkspaceFileMarkdownToHtml(markdown = '') {
+  const outline = workspaceFileOutline(markdown);
+  let index = 0;
+  return renderMarkdownToHtml(markdown).replace(/<h([1-3])>([\s\S]*?)<\/h\1>/g, (match, level, inner) => {
+    const item = outline[index++] || {};
+    const id = item.id || `section-${index}`;
+    return `<h${level} id="${htmlEscape(id)}">${inner}</h${level}>`;
+  });
+}
+
 function shareChromeHtml(share = {}, innerHtml = '') {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -1683,6 +1732,19 @@ function teamSharingWorkspaceFile(path = '', content = '', extra = {}) {
     content,
     ...extra,
   };
+}
+
+function normalizeTeamSharingWorkspaceFilePath(rawPath = '') {
+  const raw = String(rawPath || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+  const parts = raw.split('/').map((part) => part.trim()).filter(Boolean);
+  if (!parts.length || parts.some((part) => part === '.' || part === '..')) return '';
+  return parts.join('/');
+}
+
+function teamSharingWorkspaceFileByPath(workspace = {}, rawPath = '') {
+  const cleanPath = normalizeTeamSharingWorkspaceFilePath(rawPath);
+  if (!cleanPath) return null;
+  return asArray(workspace.files).find((file) => String(file?.path || '').trim() === cleanPath) || null;
 }
 
 function teamSharingWorkspaceFolder(path = '', name = '') {
@@ -2942,6 +3004,77 @@ function sendContextHtml(res, {
   res.writeHead?.(200, {
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
+  });
+  res.end?.(body);
+}
+
+function sendWorkspaceFileHtml(res, { workspace = {}, file = {}, serverSlug = '' } = {}) {
+  const session = workspace.session || {};
+  const content = String(file.content || '');
+  const previewKind = String(file.previewKind || 'markdown').trim();
+  const markdown = previewKind === 'markdown';
+  const previewHtml = markdown
+    ? renderWorkspaceFileMarkdownToHtml(content)
+    : `<pre class="workspace-file-preview"><code>${htmlEscape(content)}</code></pre>`;
+  const outlineHtml = markdown ? renderWorkspaceFileOutline(content) : '';
+  const body = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${htmlEscape(file.path || file.name || 'Workspace file')} - MagClaw Team Sharing</title>
+  <style>
+    :root { color-scheme: light; --ink:#111827; --muted:#64748b; --line:#d7dee8; --bg:#f8fafc; --panel:#fff; --accent:#0891b2; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+    header { position:sticky; top:0; z-index:2; padding:16px 20px; border-bottom:1px solid var(--line); background:rgba(248,250,252,.95); backdrop-filter:blur(12px); }
+    .brand { color:var(--accent); font-size:12px; font-weight:800; letter-spacing:0; text-transform:uppercase; }
+    h1 { margin:4px 0 0; font-size:22px; line-height:1.25; overflow-wrap:anywhere; }
+    .meta { margin-top:4px; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
+    main { max-width:1120px; margin:0 auto; padding:20px; display:grid; grid-template-columns:minmax(0,1fr) 220px; gap:20px; align-items:start; }
+    article, .workspace-file-raw-panel, .workspace-file-outline { border:1px solid var(--line); border-radius:8px; background:var(--panel); }
+    article { padding:22px; min-width:0; }
+    article h1, article h2, article h3 { scroll-margin-top:84px; }
+    article h1:first-child { margin-top:0; }
+    article p, article li { line-height:1.65; }
+    article a { color:var(--accent); }
+    article pre, .workspace-file-raw { overflow:auto; border-radius:6px; background:#0f172a; color:#e2e8f0; padding:14px; }
+    .workspace-file-side { display:grid; gap:14px; position:sticky; top:84px; }
+    .workspace-file-outline { padding:12px; }
+    .outline-title { font-size:12px; color:var(--muted); font-weight:800; text-transform:uppercase; margin-bottom:8px; }
+    .workspace-file-outline a { display:block; color:var(--ink); text-decoration:none; font-size:13px; line-height:1.35; padding:5px 0; overflow-wrap:anywhere; }
+    .workspace-file-outline a.level-2 { padding-left:10px; }
+    .workspace-file-outline a.level-3 { padding-left:20px; }
+    .workspace-file-raw-panel { grid-column:1 / -1; padding:16px; }
+    .workspace-file-raw-panel h2 { margin:0 0 10px; font-size:15px; }
+    .workspace-file-raw { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+    @media (max-width: 860px) { main { grid-template-columns:1fr; } .workspace-file-side { position:static; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">MagClaw Team Sharing Workspace File</div>
+    <h1>${htmlEscape(file.path || file.name || 'Workspace file')}</h1>
+    <div class="meta">${htmlEscape(session.title || session.sessionId || 'Team Sharing session')}${serverSlug ? ` · ${htmlEscape(serverSlug)}` : ''}</div>
+  </header>
+  <main>
+    <article class="workspace-file-preview">
+      ${previewHtml}
+    </article>
+    <div class="workspace-file-side">
+      ${outlineHtml || '<aside class="workspace-file-outline"><div class="outline-title">Outline</div><p class="meta">No headings</p></aside>'}
+    </div>
+    <section class="workspace-file-raw-panel">
+      <h2>Markdown Source</h2>
+      <pre class="workspace-file-raw"><code>${htmlEscape(content)}</code></pre>
+    </section>
+  </main>
+</body>
+</html>`;
+  res.writeHead?.(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-security-policy': "default-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'self';",
   });
   res.end?.(body);
 }
@@ -4429,6 +4562,27 @@ function parseTeamSharingInspectableLink(raw = '', baseUrl = '') {
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return { ok: false, reason: 'unsupported_link' };
   }
+  const scopedWorkspaceFile = parsed.pathname.match(/^\/s\/([^/]+)\/team-sharing\/workspace\/([^/]+)\/file\/?$/);
+  if (scopedWorkspaceFile) {
+    return {
+      ok: true,
+      kind: 'workspace_file',
+      url: parsed,
+      serverSlug: decodeURIComponent(scopedWorkspaceFile[1] || ''),
+      sessionId: decodeURIComponent(scopedWorkspaceFile[2] || ''),
+      path: normalizeTeamSharingWorkspaceFilePath(parsed.searchParams.get('path') || ''),
+    };
+  }
+  const workspaceFile = parsed.pathname.match(/^\/team-sharing\/workspace\/([^/]+)\/file\/?$/);
+  if (workspaceFile) {
+    return {
+      ok: true,
+      kind: 'workspace_file',
+      url: parsed,
+      sessionId: decodeURIComponent(workspaceFile[1] || ''),
+      path: normalizeTeamSharingWorkspaceFilePath(parsed.searchParams.get('path') || ''),
+    };
+  }
   const scopedContext = parsed.pathname.match(/^\/s\/([^/]+)\/team-sharing\/context\/([^/]+)\/?$/);
   if (scopedContext) {
     return {
@@ -4483,6 +4637,46 @@ function inspectableTargetForLink(teamSharingState = {}, state = {}, parsed = {}
         shareId: String(share.id || '').trim(),
         title: String(share.title || '').trim(),
         workspaceId,
+        server: publicTeamSharingServer(state, workspaceId),
+      },
+    };
+  }
+  if (parsed.kind === 'workspace_file') {
+    const workspace = buildTeamSharingWorkspace(teamSharingState, parsed.sessionId);
+    if (!workspace) {
+      return {
+        ok: false,
+        status: 404,
+        reason: 'not_found',
+        kind: 'workspace_file',
+        target: { sessionId: parsed.sessionId || '', path: parsed.path || '', serverSlug: parsed.serverSlug || '' },
+        error: 'Team sharing workspace file not found.',
+      };
+    }
+    const file = teamSharingWorkspaceFileByPath(workspace, parsed.path);
+    if (!file) {
+      return {
+        ok: false,
+        status: 404,
+        reason: 'not_found',
+        kind: 'workspace_file',
+        target: { sessionId: parsed.sessionId || '', path: parsed.path || '', serverSlug: parsed.serverSlug || '' },
+        error: 'Team sharing workspace file not found.',
+      };
+    }
+    const workspaceId = String(workspace.session?.workspaceId || '').trim();
+    return {
+      ok: true,
+      kind: 'workspace_file',
+      session: workspace.session,
+      workspaceId,
+      target: {
+        sessionId: String(parsed.sessionId || '').trim(),
+        title: String(workspace.session?.title || '').trim(),
+        path: String(file.path || '').trim(),
+        name: String(file.name || '').trim(),
+        workspaceId,
+        serverSlug: String(parsed.serverSlug || '').trim(),
         server: publicTeamSharingServer(state, workspaceId),
       },
     };
@@ -5810,6 +6004,64 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       order: url.searchParams.get('order') || 'asc',
       workspaceId: session.workspaceId || actor?.member?.workspaceId || tokenRecord?.workspaceId || workspaceId || '',
       serverSlug: scopedContextPageMatch ? decodeURIComponent(scopedContextPageMatch[1]) : (url.searchParams.get('serverSlug') || ''),
+    });
+    return true;
+  }
+
+  const scopedWorkspaceFilePageMatch = url.pathname.match(/^\/s\/([^/]+)\/team-sharing\/workspace\/([^/]+)\/file$/);
+  const workspaceFilePageMatch = url.pathname.match(/^\/team-sharing\/workspace\/([^/]+)\/file$/)
+    || (scopedWorkspaceFilePageMatch ? [scopedWorkspaceFilePageMatch[0], scopedWorkspaceFilePageMatch[2]] : null);
+  if (req.method === 'GET' && workspaceFilePageMatch) {
+    if (!requestHasTeamSharingIdentity(req, { actor, teamSharingState, validTeamSharingToken }) && !browserUser) {
+      redirectToLoginWithReturnTo(res, url);
+      return true;
+    }
+    const tokenRecord = tokenRecordForRequest(teamSharingState, req);
+    const sessionId = decodeURIComponent(workspaceFilePageMatch[1]);
+    const session = teamSharingState.sessions?.[sessionId] || null;
+    if (!session) {
+      sendError(res, 404, 'Team sharing workspace not found.');
+      return true;
+    }
+    const targetWorkspaceId = String(session.workspaceId || '').trim();
+    const access = teamSharingWorkspaceAccessResult({ actor, currentUser: browserUser, state, tokenRecord, session });
+    if (!access.ok) {
+      if (access.joinable && await redirectToJoinWithReturnTo(res, url, {
+        state,
+        workspaceId: access.workspaceId,
+        currentUser: browserUser,
+        makeId,
+        now,
+        persistState,
+        addSystemEvent,
+      })) {
+        return true;
+      }
+      sendError(res, 403, 'This Team Sharing workspace belongs to another server.');
+      return true;
+    }
+    const workspace = buildTeamSharingWorkspace(teamSharingState, sessionId);
+    if (!workspace) {
+      sendError(res, 404, 'Team sharing workspace not found.');
+      return true;
+    }
+    const rawPath = url.searchParams.has('path') ? url.searchParams.get('path') : 'abstract.md';
+    const filePath = normalizeTeamSharingWorkspaceFilePath(rawPath);
+    const file = teamSharingWorkspaceFileByPath(workspace, filePath);
+    if (!file) {
+      sendError(res, 404, 'Team sharing workspace file not found.');
+      return true;
+    }
+    addSystemEvent('team_sharing_workspace_file_read', `Team sharing workspace file read: ${compactText(file.path || sessionId, 90)}`, {
+      workspaceId: targetWorkspaceId || workspaceId,
+      sessionId,
+      path: file.path,
+      messageId: workspace.session.messageId,
+    });
+    sendWorkspaceFileHtml(res, {
+      workspace,
+      file,
+      serverSlug: scopedWorkspaceFilePageMatch ? decodeURIComponent(scopedWorkspaceFilePageMatch[1]) : (url.searchParams.get('serverSlug') || ''),
     });
     return true;
   }
