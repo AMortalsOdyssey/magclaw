@@ -655,11 +655,31 @@ export function getKnowledgeGraph(space, options = {}) {
   const nowMs = Date.parse(options.now || new Date().toISOString());
   const nodes = [];
   const edges = [];
+  const edgeKeys = new Set();
+  const rootNodeId = space.id || stableId('ks', space.workspaceId || 'local');
+  const pushEdge = (source, target, kind = 'link', id = '') => {
+    if (!source || !target || source === target) return;
+    const key = `${source}->${target}->${kind}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+    edges.push({ id: id || stableId('edge', source, target, kind), source, target, kind });
+  };
+  nodes.push({
+    id: rootNodeId,
+    kind: 'space',
+    docId: '',
+    title: space.title || 'Knowledge Space',
+    summary: 'Server-level knowledge space',
+    level: 0,
+    updatedAt: space.updatedAt,
+    href: `/s/${encodeURIComponent(space.workspaceId)}/knowledge`,
+  });
   for (const doc of space.documents) {
     nodes.push({
       id: doc.id,
       kind: 'document',
       docId: doc.id,
+      parentId: doc.parentId || '',
       title: doc.title,
       summary: doc.summary || '',
       level: doc.level || 1,
@@ -667,7 +687,9 @@ export function getKnowledgeGraph(space, options = {}) {
       href: `/s/${encodeURIComponent(space.workspaceId)}/knowledge/docs/${encodeURIComponent(doc.id)}`,
     });
     if (doc.parentId) {
-      edges.push({ id: stableId('edge', doc.parentId, doc.id), source: doc.parentId, target: doc.id, kind: 'hierarchy' });
+      pushEdge(doc.parentId, doc.id, 'hierarchy');
+    } else {
+      pushEdge(rootNodeId, doc.id, 'root');
     }
   }
   for (const anchor of space.anchors) {
@@ -682,15 +704,13 @@ export function getKnowledgeGraph(space, options = {}) {
       updatedAt: anchor.updatedAt,
       href: `/s/${encodeURIComponent(space.workspaceId)}/knowledge/docs/${encodeURIComponent(anchor.docId)}#${encodeURIComponent(anchor.anchor)}`,
     });
-    edges.push({ id: stableId('edge', anchor.docId, anchor.id), source: anchor.docId, target: anchor.id, kind: 'anchor' });
+    pushEdge(anchor.docId, anchor.id, 'anchor');
   }
   for (const link of space.links) {
     if (!link.toDocId && !link.toAnchorId) continue;
     const source = link.fromAnchorId || link.fromDocId;
     const target = link.toAnchorId || link.toDocId;
-    if (source && target && source !== target) {
-      edges.push({ id: link.id, source, target, kind: link.kind || 'link' });
-    }
+    pushEdge(source, target, link.kind || 'link', link.id);
   }
   const degreeById = new Map(nodes.map((node) => [node.id, nodeDegree(edges, node.id)]));
   const outgoing = new Set(edges.map((edge) => edge.source));
@@ -703,12 +723,24 @@ export function getKnowledgeGraph(space, options = {}) {
       return {
         ...node,
         degree,
-        radius: Math.max(3, Math.min(24, 22 - (Number(node.level || 3) * 4) + Math.sqrt(degree + 1) * 3)),
+        radius: knowledgeGraphRadius(node, degree),
         colorRole: recentLeaf ? 'recent_leaf' : 'normal',
       };
     }),
     edges,
   };
+}
+
+function knowledgeGraphRadius(node, degree) {
+  const level = Number(node.level || 3);
+  const base = node.kind === 'space'
+    ? 8.5
+    : level <= 1
+      ? 7
+      : level === 2
+        ? 4.8
+        : 2.8;
+  return Math.max(2.6, Math.min(11, base + Math.min(2.6, Math.sqrt(degree + 1) * 0.55)));
 }
 
 function scoreText(query, text) {

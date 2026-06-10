@@ -46,12 +46,18 @@ test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels,
   assert.match(graphSource, /panning/);
   assert.match(graphSource, /hoveredId/);
   assert.match(graphSource, /neighbors\.has/);
-  assert.match(graphSource, /rt\.scale > 1\.28 \|\| rt\.hoveredId === node\.id/);
+  assert.match(graphSource, /shouldShowKnowledgeNodeLabel/);
+  assert.match(graphSource, /before\.x \* rt\.scale/);
+  assert.match(graphSource, /before\.y \* rt\.scale/);
   assert.match(graphSource, /colorRole === 'recent_leaf'/);
   assert.match(graphSource, /Leaf updated within 72h/);
   assert.match(graphSource, /runtimeCanvasReady/);
   assert.match(graphSource, /knowledgeGraphRuntime\?\.canvas\?\.isConnected/);
   assert.match(graphSource, /knowledgeGraphRuntime\.canvas === activeCanvas/);
+  assert.match(graphSource, /initialKnowledgeGraphNodes/);
+  assert.match(graphSource, /ResizeObserver/);
+  assert.match(graphSource, /rgba\(53, 143, 199, 0\.64\)/);
+  assert.match(graphSource, /rgba\(88, 103, 113, 0\.18\)/);
 });
 
 test('Knowledge review, settings, and Change Log controls render expected state flow', async () => {

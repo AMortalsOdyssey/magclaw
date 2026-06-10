@@ -1,5 +1,7 @@
 let knowledgeGraphRuntime = null;
 let knowledgeGraphRenderQueued = false;
+let knowledgeGraphWindowEventsBound = false;
+let knowledgeGraphAnimationToken = 0;
 
 function knowledgeSpace() {
   return knowledgeSpaceState?.data?.space || null;
@@ -293,28 +295,15 @@ async function loadKnowledgeGraph() {
 function setupKnowledgeGraph(graph) {
   const canvas = document.querySelector('#knowledge-graph-canvas');
   if (!canvas) return;
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(640, Math.floor(rect.width || canvas.width || 1280));
-  const height = Math.max(420, Math.floor(rect.height || canvas.height || 760));
-  canvas.width = width * window.devicePixelRatio;
-  canvas.height = height * window.devicePixelRatio;
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  const nodes = (graph.nodes || []).map((node, index) => {
-    const angle = (index / Math.max(1, graph.nodes.length)) * Math.PI * 2;
-    const ring = Math.min(width, height) * (0.18 + (index % 7) * 0.025);
-    return {
-      ...node,
-      x: width / 2 + Math.cos(angle) * ring,
-      y: height / 2 + Math.sin(angle) * ring,
-      vx: 0,
-      vy: 0,
-    };
-  });
+  knowledgeGraphRuntime?.resizeObserver?.disconnect?.();
+  knowledgeGraphAnimationToken += 1;
+  const { width, height } = measureKnowledgeGraphCanvas(canvas);
+  const edges = graph.edges || [];
+  const nodes = initialKnowledgeGraphNodes(graph.nodes || [], edges, width, height);
   knowledgeGraphRuntime = {
     loadedFor: knowledgeSpace()?.updatedAt || '',
     canvas,
-    graph: { nodes, edges: graph.edges || [] },
+    graph: { nodes, edges },
     width,
     height,
     scale: 1,
@@ -324,9 +313,114 @@ function setupKnowledgeGraph(graph) {
     draggingNode: null,
     panning: null,
     tick: 0,
+    resizeObserver: null,
   };
+  if (window.ResizeObserver) {
+    knowledgeGraphRuntime.resizeObserver = new ResizeObserver(() => resizeKnowledgeGraphCanvas());
+    knowledgeGraphRuntime.resizeObserver.observe(canvas);
+  }
   bindKnowledgeGraphEvents(canvas);
-  animateKnowledgeGraph();
+  animateKnowledgeGraph(knowledgeGraphAnimationToken);
+}
+
+function measureKnowledgeGraphCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(640, Math.floor(rect.width || canvas.clientWidth || 1280));
+  const height = Math.max(420, Math.floor(rect.height || canvas.clientHeight || 760));
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  return { width, height };
+}
+
+function resizeKnowledgeGraphCanvas() {
+  const rt = knowledgeGraphRuntime;
+  if (!rt?.canvas?.isConnected) return;
+  const previousWidth = rt.width;
+  const previousHeight = rt.height;
+  const { width, height } = measureKnowledgeGraphCanvas(rt.canvas);
+  if (width === previousWidth && height === previousHeight) return;
+  const shiftX = (width - previousWidth) / 2;
+  const shiftY = (height - previousHeight) / 2;
+  rt.width = width;
+  rt.height = height;
+  for (const node of rt.graph.nodes) {
+    node.x += shiftX;
+    node.y += shiftY;
+    node.homeX = (node.homeX || node.x) + shiftX;
+    node.homeY = (node.homeY || node.y) + shiftY;
+  }
+  rt.panX += shiftX;
+  rt.panY += shiftY;
+  queueKnowledgeGraphRender();
+}
+
+function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const minSize = Math.min(width, height);
+  const nodes = rawNodes.map((node) => ({ ...node, x: centerX, y: centerY, vx: 0, vy: 0, homeX: centerX, homeY: centerY }));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const spaceNode = nodes.find((node) => node.kind === 'space');
+  if (spaceNode) placeKnowledgeNode(spaceNode, centerX, centerY);
+
+  const topDocuments = nodes.filter((node) => node.kind === 'document' && (!node.parentId || Number(node.level || 1) <= 1));
+  const childDocuments = nodes.filter((node) => node.kind === 'document' && node.parentId && Number(node.level || 1) > 1);
+  const topRadius = Math.max(34, minSize * 0.07);
+  topDocuments.forEach((node, index) => {
+    const angle = topDocuments.length === 1 ? -Math.PI / 2 : (index / topDocuments.length) * Math.PI * 2 - Math.PI / 2;
+    placeKnowledgeNode(node, centerX + Math.cos(angle) * topRadius, centerY + Math.sin(angle) * topRadius);
+  });
+
+  const childRadius = Math.max(120, Math.min(minSize * 0.29, 230));
+  childDocuments.forEach((node, index) => {
+    const angle = (index / Math.max(1, childDocuments.length)) * Math.PI * 2 - Math.PI / 2;
+    const wobble = 1 + ((index % 3) - 1) * 0.08;
+    placeKnowledgeNode(node, centerX + Math.cos(angle) * childRadius * wobble, centerY + Math.sin(angle) * childRadius * wobble);
+  });
+
+  const anchorsByDoc = new Map();
+  nodes.filter((node) => node.kind === 'anchor').forEach((node) => {
+    const list = anchorsByDoc.get(node.docId) || [];
+    list.push(node);
+    anchorsByDoc.set(node.docId, list);
+  });
+  for (const [docId, anchors] of anchorsByDoc.entries()) {
+    const parent = byId.get(docId);
+    const parentX = parent?.x || centerX;
+    const parentY = parent?.y || centerY;
+    const parentAngle = Math.atan2(parentY - centerY, parentX - centerX);
+    anchors.forEach((node, index) => {
+      const spread = anchors.length <= 1 ? 0 : (index / (anchors.length - 1) - 0.5) * Math.PI * 0.9;
+      const angle = parentAngle + spread;
+      const radius = 44 + (index % 4) * 9;
+      placeKnowledgeNode(node, parentX + Math.cos(angle) * radius, parentY + Math.sin(angle) * radius);
+    });
+  }
+
+  nodes.filter((node) => !Number.isFinite(node.x) || (node.x === centerX && node.y === centerY && node.kind !== 'space')).forEach((node, index) => {
+    const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
+    placeKnowledgeNode(node, centerX + Math.cos(angle) * childRadius, centerY + Math.sin(angle) * childRadius);
+  });
+
+  for (const edge of edges) {
+    const source = byId.get(edge.source);
+    const target = byId.get(edge.target);
+    if (source && target) {
+      source.linkCount = (source.linkCount || 0) + 1;
+      target.linkCount = (target.linkCount || 0) + 1;
+    }
+  }
+  return nodes;
+}
+
+function placeKnowledgeNode(node, x, y) {
+  node.x = x;
+  node.y = y;
+  node.homeX = x;
+  node.homeY = y;
 }
 
 function bindKnowledgeGraphEvents(canvas) {
@@ -336,53 +430,75 @@ function bindKnowledgeGraphEvents(canvas) {
   canvas.addEventListener('wheel', (event) => {
     if (!knowledgeGraphRuntime) return;
     event.preventDefault();
+    const rt = knowledgeGraphRuntime;
+    const rect = canvas.getBoundingClientRect();
+    const before = graphPointer(event);
     const factor = event.deltaY < 0 ? 1.08 : 0.92;
-    knowledgeGraphRuntime.scale = Math.max(0.28, Math.min(4, knowledgeGraphRuntime.scale * factor));
+    rt.scale = Math.max(0.26, Math.min(5, rt.scale * factor));
+    rt.panX = event.clientX - rect.left - before.x * rt.scale;
+    rt.panY = event.clientY - rect.top - before.y * rt.scale;
     queueKnowledgeGraphRender();
   }, { passive: false });
   canvas.addEventListener('mousedown', (event) => {
     if (!knowledgeGraphRuntime) return;
+    event.preventDefault();
     const point = graphPointer(event);
-    const node = nearestKnowledgeNode(point.x, point.y, 14 / knowledgeGraphRuntime.scale);
+    const node = nearestKnowledgeNode(point.x, point.y, 10 / knowledgeGraphRuntime.scale);
     if (node && event.button === 0) {
       knowledgeGraphRuntime.draggingNode = node;
       node.fx = point.x;
       node.fy = point.y;
+      node.vx = 0;
+      node.vy = 0;
     } else {
       knowledgeGraphRuntime.panning = { x: event.clientX, y: event.clientY, panX: knowledgeGraphRuntime.panX, panY: knowledgeGraphRuntime.panY };
     }
   });
-  window.addEventListener('mouseup', () => {
-    if (!knowledgeGraphRuntime) return;
-    if (knowledgeGraphRuntime.draggingNode) {
-      delete knowledgeGraphRuntime.draggingNode.fx;
-      delete knowledgeGraphRuntime.draggingNode.fy;
-      knowledgeGraphRuntime.draggingNode = null;
-    }
-    knowledgeGraphRuntime.panning = null;
-  });
-  window.addEventListener('mousemove', (event) => {
-    if (!knowledgeGraphRuntime) return;
-    const point = graphPointer(event);
-    if (knowledgeGraphRuntime.draggingNode) {
-      knowledgeGraphRuntime.draggingNode.fx = point.x;
-      knowledgeGraphRuntime.draggingNode.fy = point.y;
-      return;
-    }
-    if (knowledgeGraphRuntime.panning) {
-      const pan = knowledgeGraphRuntime.panning;
-      knowledgeGraphRuntime.panX = pan.panX + event.clientX - pan.x;
-      knowledgeGraphRuntime.panY = pan.panY + event.clientY - pan.y;
-      queueKnowledgeGraphRender();
-      return;
-    }
-    const hovered = nearestKnowledgeNode(point.x, point.y, 12 / knowledgeGraphRuntime.scale);
-    knowledgeGraphRuntime.hoveredId = hovered?.id || '';
+  canvas.addEventListener('mouseleave', () => {
+    if (!knowledgeGraphRuntime || knowledgeGraphRuntime.panning || knowledgeGraphRuntime.draggingNode) return;
+    knowledgeGraphRuntime.hoveredId = '';
     queueKnowledgeGraphRender();
   });
+  if (!knowledgeGraphWindowEventsBound) {
+    knowledgeGraphWindowEventsBound = true;
+    window.addEventListener('mouseup', () => {
+      if (!knowledgeGraphRuntime) return;
+      if (knowledgeGraphRuntime.draggingNode) {
+        delete knowledgeGraphRuntime.draggingNode.fx;
+        delete knowledgeGraphRuntime.draggingNode.fy;
+        knowledgeGraphRuntime.draggingNode = null;
+      }
+      knowledgeGraphRuntime.panning = null;
+    });
+    window.addEventListener('mousemove', (event) => {
+      if (!knowledgeGraphRuntime) return;
+      const point = graphPointer(event);
+      if (knowledgeGraphRuntime.draggingNode) {
+        knowledgeGraphRuntime.draggingNode.fx = point.x;
+        knowledgeGraphRuntime.draggingNode.fy = point.y;
+        return;
+      }
+      if (knowledgeGraphRuntime.panning) {
+        const pan = knowledgeGraphRuntime.panning;
+        knowledgeGraphRuntime.panX = pan.panX + event.clientX - pan.x;
+        knowledgeGraphRuntime.panY = pan.panY + event.clientY - pan.y;
+        queueKnowledgeGraphRender();
+        return;
+      }
+      if (!point.inside) {
+        knowledgeGraphRuntime.hoveredId = '';
+        queueKnowledgeGraphRender();
+        return;
+      }
+      const hovered = nearestKnowledgeNode(point.x, point.y, 9 / knowledgeGraphRuntime.scale);
+      knowledgeGraphRuntime.hoveredId = hovered?.id || '';
+      queueKnowledgeGraphRender();
+    });
+    window.addEventListener('resize', () => resizeKnowledgeGraphCanvas());
+  }
   canvas.addEventListener('dblclick', (event) => {
     const point = graphPointer(event);
-    const node = nearestKnowledgeNode(point.x, point.y, 16 / (knowledgeGraphRuntime?.scale || 1));
+    const node = nearestKnowledgeNode(point.x, point.y, 14 / (knowledgeGraphRuntime?.scale || 1));
     if (node?.href) window.location.assign(node.href);
   });
 }
@@ -390,9 +506,14 @@ function bindKnowledgeGraphEvents(canvas) {
 function graphPointer(event) {
   const rt = knowledgeGraphRuntime;
   const rect = rt.canvas.getBoundingClientRect();
+  const localX = event.clientX - rect.left;
+  const localY = event.clientY - rect.top;
   return {
-    x: (event.clientX - rect.left - rt.panX) / rt.scale,
-    y: (event.clientY - rect.top - rt.panY) / rt.scale,
+    x: (localX - rt.panX) / rt.scale,
+    y: (localY - rt.panY) / rt.scale,
+    localX,
+    localY,
+    inside: localX >= 0 && localY >= 0 && localX <= rect.width && localY <= rect.height,
   };
 }
 
@@ -411,11 +532,11 @@ function nearestKnowledgeNode(x, y, padding = 0) {
   return best;
 }
 
-function animateKnowledgeGraph() {
-  if (!knowledgeGraphRuntime?.canvas?.isConnected) return;
+function animateKnowledgeGraph(token) {
+  if (token !== knowledgeGraphAnimationToken || !knowledgeGraphRuntime?.canvas?.isConnected) return;
   stepKnowledgeGraph();
   drawKnowledgeGraph();
-  window.requestAnimationFrame(animateKnowledgeGraph);
+  window.requestAnimationFrame(() => animateKnowledgeGraph(token));
 }
 
 function stepKnowledgeGraph() {
@@ -429,8 +550,8 @@ function stepKnowledgeGraph() {
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const distance = Math.max(1, Math.hypot(dx, dy));
-    const desired = 72 + Math.max(source.level || 1, target.level || 1) * 18;
-    const force = (distance - desired) * 0.002;
+    const desired = desiredKnowledgeEdgeLength(edge, source, target);
+    const force = (distance - desired) * 0.0055;
     const fx = dx / distance * force;
     const fy = dy / distance * force;
     source.vx += fx;
@@ -445,8 +566,9 @@ function stepKnowledgeGraph() {
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const distance = Math.max(6, Math.hypot(dx, dy));
-      if (distance > 170) continue;
-      const force = 8 / (distance * distance);
+      const minimum = (a.radius || 3) + (b.radius || 3) + 10;
+      if (distance > 150 && distance > minimum) continue;
+      const force = distance < minimum ? (minimum - distance) * 0.024 : 14 / (distance * distance);
       const fx = dx / distance * force;
       const fy = dy / distance * force;
       a.vx -= fx;
@@ -458,20 +580,40 @@ function stepKnowledgeGraph() {
   for (const node of nodes) {
     const cx = rt.width / 2;
     const cy = rt.height / 2;
-    node.vx += (cx - node.x) * 0.0007;
-    node.vy += (cy - node.y) * 0.0007;
+    const homeStrength = node.kind === 'space' ? 0.018 : node.kind === 'document' ? 0.0026 : 0.0012;
+    node.vx += ((node.homeX || cx) - node.x) * homeStrength;
+    node.vy += ((node.homeY || cy) - node.y) * homeStrength;
+    node.vx += (cx - node.x) * 0.0002;
+    node.vy += (cy - node.y) * 0.0002;
+    applyKnowledgeGraphBounds(rt, node);
     if (node.fx != null) {
       node.x = node.fx;
       node.y = node.fy;
       node.vx = 0;
       node.vy = 0;
     } else {
-      node.vx *= 0.86;
-      node.vy *= 0.86;
+      node.vx *= 0.82;
+      node.vy *= 0.82;
       node.x += node.vx;
       node.y += node.vy;
     }
   }
+}
+
+function desiredKnowledgeEdgeLength(edge, source, target) {
+  if (edge.kind === 'root') return 88;
+  if (edge.kind === 'hierarchy') return 104 + Math.max(0, Number(target.level || 2) - 2) * 12;
+  if (edge.kind === 'anchor') return 48;
+  return 126 + Math.min(24, Math.max(source.degree || 0, target.degree || 0) * 2);
+}
+
+function applyKnowledgeGraphBounds(rt, node) {
+  const padding = 42;
+  const strength = 0.003;
+  if (node.x < padding) node.vx += (padding - node.x) * strength;
+  if (node.y < padding) node.vy += (padding - node.y) * strength;
+  if (node.x > rt.width - padding) node.vx -= (node.x - (rt.width - padding)) * strength;
+  if (node.y > rt.height - padding) node.vy -= (node.y - (rt.height - padding)) * strength;
 }
 
 function queueKnowledgeGraphRender() {
@@ -508,8 +650,8 @@ function drawKnowledgeGraph() {
     const target = byId.get(edge.target);
     if (!source || !target) continue;
     const active = !rt.hoveredId || (neighbors.has(source.id) && neighbors.has(target.id));
-    ctx.strokeStyle = active ? 'rgba(58, 130, 197, 0.42)' : `rgba(84, 99, 111, ${0.18 * dim})`;
-    ctx.lineWidth = active ? 1.35 / rt.scale : 0.8 / rt.scale;
+    ctx.strokeStyle = active ? knowledgeEdgeColor(edge) : `rgba(86, 99, 110, ${0.13 * dim})`;
+    ctx.lineWidth = (active ? 0.92 : 0.48) / Math.sqrt(rt.scale);
     ctx.beginPath();
     ctx.moveTo(source.x, source.y);
     ctx.lineTo(target.x, target.y);
@@ -517,21 +659,59 @@ function drawKnowledgeGraph() {
   }
   for (const node of rt.graph.nodes) {
     const active = !rt.hoveredId || neighbors.has(node.id);
-    const color = node.colorRole === 'recent_leaf' ? '#e85f62' : '#358fc7';
-    ctx.globalAlpha = active ? 1 : 0.14;
-    ctx.fillStyle = color;
+    ctx.globalAlpha = active ? (node.kind === 'space' ? 0.76 : 0.68) : 0.13;
+    ctx.fillStyle = knowledgeNodeColor(node);
     ctx.beginPath();
-    ctx.arc(node.x, node.y, Math.max(3, node.radius || 4), 0, Math.PI * 2);
+    ctx.arc(node.x, node.y, Math.max(2.4, node.radius || 3), 0, Math.PI * 2);
     ctx.fill();
-    if (active && (rt.scale > 1.28 || rt.hoveredId === node.id)) {
-      ctx.globalAlpha = 0.88;
-      ctx.fillStyle = '#333';
-      ctx.font = `${Math.max(11, 13 / Math.sqrt(rt.scale))}px ui-sans-serif, system-ui`;
-      ctx.fillText(node.title, node.x + (node.radius || 4) + 5, node.y + 4);
+    if (active && node.kind !== 'anchor') {
+      ctx.globalAlpha = 0.24;
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.4 / Math.sqrt(rt.scale);
+      ctx.stroke();
     }
+  }
+  for (const node of rt.graph.nodes) {
+    const active = !rt.hoveredId || neighbors.has(node.id);
+    if (active && shouldShowKnowledgeNodeLabel(rt, node)) drawKnowledgeNodeLabel(ctx, rt, node);
   }
   ctx.restore();
   ctx.globalAlpha = 1;
+}
+
+function knowledgeEdgeColor(edge) {
+  if (edge.kind === 'root' || edge.kind === 'hierarchy') return 'rgba(64, 120, 166, 0.22)';
+  if (edge.kind === 'anchor') return 'rgba(88, 103, 113, 0.18)';
+  return 'rgba(72, 135, 190, 0.28)';
+}
+
+function knowledgeNodeColor(node) {
+  if (node.colorRole === 'recent_leaf') return 'rgba(232, 82, 86, 0.72)';
+  if (node.kind === 'space') return 'rgba(44, 132, 190, 0.78)';
+  if (node.kind === 'document' && Number(node.level || 1) <= 1) return 'rgba(44, 132, 190, 0.72)';
+  return 'rgba(53, 143, 199, 0.64)';
+}
+
+function shouldShowKnowledgeNodeLabel(rt, node) {
+  if (rt.hoveredId === node.id) return true;
+  if (node.kind === 'space') return rt.scale > 0.92;
+  if (node.kind === 'document') return rt.scale > 1.32 || (Number(node.level || 2) <= 1 && rt.scale > 1.08);
+  return rt.scale > 1.72;
+}
+
+function drawKnowledgeNodeLabel(ctx, rt, node) {
+  const radius = Math.max(2.4, node.radius || 3);
+  const fontSize = Math.max(10.5, Math.min(13, 12 / Math.sqrt(Math.max(0.75, rt.scale))));
+  const text = String(node.title || '').slice(0, 52);
+  const x = node.x + radius + 5;
+  const y = node.y + 4;
+  ctx.font = `${fontSize}px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont`;
+  ctx.lineWidth = 3.5 / Math.sqrt(rt.scale);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.78)';
+  ctx.globalAlpha = rt.hoveredId === node.id ? 0.98 : 0.82;
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = 'rgba(43, 51, 57, 0.84)';
+  ctx.fillText(text, x, y);
 }
 
 function renderKnowledgeChangelog() {

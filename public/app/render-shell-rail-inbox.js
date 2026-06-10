@@ -162,7 +162,9 @@ function render() {
   ensureSelection();
   persistUiState();
   const mobileLayout = typeof isMobileViewport === 'function' && isMobileViewport() && typeof renderMobileShell === 'function';
-  const inspectorHtml = renderInspector();
+  const knowledgeGraphLayout = activeView === 'knowledge' && (knowledgeRoute?.view || knowledgeSpaceState?.tab || '') === 'graph';
+  const inspectorHtml = knowledgeGraphLayout ? '' : renderInspector();
+  const threadLayoutOpen = Boolean(threadMessageId && inspectorHtml);
   const notificationBanner = renderNotificationPromptBanner();
   const appFlashBanner = renderAppFlashBanner();
   if (mobileLayout) {
@@ -216,7 +218,7 @@ function render() {
   root.innerHTML = `
     ${notificationBanner}
     ${appFlashBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadMessageId ? `${inspectorHtml ? ' tablet-inspector-main' : ''} thread-open` : ''}${taskFocusLayout ? ' task-focus' : ''}${searchLayout ? ' search-layout-frame' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadLayoutOpen ? ' tablet-inspector-main thread-open' : ''}${taskFocusLayout ? ' task-focus' : ''}${searchLayout ? ' search-layout-frame' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${knowledgeGraphLayout ? ' knowledge-graph-layout' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
       ${taskFocusLayout || searchLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">

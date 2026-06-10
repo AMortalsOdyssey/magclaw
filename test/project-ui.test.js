@@ -2199,9 +2199,11 @@ test('channel navigation hides the inspector until an agent, task, or thread is 
   const app = await readAppSource();
   const styles = await readStylesSource();
 
-  assert.match(app, /const inspectorHtml = renderInspector\(\)/);
+  assert.match(app, /const knowledgeGraphLayout = activeView === 'knowledge'[\s\S]*knowledgeRoute\?\.view/);
+  assert.match(app, /const inspectorHtml = knowledgeGraphLayout \? '' : renderInspector\(\)/);
+  assert.match(app, /const threadLayoutOpen = Boolean\(threadMessageId && inspectorHtml\)/);
   assert.match(app, /inspectorHtml \? `[\s\S]*collab-inspector/);
-  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{notificationBanner \? ' notification-banner-active' : ''\}"/);
+  assert.match(app, /class="app-frame collab-frame\$\{inspectorHtml \? '' : ' no-inspector'\}\$\{threadLayoutOpen \? ' tablet-inspector-main thread-open' : ''\}\$\{taskFocusLayout \? ' task-focus' : ''\}[\s\S]*\$\{knowledgeGraphLayout \? ' knowledge-graph-layout' : ''\}/);
   assert.match(app, /let selectedTaskId = null/);
   assert.match(app, /function renderInspector\(\)[\s\S]*if \(selectedAgentId\)/);
   assert.match(app, /selectedAgentId = null;[\s\S]*selectedSpaceType = target\.dataset\.type/);
@@ -2212,7 +2214,7 @@ test('tablet thread layout promotes the thread inspector into the main content c
   const app = await readAppSource();
   const styles = await readStylesSource();
 
-  assert.match(app, /\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}/);
+  assert.match(app, /\$\{threadLayoutOpen \? ' tablet-inspector-main thread-open' : ''\}/);
   assert.match(styles, /@media \(min-width: 768px\) and \(max-width: 1099px\)[\s\S]*\.app-frame\.tablet-inspector-main \{/);
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.workspace \{[\s\S]*display: none/);
   assert.match(styles, /\.app-frame\.tablet-inspector-main \.inspector \{[\s\S]*display: grid[\s\S]*align-content: stretch/);
@@ -2223,7 +2225,7 @@ test('desktop thread inspector can expand to a MagClaw-like reading width', asyn
   const app = await readAppSource();
   const styles = await readStylesSource();
 
-  assert.match(app, /\$\{threadMessageId \? `\$\{inspectorHtml \? ' tablet-inspector-main' : ''\} thread-open` : ''\}/);
+  assert.match(app, /\$\{threadLayoutOpen \? ' tablet-inspector-main thread-open' : ''\}/);
   assert.match(app, /const INSPECTOR_MAX_WIDTH = 1800/);
   assert.match(styles, /\.collab-frame \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 40vw\)\)/);
   assert.match(styles, /\.collab-frame\.thread-open \{[\s\S]*grid-template-columns: minmax\(240px, min\(var\(--rail-width, 300px\), 420px\)\) 4px minmax\(360px, 1fr\) 4px minmax\(260px, min\(var\(--inspector-width, 340px\), 60vw\)\)/);
