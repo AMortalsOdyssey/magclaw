@@ -280,7 +280,9 @@ function renderKnowledgeGraphPanel() {
 }
 
 async function loadKnowledgeGraph() {
-  if (knowledgeGraphRuntime?.loadedFor === (knowledgeSpace()?.updatedAt || '')) {
+  const activeCanvas = document.querySelector('#knowledge-graph-canvas');
+  const runtimeCanvasReady = knowledgeGraphRuntime?.canvas?.isConnected && knowledgeGraphRuntime.canvas === activeCanvas;
+  if (runtimeCanvasReady && knowledgeGraphRuntime.loadedFor === (knowledgeSpace()?.updatedAt || '')) {
     queueKnowledgeGraphRender();
     return;
   }
