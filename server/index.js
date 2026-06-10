@@ -132,6 +132,7 @@ import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
 import { handleTeamSharingApi } from './api/team-sharing-routes.js';
+import { handleKnowledgeApi } from './api/knowledge-routes.js';
 import { applyServerYamlConfig } from './config-yaml.js';
 import {
   createEmbeddingClient,
@@ -1725,6 +1726,7 @@ function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
     || url.pathname.startsWith('/api/auth/')
     || url.pathname.startsWith('/api/team-sharing/')
+    || url.pathname.startsWith('/api/knowledge/')
     || url.pathname.startsWith('/api/console/')
     || url.pathname === '/api/healthz'
     || url.pathname === '/api/readyz';
@@ -1897,6 +1899,25 @@ function teamSharingApiDeps() {
     },
     zillizReady: zillizConfigured,
     rerankReady: () => Boolean(process.env.MAGCLAW_RERANK_URL && process.env.MAGCLAW_RERANK_API_KEY),
+  };
+}
+
+function knowledgeApiDeps() {
+  return {
+    addSystemEvent,
+    broadcastState,
+    currentActor: (req) => cloudAuth.currentActor(req),
+    currentUser: (req) => cloudAuth.currentUser(req),
+    env: process.env,
+    fetchImpl: globalThis.fetch,
+    getState: () => state,
+    isLoginRequired: () => cloudAuth.isLoginRequired(),
+    makeId,
+    now,
+    persistState,
+    readJson,
+    sendError,
+    sendJson,
   };
 }
 
@@ -2194,6 +2215,8 @@ async function handleApi(req, res, url) {
   if (await handleProjectApi(req, res, url, projectApiDeps())) return true;
 
   if (await handleCollabApi(req, res, url, collabApiDeps())) return true;
+
+  if (await handleKnowledgeApi(req, res, url, knowledgeApiDeps())) return true;
 
   if (await handleTeamSharingApi(req, res, url, teamSharingApiDeps())) return true;
 

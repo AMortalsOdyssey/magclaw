@@ -527,6 +527,9 @@ document.addEventListener('click', async (event) => {
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   let skipFinalRefresh = false;
   try {
+    if (typeof handleKnowledgeAction === 'function' && await handleKnowledgeAction(action, target)) {
+      return;
+    }
     if (action === 'copy-feishu-import-path' || action === 'copy-team-sharing-setup-command') {
       const copyTeamSharingSetupCommand = action === 'copy-team-sharing-setup-command';
       const channelId = target.dataset.id || selectedSpaceId;
@@ -1089,6 +1092,18 @@ document.addEventListener('click', async (event) => {
         window.location.assign(`/s/${serverSlug}/share`);
         return;
       }
+      if (nav === 'knowledge-root') {
+        railTab = 'knowledge';
+        activeView = 'knowledge';
+        mobileHomeOpen = false;
+        selectedAgentId = null;
+        selectedHumanId = null;
+        selectedComputerId = null;
+        workspaceActivityDrawerOpen = false;
+        knowledgeRoute = { view: 'home', docId: '', changeSessionId: '' };
+        knowledgeSpaceState = { ...knowledgeSpaceState, tab: 'home', selectedDocId: '' };
+        if (typeof loadKnowledgeSpace === 'function') loadKnowledgeSpace().catch((error) => toast(error.message));
+      } else
       if (nav !== 'members' && railTab === 'members') rememberMembersLayoutFromCurrent();
       if (nav === 'chat') {
         railTab = 'spaces';

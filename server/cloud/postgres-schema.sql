@@ -148,6 +148,188 @@ CREATE INDEX IF NOT EXISTS cloud_sessions_user_active_idx
 CREATE INDEX IF NOT EXISTS cloud_sessions_expires_at_idx
   ON cloud_sessions(expires_at);
 
+CREATE TABLE IF NOT EXISTS knowledge_spaces (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS knowledge_spaces_workspace_uidx
+  ON knowledge_spaces(workspace_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_whitelist_members (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  knowledge_space_id TEXT NOT NULL REFERENCES knowledge_spaces(id) ON DELETE CASCADE,
+  human_id TEXT NOT NULL,
+  added_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS knowledge_whitelist_members_uidx
+  ON knowledge_whitelist_members(knowledge_space_id, human_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  knowledge_space_id TEXT NOT NULL REFERENCES knowledge_spaces(id) ON DELETE CASCADE,
+  parent_id TEXT,
+  title TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  level INTEGER NOT NULL DEFAULT 1,
+  summary TEXT NOT NULL DEFAULT '',
+  current_version_id TEXT,
+  source_url TEXT NOT NULL DEFAULT '',
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_documents_workspace_idx
+  ON knowledge_documents(workspace_id, level, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  version_number INTEGER NOT NULL,
+  base_version_id TEXT,
+  source_markdown TEXT NOT NULL DEFAULT '',
+  rendered_html TEXT NOT NULL DEFAULT '',
+  content_hash TEXT NOT NULL,
+  change_session_id TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS knowledge_document_versions_doc_number_uidx
+  ON knowledge_document_versions(document_id, version_number);
+
+CREATE TABLE IF NOT EXISTS knowledge_heading_anchors (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  anchor TEXT NOT NULL,
+  level INTEGER NOT NULL DEFAULT 3,
+  summary TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_heading_anchors_document_idx
+  ON knowledge_heading_anchors(document_id, level, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_links (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  from_document_id TEXT,
+  from_anchor_id TEXT,
+  to_document_id TEXT,
+  to_anchor_id TEXT,
+  kind TEXT NOT NULL DEFAULT 'link',
+  label TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_links_workspace_idx
+  ON knowledge_links(workspace_id, kind);
+
+CREATE TABLE IF NOT EXISTS knowledge_change_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  knowledge_space_id TEXT REFERENCES knowledge_spaces(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('draft', 'diff', 'preview', 'published')),
+  summary TEXT NOT NULL DEFAULT '',
+  actor_human_id TEXT NOT NULL DEFAULT '',
+  conflict BOOLEAN NOT NULL DEFAULT false,
+  immutable BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_change_sessions_workspace_idx
+  ON knowledge_change_sessions(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_change_session_changes (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  change_session_id TEXT NOT NULL REFERENCES knowledge_change_sessions(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  base_version_id TEXT NOT NULL DEFAULT '',
+  proposed_markdown TEXT NOT NULL DEFAULT '',
+  proposed_html TEXT NOT NULL DEFAULT '',
+  diff_html TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_change_session_changes_session_idx
+  ON knowledge_change_session_changes(change_session_id, document_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_changelog_groups (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  change_session_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  actor_human_id TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_changelog_groups_workspace_idx
+  ON knowledge_changelog_groups(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_changelog_events (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  change_session_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT 'gray',
+  indent INTEGER NOT NULL DEFAULT 0,
+  link TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_changelog_events_session_idx
+  ON knowledge_changelog_events(change_session_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS knowledge_notification_attempts (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  change_session_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  message_id TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS knowledge_notification_attempts_session_idx
+  ON knowledge_notification_attempts(change_session_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS cloud_invitations (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,

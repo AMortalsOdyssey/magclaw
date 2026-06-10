@@ -18,10 +18,15 @@ import {
 import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
 import { normalizeStoredConversationReferences } from '../conversation-references.js';
 import { safePathWithin } from '../path-utils.js';
+import {
+  filterKnowledgeSpaceStateForWorkspace,
+  hasKnowledgeSpaceContent,
+  mergeKnowledgeSpaceState,
+} from '../knowledge-space.js';
 
 const TRANSIENT_POSTGRES_PERSIST_ERROR_CODES = new Set(['55P03', '40001', '40P01']);
 const DURABLE_STATE_RECORD_ARRAY_KEYS = Object.freeze(['reminders', 'missions', 'runs', 'projects', 'agentRuntimeSessions', 'conversationGrants']);
-const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router', 'teamSharing']);
+const DURABLE_STATE_RECORD_OBJECT_KEYS = Object.freeze(['settings', 'connection', 'router', 'teamSharing', 'knowledgeSpace']);
 const EPHEMERAL_STATE_RECORD_KEYS = new Set(['events', 'routeEvents', 'systemNotifications', 'inboxReads']);
 const EPHEMERAL_STATE_RECORD_KEY_LIST = Object.freeze([...EPHEMERAL_STATE_RECORD_KEYS]);
 const MESSAGE_PAGE_DEFAULT_LIMIT = 80;
@@ -2925,6 +2930,22 @@ export function createCloudPostgresStore(optionsInput = {}) {
         }
         continue;
       }
+      if (key === 'knowledgeSpace') {
+        for (const workspaceId of ids) {
+          const scoped = filterKnowledgeSpaceStateForWorkspace(value, workspaceId);
+          if (!hasKnowledgeSpaceContent(scoped)) continue;
+          stateRecordRows.push([
+            workspaceId,
+            key,
+            'value',
+            0,
+            null,
+            null,
+            JSON.stringify(scoped),
+          ]);
+        }
+        continue;
+      }
       const workspaceId = workspaceIdFor(value, state, cloud);
       if (!workspaceId || !inScope(workspaceId)) continue;
       stateRecordRows.push([
@@ -4263,6 +4284,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       state.systemNotifications = [];
       state.inboxReads = {};
       state.teamSharing = {};
+      state.knowledgeSpace = {};
       const objectKeys = new Set(DURABLE_STATE_RECORD_OBJECT_KEYS);
       for (const row of stateRecords.rows) {
         const kind = row.kind;
@@ -4271,6 +4293,10 @@ export function createCloudPostgresStore(optionsInput = {}) {
         if (objectKeys.has(kind) && row.id === 'value') {
           if (kind === 'teamSharing') {
             state.teamSharing = mergeTeamSharingState(state.teamSharing, jsonObject(row.payload));
+            continue;
+          }
+          if (kind === 'knowledgeSpace') {
+            state.knowledgeSpace = mergeKnowledgeSpaceState(state.knowledgeSpace, jsonObject(row.payload));
             continue;
           }
           state[kind] = jsonObject(row.payload);
@@ -4384,6 +4410,14 @@ export function createCloudPostgresStore(optionsInput = {}) {
             includeMatches: false,
           });
           state.teamSharing = mergeTeamSharingState(withoutWorkspace, jsonObject(row.payload));
+          continue;
+        }
+        if (kind === 'knowledgeSpace') {
+          if (!row) continue;
+          const withoutWorkspace = filterKnowledgeSpaceStateForWorkspace(state.knowledgeSpace, scopedWorkspaceId, {
+            includeMatches: false,
+          });
+          state.knowledgeSpace = mergeKnowledgeSpaceState(withoutWorkspace, jsonObject(row.payload));
           continue;
         }
         if (row) state[kind] = jsonObject(row.payload);
