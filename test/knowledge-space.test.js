@@ -69,6 +69,8 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   assert.equal(graph.nodes.some((node) => node.kind === 'space' && node.level === 0), true);
   assert.equal(graph.nodes.some((node) => node.kind === 'document' && node.level === 1), true);
   assert.equal(graph.nodes.some((node) => node.kind === 'anchor' && node.colorRole === 'recent_leaf'), true);
+  assert.equal(graph.nodes.every((node) => typeof node.href === 'string' && node.href.startsWith('/s/ws_knowledge/knowledge')), true);
+  assert.ok(graph.nodes.some((node) => node.kind === 'anchor' && node.href.includes('#recall-boundary')));
   assert.equal(graph.edges.some((edge) => edge.kind === 'root'), true);
   assert.equal(Math.max(...graph.nodes.map((node) => node.radius)) <= 11, true);
   assert.equal(graph.edges.length >= 4, true);

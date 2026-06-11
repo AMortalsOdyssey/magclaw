@@ -48,6 +48,10 @@ test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels,
   assert.match(graphSource, /draggingNode/);
   assert.match(graphSource, /panning/);
   assert.match(graphSource, /hoveredId/);
+  assert.match(graphSource, /KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT/);
+  assert.match(graphSource, /clickCandidate/);
+  assert.match(graphSource, /window\.location\.assign\(candidate\.href\)/);
+  assert.match(graphSource, /canvas\.style\.cursor = hovered\?\.href \? 'pointer' : ''/);
   assert.match(graphSource, /neighbors\.has/);
   assert.match(graphSource, /shouldShowKnowledgeNodeLabel/);
   assert.match(graphSource, /before\.x \* rt\.scale/);

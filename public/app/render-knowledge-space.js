@@ -2,6 +2,7 @@ let knowledgeGraphRuntime = null;
 let knowledgeGraphRenderQueued = false;
 let knowledgeGraphWindowEventsBound = false;
 let knowledgeGraphAnimationToken = 0;
+const KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT = 6;
 
 function knowledgeSpace() {
   return knowledgeSpaceState?.data?.space || null;
@@ -331,6 +332,7 @@ function setupKnowledgeGraph(graph) {
     hoveredId: '',
     draggingNode: null,
     panning: null,
+    clickCandidate: null,
     tick: 0,
     resizeObserver: null,
   };
@@ -463,6 +465,9 @@ function bindKnowledgeGraphEvents(canvas) {
     event.preventDefault();
     const point = graphPointer(event);
     const node = nearestKnowledgeNode(point.x, point.y, 10 / knowledgeGraphRuntime.scale);
+    knowledgeGraphRuntime.clickCandidate = node?.href && event.button === 0
+      ? { nodeId: node.id, href: node.href, x: event.clientX, y: event.clientY }
+      : null;
     if (node && event.button === 0) {
       knowledgeGraphRuntime.draggingNode = node;
       node.fx = point.x;
@@ -470,47 +475,68 @@ function bindKnowledgeGraphEvents(canvas) {
       node.vx = 0;
       node.vy = 0;
     } else {
+      knowledgeGraphRuntime.clickCandidate = null;
       knowledgeGraphRuntime.panning = { x: event.clientX, y: event.clientY, panX: knowledgeGraphRuntime.panX, panY: knowledgeGraphRuntime.panY };
     }
   });
   canvas.addEventListener('mouseleave', () => {
     if (!knowledgeGraphRuntime || knowledgeGraphRuntime.panning || knowledgeGraphRuntime.draggingNode) return;
     knowledgeGraphRuntime.hoveredId = '';
+    canvas.style.cursor = '';
     queueKnowledgeGraphRender();
   });
   if (!knowledgeGraphWindowEventsBound) {
     knowledgeGraphWindowEventsBound = true;
-    window.addEventListener('mouseup', () => {
+    window.addEventListener('mouseup', (event) => {
       if (!knowledgeGraphRuntime) return;
+      const candidate = knowledgeGraphRuntime.clickCandidate;
+      if (candidate && event.button === 0) {
+        const movement = Math.hypot(event.clientX - candidate.x, event.clientY - candidate.y);
+        const point = graphPointer(event);
+        const node = point.inside ? nearestKnowledgeNode(point.x, point.y, 14 / (knowledgeGraphRuntime.scale || 1)) : null;
+        if (movement <= KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT && node?.id === candidate.nodeId) {
+          window.location.assign(candidate.href);
+        }
+      }
+      knowledgeGraphRuntime.clickCandidate = null;
       if (knowledgeGraphRuntime.draggingNode) {
         delete knowledgeGraphRuntime.draggingNode.fx;
         delete knowledgeGraphRuntime.draggingNode.fy;
         knowledgeGraphRuntime.draggingNode = null;
       }
       knowledgeGraphRuntime.panning = null;
+      if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = knowledgeGraphRuntime.hoveredId ? 'pointer' : '';
     });
     window.addEventListener('mousemove', (event) => {
       if (!knowledgeGraphRuntime) return;
       const point = graphPointer(event);
+      if (knowledgeGraphRuntime.clickCandidate) {
+        const moved = Math.hypot(event.clientX - knowledgeGraphRuntime.clickCandidate.x, event.clientY - knowledgeGraphRuntime.clickCandidate.y);
+        if (moved > KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT) knowledgeGraphRuntime.clickCandidate = null;
+      }
       if (knowledgeGraphRuntime.draggingNode) {
         knowledgeGraphRuntime.draggingNode.fx = point.x;
         knowledgeGraphRuntime.draggingNode.fy = point.y;
+        if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = 'grabbing';
         return;
       }
       if (knowledgeGraphRuntime.panning) {
         const pan = knowledgeGraphRuntime.panning;
         knowledgeGraphRuntime.panX = pan.panX + event.clientX - pan.x;
         knowledgeGraphRuntime.panY = pan.panY + event.clientY - pan.y;
+        if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = 'grabbing';
         queueKnowledgeGraphRender();
         return;
       }
       if (!point.inside) {
         knowledgeGraphRuntime.hoveredId = '';
+        if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = '';
         queueKnowledgeGraphRender();
         return;
       }
       const hovered = nearestKnowledgeNode(point.x, point.y, 9 / knowledgeGraphRuntime.scale);
       knowledgeGraphRuntime.hoveredId = hovered?.id || '';
+      if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = hovered?.href ? 'pointer' : '';
       queueKnowledgeGraphRender();
     });
     window.addEventListener('resize', () => resizeKnowledgeGraphCanvas());
