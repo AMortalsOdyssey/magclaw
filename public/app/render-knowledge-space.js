@@ -245,6 +245,18 @@ function currentKnowledgeDocPath(doc = knowledgeSelectedDoc()) {
     : `/s/${serverSlug}/knowledge`;
 }
 
+function currentKnowledgePathFromHref(href = '') {
+  const value = String(href || '');
+  const match = value.match(/^\/s\/[^/]+(\/knowledge(?:[/?#].*)?)$/);
+  if (!match) return value;
+  const serverSlug = encodeURIComponent(String(
+    (typeof currentServerSlug === 'function' && currentServerSlug())
+    || (typeof serverSlugFromPath === 'function' && serverSlugFromPath())
+    || 'local',
+  ).trim() || 'local');
+  return `/s/${serverSlug}${match[1]}`;
+}
+
 function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
   const path = currentKnowledgeDocPath(doc);
   return `${window.location.origin}${path}`;
@@ -495,7 +507,7 @@ function bindKnowledgeGraphEvents(canvas) {
         const point = graphPointer(event);
         const node = point.inside ? nearestKnowledgeNode(point.x, point.y, 14 / (knowledgeGraphRuntime.scale || 1)) : null;
         if (movement <= KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT && node?.id === candidate.nodeId) {
-          window.location.assign(candidate.href);
+          window.location.assign(currentKnowledgePathFromHref(candidate.href));
         }
       }
       knowledgeGraphRuntime.clickCandidate = null;
@@ -544,7 +556,7 @@ function bindKnowledgeGraphEvents(canvas) {
   canvas.addEventListener('dblclick', (event) => {
     const point = graphPointer(event);
     const node = nearestKnowledgeNode(point.x, point.y, 14 / (knowledgeGraphRuntime?.scale || 1));
-    if (node?.href) window.location.assign(node.href);
+    if (node?.href) window.location.assign(currentKnowledgePathFromHref(node.href));
   });
 }
 
