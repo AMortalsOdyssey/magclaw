@@ -9,11 +9,13 @@ import {
   createKnowledgeChangeSession,
   decryptKnowledgeSecret,
   encryptKnowledgeSecret,
+  getKnowledgeDocument,
   getKnowledgeGraph,
   importKnowledgeMarkdown,
   moveKnowledgeSessionToDiff,
   moveKnowledgeSessionToPreview,
   publishKnowledgeSession,
+  renderKnowledgeMarkdown,
   updateKnowledgeSettings,
 } from '../server/knowledge-space.js';
 
@@ -72,6 +74,8 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   assert.equal(graph.edges.length >= 4, true);
   const memoryDoc = result.space.documents.find((doc) => doc.title === 'Memory Module');
   const recallAnchor = result.space.anchors.find((anchor) => anchor.title === 'Recall Boundary');
+  assert.doesNotMatch(memoryDoc.sourceMarkdown, /^##\s+Memory Module/m);
+  assert.doesNotMatch(memoryDoc.renderedHtml, /<h2[^>]*>Memory Module<\/h2>/);
   assert.ok(memoryDoc.renderedHtml.includes(`id="${recallAnchor.anchor}"`));
 
   const answer = askKnowledgeConsensus(result.space, 'original consensus anchor');
@@ -81,6 +85,33 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   const alignment = alignKnowledgeDiscussion(result.space, 'We need a diff before publishing.');
   assert.equal(alignment.rules.some((rule) => rule.title === 'Diff Preview'), true);
   assert.equal(alignment.alignmentGaps.length > 0, true);
+});
+
+test('Knowledge Markdown display hides source escapes and duplicate document titles', () => {
+  const rendered = renderKnowledgeMarkdown('## 1\\.1 不可妥协（底盘 \\+ 心情）\n\n正文包含 \\[动作空间\\] 和版本 2\\.0。');
+  assert.match(rendered.html, /1\.1 不可妥协（底盘 \+ 心情）/);
+  assert.match(rendered.html, /正文包含 \[动作空间\] 和版本 2\.0。/);
+  assert.doesNotMatch(rendered.html, /\\\./);
+  assert.doesNotMatch(rendered.html, /\\\+/);
+  assert.doesNotMatch(rendered.html, /\\\[/);
+
+  const appState = state();
+  const imported = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_knowledge',
+    markdown: '# Root\n\n## 1\\.1 不可妥协（动了就不是叽伴了）\n\n- 底盘 \\+ 心情。\n',
+    actor: actor(),
+  });
+  const doc = imported.space.documents.find((item) => item.title === '1.1 不可妥协（动了就不是叽伴了）');
+  assert.ok(doc);
+  assert.equal(doc.sourceMarkdown.trim(), '- 底盘 \\+ 心情。');
+  assert.doesNotMatch(doc.renderedHtml, /<h2/);
+  assert.match(doc.renderedHtml, /底盘 \+ 心情/);
+
+  doc.sourceMarkdown = `## ${doc.title}\n\n${doc.sourceMarkdown}`;
+  const displayed = getKnowledgeDocument(imported.space, doc.id);
+  assert.doesNotMatch(displayed.renderedHtml, /<h2/);
+  assert.match(displayed.renderedHtml, /底盘 \+ 心情/);
 });
 
 test('settings encrypt Feishu secret and expose only masked status', () => {

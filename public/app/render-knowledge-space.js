@@ -125,7 +125,7 @@ function renderKnowledgeMain() {
           ${knowledgeCanAdmin() ? renderKnowledgeTab('settings', 'Settings') : ''}
         </nav>
       </header>
-      ${tab === 'settings' ? renderKnowledgeSettings() : body}
+      ${tab === 'settings' ? renderKnowledgeSettingsShell() : body}
     </main>
   `;
 }
@@ -148,7 +148,6 @@ function renderKnowledgeHome() {
         <div class="knowledge-doc-list">
           ${docs.map((doc) => renderKnowledgeDocListItem(doc, selected?.id)).join('') || '<div class="knowledge-empty">No documents imported.</div>'}
         </div>
-        ${renderKnowledgeImportPanel()}
       </aside>
       <section class="knowledge-reader">
         ${selected ? renderKnowledgeDocument(selected.id) : renderKnowledgeEmptyState()}
@@ -170,20 +169,8 @@ function renderKnowledgeEmptyState() {
   return `
     <div class="knowledge-empty-state">
       <h2>No consensus document yet</h2>
-      <p>Import a Markdown consensus file to create the root page, child documents, anchors, links, and graph data.</p>
+      <p>No Knowledge Space document is available yet.</p>
     </div>
-  `;
-}
-
-function renderKnowledgeImportPanel() {
-  if (!knowledgeCanAdmin()) return '';
-  return `
-    <details class="knowledge-import-panel">
-      <summary>Import Markdown</summary>
-      <input id="knowledge-import-title" placeholder="Source title" value="Kizuna consensus" />
-      <textarea id="knowledge-import-markdown" placeholder="Paste Markdown to import"></textarea>
-      <button type="button" data-action="knowledge-import">Import</button>
-    </details>
   `;
 }
 
@@ -195,7 +182,6 @@ function renderKnowledgeDocument(docId) {
   }
   if (!cached) return '<div class="knowledge-loading">Loading document</div>';
   const doc = cached.document;
-  const anchors = doc.anchors || [];
   return `
     <article class="knowledge-document">
       <header>
@@ -209,13 +195,6 @@ function renderKnowledgeDocument(docId) {
         </div>
       </header>
       <div class="knowledge-html">${doc.renderedHtml || ''}</div>
-      ${anchors.length ? `
-        <section class="knowledge-anchors">
-          <h3>Anchors</h3>
-          ${anchors.map((anchor) => `<a href="#${escapeHtml(anchor.anchor)}">${escapeHtml(anchor.title)}</a>`).join('')}
-        </section>
-      ` : ''}
-      ${renderKnowledgeBacklinks(doc.backlinks || [])}
     </article>
   `;
 }
@@ -228,16 +207,6 @@ async function loadKnowledgeDocument(docId) {
     [`doc-loading:${docId}`]: false,
   };
   render();
-}
-
-function renderKnowledgeBacklinks(backlinks) {
-  if (!backlinks.length) return '';
-  return `
-    <section class="knowledge-backlinks">
-      <h3>Referenced By</h3>
-      ${backlinks.map((link) => `<button type="button" data-action="knowledge-select-doc" data-doc-id="${escapeHtml(link.fromDocId)}">${escapeHtml(link.sourceTitle || link.label || link.fromDocId)}</button>`).join('')}
-    </section>
-  `;
 }
 
 function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
@@ -863,6 +832,126 @@ function renderKnowledgeRolePill(role) {
   return `<small class="knowledge-role-pill role-${escapeHtml(safeRole)}">${escapeHtml(safeRole)}</small>`;
 }
 
+const KNOWLEDGE_SETTINGS_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'publishing', label: 'Publishing' },
+  { id: 'notifications', label: 'Notifications' },
+];
+
+function normalizeKnowledgeSettingsTab(tab = 'overview') {
+  const value = String(tab || 'overview').toLowerCase();
+  return KNOWLEDGE_SETTINGS_TABS.some((item) => item.id === value) ? value : 'overview';
+}
+
+function currentKnowledgeSettingsTab() {
+  return normalizeKnowledgeSettingsTab(knowledgeRoute?.settingsTab || 'overview');
+}
+
+function knowledgeFeishuConfigured(settings = {}) {
+  const feishu = settings.feishu || {};
+  return Boolean(feishu.appId || feishu.chatId || feishu.appSecretConfigured);
+}
+
+function renderKnowledgeSettingsTab(tab) {
+  const active = currentKnowledgeSettingsTab() === tab.id;
+  return `
+    <button
+      class="knowledge-settings-tab ${active ? 'active' : ''}"
+      type="button"
+      data-action="knowledge-settings-tab"
+      data-settings-tab="${escapeHtml(tab.id)}"
+      aria-current="${active ? 'page' : 'false'}"
+    >${escapeHtml(tab.label)}</button>
+  `;
+}
+
+function knowledgeSettingsAccessLabel() {
+  if (knowledgeCanAdmin()) return 'Admin';
+  if (knowledgeCanEdit()) return 'Editor';
+  return 'Read only';
+}
+
+function renderKnowledgeSettingsShell() {
+  const tab = currentKnowledgeSettingsTab();
+  const settings = knowledgeSpace()?.settings || {};
+  const members = knowledgeSpaceState?.data?.members || [];
+  const whitelist = new Set(settings.whitelistHumanIds || []);
+  const feishuReady = knowledgeFeishuConfigured(settings);
+  return `
+    <section class="knowledge-settings knowledge-settings-shell">
+      <div class="knowledge-settings-hero">
+        <div>
+          <p>Knowledge Settings</p>
+          <h2>Workspace controls</h2>
+          <span>Manage publishing access and Feishu notifications for this Knowledge Space.</span>
+        </div>
+        <div class="knowledge-settings-hero-meta" aria-label="Knowledge settings status">
+          <span>${escapeHtml(knowledgeSettingsAccessLabel())}</span>
+          <span>${whitelist.size} publisher${whitelist.size === 1 ? '' : 's'}</span>
+          <span>${feishuReady ? 'Feishu connected' : 'Feishu not configured'}</span>
+        </div>
+      </div>
+      <nav class="knowledge-settings-tabs" aria-label="Knowledge settings sections">
+        ${KNOWLEDGE_SETTINGS_TABS.map(renderKnowledgeSettingsTab).join('')}
+      </nav>
+      ${tab === 'publishing'
+        ? renderKnowledgeWhitelistCard(members, whitelist)
+        : tab === 'notifications'
+          ? renderKnowledgeFeishuSettings(settings)
+          : renderKnowledgeSettingsOverview(members, whitelist, settings)}
+    </section>
+  `;
+}
+
+function renderKnowledgeSettingsOverview(members, whitelist, settings) {
+  const feishuReady = knowledgeFeishuConfigured(settings);
+  const feishu = settings.feishu || {};
+  return `
+    <section class="knowledge-settings-section knowledge-settings-overview">
+      <div class="knowledge-settings-summary" aria-label="Knowledge settings overview">
+        <article>
+          <span>Whitelisted publishers</span>
+          <strong>${whitelist.size}</strong>
+          <small>Can publish Knowledge Space changes</small>
+        </article>
+        <article>
+          <span>Server members</span>
+          <strong>${members.length}</strong>
+          <small>Sorted by owner, admin, then member</small>
+        </article>
+        <article>
+          <span>Feishu status</span>
+          <strong>${feishuReady ? 'Ready' : 'Off'}</strong>
+          <small>${feishuReady ? 'Notifications can be sent' : 'Add App ID, Chat ID, and secret'}</small>
+        </article>
+        <article>
+          <span>Current access</span>
+          <strong>${escapeHtml(knowledgeSettingsAccessLabel())}</strong>
+          <small>${knowledgeCanAdmin() ? 'Full settings access' : 'Viewing current configuration'}</small>
+        </article>
+      </div>
+      <div class="knowledge-settings-overview-grid">
+        <article class="knowledge-settings-overview-card">
+          <div>
+            <p>Publishing</p>
+            <h3>Control who can publish</h3>
+            <span>Review the whitelist, add eligible server members, or remove stale access with confirmation.</span>
+          </div>
+          <button type="button" data-action="knowledge-settings-tab" data-settings-tab="publishing">Manage Publishing</button>
+        </article>
+        <article class="knowledge-settings-overview-card">
+          <div>
+            <p>Notifications</p>
+            <h3>Configure Feishu delivery</h3>
+            <span>${feishu.appSecretConfigured ? `Secret configured ${escapeHtml(feishu.appSecretConfiguredAt || '')}` : 'Set Feishu credentials before publishing notifications.'}</span>
+          </div>
+          <button type="button" data-action="knowledge-settings-tab" data-settings-tab="notifications">Manage Notifications</button>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
 function renderKnowledgeWhitelistCard(members, whitelist) {
   const byId = knowledgeMemberMap(members);
   const selectedAddIds = new Set(knowledgeSettingsState.selectedAddIds || []);
@@ -876,11 +965,20 @@ function renderKnowledgeWhitelistCard(members, whitelist) {
   const candidateRows = sortedKnowledgeMembers(members);
   const selectedCount = candidateRows.filter((member) => selectedAddIds.has(member.id) && !whitelist.has(member.id)).length;
   return `
-    <div class="knowledge-settings-card knowledge-whitelist-card">
-      <header class="knowledge-card-head">
-        <h2>Publishing Whitelist</h2>
-        <button type="button" data-action="knowledge-toggle-add-members">${knowledgeSettingsState.addOpen ? 'Close' : 'Add'}</button>
+    <section class="knowledge-settings-section knowledge-whitelist-card">
+      <header class="knowledge-settings-section-head">
+        <div>
+          <p>Publishing</p>
+          <h2>Publishing Whitelist</h2>
+          <span>Only whitelisted members can publish Knowledge Space changes.</span>
+        </div>
+        <button type="button" data-action="knowledge-toggle-add-members">${knowledgeSettingsState.addOpen ? 'Close' : 'Add Member'}</button>
       </header>
+      <div class="knowledge-settings-mini-summary">
+        <span><strong>${whitelistRows.length}</strong> whitelisted</span>
+        <span><strong>${members.length}</strong> server members</span>
+        <span><strong>${candidateRows.filter((member) => !whitelist.has(member.id)).length}</strong> available to add</span>
+      </div>
       <div class="knowledge-whitelist-list">
         ${whitelistRows.map((member) => `
           <div class="knowledge-whitelist-row">
@@ -915,7 +1013,7 @@ function renderKnowledgeWhitelistCard(members, whitelist) {
           <button class="knowledge-save-settings" type="button" data-action="knowledge-save-whitelist-additions" ${selectedCount ? '' : 'disabled'}>Save ${selectedCount ? `(${selectedCount})` : ''}</button>
         </div>
       ` : ''}
-    </div>
+    </section>
   `;
 }
 
@@ -932,9 +1030,20 @@ function renderKnowledgeFeishuField(id, label, value, placeholder = '') {
 function renderKnowledgeFeishuSettings(settings) {
   const feishu = settings.feishu || {};
   const secretPlaceholder = feishu.appSecretMasked || (feishu.appSecretConfigured ? 'Secret configured' : 'App Secret');
+  const ready = knowledgeFeishuConfigured(settings);
   return `
-    <div class="knowledge-settings-card knowledge-feishu-card">
-      <h2>Feishu Notification</h2>
+    <section class="knowledge-settings-section knowledge-feishu-card">
+      <header class="knowledge-settings-section-head">
+        <div>
+          <p>Notifications</p>
+          <h2>Feishu Notification</h2>
+          <span>Keep publishing notifications scoped to this Knowledge Space.</span>
+        </div>
+        <small class="knowledge-settings-status ${ready ? 'ready' : 'muted'}">${ready ? 'Configured' : 'Not configured'}</small>
+      </header>
+      <div class="knowledge-feishu-status-note">
+        ${ready ? 'Feishu delivery is configured. Leave unchanged fields as-is when updating one credential.' : 'Add the Feishu App ID, Chat ID, and App Secret to enable notifications.'}
+      </div>
       ${renderKnowledgeFeishuField('knowledge-feishu-app-id', 'App ID', feishu.appId || '', 'App ID')}
       ${renderKnowledgeFeishuField('knowledge-feishu-chat-id', 'Chat ID', feishu.chatId || '', 'Chat ID')}
       <label class="knowledge-field">
@@ -943,20 +1052,12 @@ function renderKnowledgeFeishuSettings(settings) {
       </label>
       <p>${feishu.appSecretConfigured ? `Secret configured ${escapeHtml(feishu.appSecretConfiguredAt || '')}` : 'No secret configured.'}</p>
       <button class="knowledge-save-settings" type="button" data-action="knowledge-save-settings">Save Feishu Settings</button>
-    </div>
+    </section>
   `;
 }
 
 function renderKnowledgeSettings() {
-  const members = knowledgeSpaceState?.data?.members || [];
-  const settings = knowledgeSpace()?.settings || {};
-  const whitelist = new Set(settings.whitelistHumanIds || []);
-  return `
-    <section class="knowledge-settings">
-      ${renderKnowledgeWhitelistCard(members, whitelist)}
-      ${renderKnowledgeFeishuSettings(settings)}
-    </section>
-  `;
+  return renderKnowledgeSettingsShell();
 }
 
 function knowledgeFeishuPatchFromInputs() {
@@ -1002,8 +1103,21 @@ async function handleKnowledgeAction(action, target) {
   if (!knowledgeAction.startsWith('knowledge-') && !knowledgeAction.startsWith('copy-knowledge-')) return false;
   if (action === 'knowledge-tab') {
     const tab = target.dataset.tab || 'home';
-    knowledgeRoute = { view: tab, docId: '', changeSessionId: '' };
+    knowledgeRoute = tab === 'settings'
+      ? { view: 'settings', docId: '', changeSessionId: '', settingsTab: 'overview' }
+      : { view: tab, docId: '', changeSessionId: '', settingsTab: '' };
     knowledgeSpaceState = { ...knowledgeSpaceState, tab };
+    syncBrowserRouteForActiveView();
+    render();
+    return true;
+  }
+  if (action === 'knowledge-settings-tab') {
+    const settingsTab = normalizeKnowledgeSettingsTab(target.dataset.settingsTab || 'overview');
+    knowledgeRoute = { view: 'settings', docId: '', changeSessionId: '', settingsTab };
+    knowledgeSpaceState = { ...knowledgeSpaceState, tab: 'settings' };
+    if (settingsTab !== 'publishing') {
+      knowledgeSettingsState = { ...knowledgeSettingsState, addOpen: false, selectedAddIds: [] };
+    }
     syncBrowserRouteForActiveView();
     render();
     return true;
@@ -1065,17 +1179,6 @@ async function handleKnowledgeAction(action, target) {
     modal = null;
     knowledgeSettingsState = { ...knowledgeSettingsState, removeHumanId: '', selectedAddIds: [] };
     toast('Whitelist member removed');
-    await loadKnowledgeSpace({ force: true });
-    return true;
-  }
-  if (action === 'knowledge-import') {
-    const markdown = document.querySelector('#knowledge-import-markdown')?.value || '';
-    const sourceName = document.querySelector('#knowledge-import-title')?.value || '';
-    await api('/api/knowledge/import', {
-      method: 'POST',
-      body: JSON.stringify({ markdown, sourceName }),
-    });
-    toast('Knowledge imported');
     await loadKnowledgeSpace({ force: true });
     return true;
   }

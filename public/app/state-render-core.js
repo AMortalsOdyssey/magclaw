@@ -96,7 +96,7 @@ let sharePreviewState = { open: false, imageUrl: '', recordIds: [] };
 let attachmentPreviewState = { attachmentId: null, loading: false, content: '', error: '' };
 let externalImportContextState = { recordId: null };
 let teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: 'preview', expandedFolders: { topics: true } };
-let knowledgeRoute = initialRouteState.knowledgeRoute || { view: 'home', docId: '', changeSessionId: '' };
+let knowledgeRoute = initialRouteState.knowledgeRoute || { view: 'home', docId: '', changeSessionId: '', settingsTab: 'overview' };
 let knowledgeSpaceState = { loading: false, error: '', data: null, selectedDocId: knowledgeRoute.docId || '', tab: knowledgeRoute.view || 'home', qaQuery: '', qaResult: null, alignText: '', alignResult: null };
 let knowledgeSettingsState = { addOpen: false, selectedAddIds: [], removeHumanId: '' };
 let knowledgeAgentLinkState = { docId: '', copied: false };
@@ -319,6 +319,10 @@ function routeStateFromLocation(path = window.location.pathname || '') {
   if (knowledgeReviewMatch) {
     return { activeView: 'knowledge', railTab: 'knowledge', knowledgeRoute: { view: 'reviews', docId: '', changeSessionId: decodeURIComponent(knowledgeReviewMatch[1] || '') } };
   }
+  const knowledgeSettingsMatch = value.match(/^\/s\/[^/]+\/knowledge\/settings(?:\/([^/]+))?\/?$/);
+  if (knowledgeSettingsMatch) {
+    return { activeView: 'knowledge', railTab: 'knowledge', knowledgeRoute: { view: 'settings', docId: '', changeSessionId: '', settingsTab: decodeURIComponent(knowledgeSettingsMatch[1] || 'overview') } };
+  }
   if (/^\/s\/[^/]+\/knowledge\/graph/.test(value)) return { activeView: 'knowledge', railTab: 'knowledge', knowledgeRoute: { view: 'graph', docId: '', changeSessionId: '' } };
   if (/^\/s\/[^/]+\/knowledge\/changelog/.test(value)) return { activeView: 'knowledge', railTab: 'knowledge', knowledgeRoute: { view: 'changelog', docId: '', changeSessionId: '' } };
   if (/^\/s\/[^/]+\/knowledge/.test(value)) return { activeView: 'knowledge', railTab: 'knowledge', knowledgeRoute: { view: 'home', docId: '', changeSessionId: '' } };
@@ -438,6 +442,12 @@ function routePathForActiveView() {
     const route = knowledgeRoute || {};
     if (route.view === 'docs' && route.docId) return `/s/${serverSlug}/knowledge/docs/${encodeURIComponent(route.docId)}`;
     if (route.view === 'reviews' && route.changeSessionId) return `/s/${serverSlug}/knowledge/reviews/${encodeURIComponent(route.changeSessionId)}`;
+    if (route.view === 'settings') {
+      const safeSettingsTab = ['publishing', 'notifications'].includes(route.settingsTab) ? route.settingsTab : 'overview';
+      return safeSettingsTab === 'overview'
+        ? `/s/${serverSlug}/knowledge/settings`
+        : `/s/${serverSlug}/knowledge/settings/${encodeURIComponent(safeSettingsTab)}`;
+    }
     if (route.view === 'graph') return `/s/${serverSlug}/knowledge/graph`;
     if (route.view === 'changelog') return `/s/${serverSlug}/knowledge/changelog`;
     return `/s/${serverSlug}/knowledge`;

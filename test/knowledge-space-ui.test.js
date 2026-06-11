@@ -32,8 +32,11 @@ test('Knowledge Space script, route, and left rail entry are wired above Team Sh
 
   const routeSource = app.slice(app.indexOf('function routeStateFromLocation'), app.indexOf('function canonicalizeLegacyRoutePath'));
   assert.match(routeSource, /knowledge\\\/docs/);
+  assert.match(routeSource, /knowledge\\\/settings/);
+  assert.match(routeSource, /settingsTab: decodeURIComponent/);
   assert.match(routeSource, /activeView: 'knowledge'/);
   assert.match(app, /route\.view === 'graph'[\s\S]*\/knowledge\/graph/);
+  assert.match(app, /route\.view === 'settings'[\s\S]*\/knowledge\/settings/);
 });
 
 test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels, and recent-leaf colors', async () => {
@@ -73,6 +76,18 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(app, /retry-notification/);
   assert.match(app, /Published links are immutable read-only history/);
   assert.match(app, /knowledge-toggle-add-members/);
+  assert.match(app, /function renderKnowledgeSettingsShell/);
+  assert.match(app, /function renderKnowledgeSettingsOverview/);
+  assert.match(app, /function renderKnowledgeSettingsTab/);
+  assert.match(app, /data-action="knowledge-settings-tab"/);
+  assert.match(app, /data-settings-tab="publishing"/);
+  assert.match(app, /data-settings-tab="notifications"/);
+  assert.match(app, /label: 'Overview'/);
+  assert.match(app, /label: 'Publishing'/);
+  assert.match(app, /label: 'Notifications'/);
+  assert.match(app, /Whitelisted publishers/);
+  assert.match(app, /Feishu status/);
+  assert.match(app, /Server members/);
   assert.match(app, /knowledge-add-member-row/);
   assert.match(app, /class="knowledge-add-member-row[\s\S]*data-action="knowledge-toggle-add-member"/);
   assert.match(app, /knowledge-save-whitelist-additions/);
@@ -99,6 +114,14 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.doesNotMatch(app, />Create Draft</);
   assert.doesNotMatch(app, /knowledge-draft-editor/);
   assert.doesNotMatch(app, /knowledge-focus-draft/);
+  assert.doesNotMatch(app, /Import Markdown/);
+  assert.doesNotMatch(app, /knowledge-import-panel/);
+  assert.doesNotMatch(app, /data-action="knowledge-import"/);
+  assert.doesNotMatch(app, /<h3>Anchors<\/h3>/);
+  assert.doesNotMatch(app, /knowledge-anchors/);
+  assert.doesNotMatch(app, /Referenced By/);
+  assert.doesNotMatch(app, /knowledge-backlinks/);
+  assert.doesNotMatch(app, /renderKnowledgeBacklinks/);
 
   assert.match(styles, /\.knowledge-log-event\.color-green/);
   assert.match(styles, /\.knowledge-log-event\.color-amber/);
@@ -106,10 +129,18 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(styles, /margin-left: calc\(var\(--indent\) \* 22px\)/);
   assert.match(styles, /#knowledge-graph-canvas/);
   assert.match(styles, /\.knowledge-layout-frame/);
+  assert.match(styles, /\.knowledge-settings-shell/);
+  assert.match(styles, /\.knowledge-settings-tabs/);
+  assert.match(styles, /\.knowledge-settings-summary/);
+  assert.match(styles, /\.knowledge-settings-section/);
+  assert.match(styles, /\.knowledge-settings-tab\.active/);
   assert.match(styles, /\.knowledge-add-member-row\.disabled/);
   assert.match(styles, /\.knowledge-agent-link-value\.copied/);
   assert.match(styles, /\.modal-card\.modal-knowledge-agent-link/);
   assert.match(styles, /\.knowledge-agent-copy-button/);
+  assert.doesNotMatch(styles, /knowledge-import-panel/);
+  assert.doesNotMatch(styles, /knowledge-anchors/);
+  assert.doesNotMatch(styles, /knowledge-backlinks/);
 });
 
 test('Knowledge Space preserves inner scroll surfaces across full renders', async () => {

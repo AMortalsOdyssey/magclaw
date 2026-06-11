@@ -60,6 +60,25 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function decodeMarkdownEscapes(value) {
+  return String(value || '').replace(/\\([\\`*_{}\[\]()#+\-.!|>])/g, '$1');
+}
+
+function preserveMarkdownEscapes(value) {
+  const escaped = [];
+  const text = String(value || '').replace(/\\([\\`*_{}\[\]()#+\-.!|>])/g, (_match, char) => {
+    const token = `\uE000${escaped.length}\uE001`;
+    escaped.push(escapeHtml(char));
+    return token;
+  });
+  return {
+    text,
+    restore(html) {
+      return String(html || '').replace(/\uE000(\d+)\uE001/g, (_match, index) => escaped[Number(index)] || '');
+    },
+  };
+}
+
 function normalizeMarkdownLinks(text) {
   return String(text || '').replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, url) => {
     const cleanUrl = escapeHtml(url);
@@ -68,11 +87,12 @@ function normalizeMarkdownLinks(text) {
 }
 
 function renderInlineMarkdown(text) {
-  let html = escapeHtml(text);
+  const preserved = preserveMarkdownEscapes(text);
+  let html = escapeHtml(preserved.text);
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  return normalizeMarkdownLinks(html);
+  return preserved.restore(normalizeMarkdownLinks(html));
 }
 
 function uniqueHeadingAnchor(title, level, seen) {
@@ -135,10 +155,11 @@ export function renderKnowledgeMarkdown(markdown = '') {
       flushParagraph();
       closeList();
       const level = heading[1].length;
-      const title = heading[2].replace(/\s+#+$/g, '').trim();
+      const rawTitle = heading[2].replace(/\s+#+$/g, '').trim();
+      const title = decodeMarkdownEscapes(rawTitle);
       const id = uniqueHeadingAnchor(title, level, headingSlugs);
       headings.push({ level, title, id });
-      html.push(`<h${level} id="${escapeHtml(id)}">${renderInlineMarkdown(title)}</h${level}>`);
+      html.push(`<h${level} id="${escapeHtml(id)}">${renderInlineMarkdown(rawTitle)}</h${level}>`);
       continue;
     }
     if (/^\s*[-*]\s+/.test(line)) {
@@ -163,7 +184,7 @@ export function renderKnowledgeMarkdown(markdown = '') {
 }
 
 function stripMarkdown(markdown = '') {
-  return String(markdown || '')
+  return decodeMarkdownEscapes(String(markdown || ''))
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
@@ -189,12 +210,12 @@ function splitMarkdownByHeadings(markdown = '') {
     const h1 = line.match(/^#\s+(.+)$/);
     const h2 = line.match(/^##\s+(.+)$/);
     if (h1 && !rootTitle) {
-      rootTitle = h1[1].trim();
+      rootTitle = decodeMarkdownEscapes(h1[1].trim());
       rootLines.push(line);
       continue;
     }
     if (h2) {
-      current = { title: h2[1].trim(), lines: [line] };
+      current = { title: decodeMarkdownEscapes(h2[1].trim()), lines: [line] };
       h2Sections.push(current);
       continue;
     }
@@ -210,6 +231,17 @@ function splitMarkdownByHeadings(markdown = '') {
       markdown: section.lines.join('\n').trim(),
     })),
   };
+}
+
+function stripLeadingMarkdownHeading(markdown = '', level = 1) {
+  const normalized = String(markdown || '').replace(/\r\n?/g, '\n').trim();
+  if (!normalized) return '';
+  const cleanLevel = Math.min(6, Math.max(1, Number(level || 1)));
+  return normalized.replace(new RegExp(`^#{${cleanLevel}}\\s+.+(?:\\n+|$)`), '').trim();
+}
+
+function documentDisplayMarkdown(doc = {}) {
+  return stripLeadingMarkdownHeading(doc.sourceMarkdown || '', doc.level || 1);
 }
 
 function actorHumanId(actor) {
@@ -376,17 +408,20 @@ export function publicKnowledgeSpace(space, actor = null, options = {}) {
       whitelistHumanIds: normalized.settings.whitelistHumanIds,
       feishu: maskFeishuSettings(normalized.settings.feishu, options.env || process.env),
     },
-    documents: normalized.documents.map((doc) => ({
-      id: doc.id,
-      parentId: doc.parentId || '',
-      title: doc.title,
-      level: doc.level || 1,
-      summary: doc.summary || '',
-      currentVersionId: doc.currentVersionId || '',
-      createdAt: doc.createdAt,
-      updatedAt: doc.updatedAt,
-      sourceUrl: doc.sourceUrl || '',
-    })),
+    documents: normalized.documents.map((doc) => {
+      const displayMarkdown = documentDisplayMarkdown(doc);
+      return {
+        id: doc.id,
+        parentId: doc.parentId || '',
+        title: doc.title,
+        level: doc.level || 1,
+        summary: displayMarkdown ? summarizeMarkdown(displayMarkdown) : doc.summary || '',
+        currentVersionId: doc.currentVersionId || '',
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
+        sourceUrl: doc.sourceUrl || '',
+      };
+    }),
     anchors: normalized.anchors.map((anchor) => ({
       id: anchor.id,
       docId: anchor.docId,
@@ -482,7 +517,7 @@ function anchorBlocks(markdown = '') {
   for (const line of lines) {
     const h3 = line.match(/^###\s+(.+)$/);
     if (h3) {
-      current = { title: h3[1].trim(), lines: [line] };
+      current = { title: decodeMarkdownEscapes(h3[1].trim()), lines: [line] };
       blocks.push(current);
       continue;
     }
@@ -543,7 +578,6 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
   const rootTitle = sourceName || parsed.rootTitle;
   const rootId = stableId('doc', workspaceId, rootTitle, 'root');
   const rootBody = [
-    `# ${rootTitle}`,
     parsed.rootMarkdown.replace(/^#\s+.+$/m, '').trim(),
     parsed.sections.map((section) => `- [${section.title}](#${slugify(section.title)})`).join('\n'),
   ].filter(Boolean).join('\n\n');
@@ -562,11 +596,12 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
 
   for (let index = 0; index < parsed.sections.length; index += 1) {
     const section = parsed.sections[index];
+    const sectionMarkdown = stripLeadingMarkdownHeading(section.markdown, 2);
     const docId = stableId('doc', workspaceId, rootTitle, section.title);
     const { doc } = upsertDocumentFromMarkdown(space, {
       id: docId,
       title: section.title,
-      markdown: section.markdown,
+      markdown: sectionMarkdown,
       parentId: rootId,
       level: 2,
       sourceUrl,
@@ -583,7 +618,7 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
       label: doc.title,
       url: '',
     });
-    const blocks = anchorBlocks(section.markdown);
+    const blocks = anchorBlocks(sectionMarkdown);
     for (let anchorIndex = 0; anchorIndex < blocks.length; anchorIndex += 1) {
       const block = blocks[anchorIndex];
       const anchorId = stableId('anch', doc.id, block.title);
@@ -655,6 +690,8 @@ export function getKnowledgeDocument(space, docId) {
   normalizeSpace(space);
   const doc = space.documents.find((item) => item.id === docId) || space.documents[0] || null;
   if (!doc) return null;
+  const displayMarkdown = documentDisplayMarkdown(doc);
+  const rendered = renderKnowledgeMarkdown(displayMarkdown || doc.sourceMarkdown || '');
   const backlinks = space.links
     .filter((link) => (link.toDocId === doc.id || link.toAnchorId) && link.fromDocId !== doc.id)
     .map((link) => ({
@@ -665,7 +702,7 @@ export function getKnowledgeDocument(space, docId) {
       sourceTitle: space.documents.find((item) => item.id === link.fromDocId)?.title || '',
     }));
   const anchors = space.anchors.filter((anchor) => anchor.docId === doc.id);
-  return { ...cloneJson(doc), anchors, backlinks };
+  return { ...cloneJson(doc), renderedHtml: rendered.html, anchors, backlinks };
 }
 
 function nodeDegree(edges, nodeId) {
