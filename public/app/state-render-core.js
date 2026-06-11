@@ -99,6 +99,7 @@ let teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false
 let knowledgeRoute = initialRouteState.knowledgeRoute || { view: 'home', docId: '', changeSessionId: '' };
 let knowledgeSpaceState = { loading: false, error: '', data: null, selectedDocId: knowledgeRoute.docId || '', tab: knowledgeRoute.view || 'home', qaQuery: '', qaResult: null, alignText: '', alignResult: null };
 let knowledgeSettingsState = { addOpen: false, selectedAddIds: [], removeHumanId: '' };
+let knowledgeAgentLinkState = { docId: '', copied: false };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };

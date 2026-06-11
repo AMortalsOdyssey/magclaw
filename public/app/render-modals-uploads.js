@@ -11,6 +11,7 @@ function renderModal() {
     'member-manage': renderMemberManageModal,
     'member-action-confirm': renderMemberActionConfirmModal,
     'member-reset-link': renderMemberResetLinkModal,
+    'knowledge-agent-link': renderKnowledgeAgentLinkModal,
     'knowledge-whitelist-remove': renderKnowledgeWhitelistRemoveModal,
     'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,

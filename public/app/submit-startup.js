@@ -1,14 +1,6 @@
 async function tryCopyTextToClipboard(text) {
   const value = String(text || '');
   if (!value) return false;
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(value);
-      return true;
-    } catch {
-      // Fall through to the textarea copy path for browsers that block Clipboard API writes.
-    }
-  }
   const textarea = document.createElement('textarea');
   textarea.value = value;
   textarea.setAttribute('readonly', '');
@@ -20,12 +12,21 @@ async function tryCopyTextToClipboard(text) {
   textarea.select();
   textarea.setSelectionRange(0, value.length);
   try {
-    return Boolean(document.execCommand?.('copy'));
+    if (document.execCommand?.('copy')) return true;
   } catch {
-    return false;
+    // Fall through to the async Clipboard API path.
   } finally {
     textarea.remove();
   }
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function assertCloudPasswordPolicy(password) {

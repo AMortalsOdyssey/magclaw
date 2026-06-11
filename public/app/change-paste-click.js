@@ -1786,6 +1786,9 @@ document.addEventListener('click', async (event) => {
         if (modal === 'knowledge-whitelist-remove') {
           knowledgeSettingsState = { ...knowledgeSettingsState, removeHumanId: '' };
         }
+        if (modal === 'knowledge-agent-link') {
+          knowledgeAgentLinkState = { docId: '', copied: false };
+        }
         if (modal === 'computer') {
           await discardProvisionalPairingComputer(latestPairingCommand);
           latestPairingCommand = null;

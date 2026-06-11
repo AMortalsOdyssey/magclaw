@@ -71,7 +71,6 @@ function knowledgeScrollSnapshot() {
   if (activeView !== 'knowledge') return null;
   const docRail = document.querySelector('.knowledge-doc-rail');
   const reader = document.querySelector('.knowledge-reader');
-  const toolbox = document.querySelector('.knowledge-toolbox');
   const settings = document.querySelector('.knowledge-settings');
   const selected = knowledgeSelectedDoc();
   return {
@@ -79,7 +78,6 @@ function knowledgeScrollSnapshot() {
     selectedDocId: knowledgeSpaceState?.selectedDocId || selected?.id || knowledgeRoute?.docId || '',
     docRailTop: docRail?.scrollTop || 0,
     readerTop: reader?.scrollTop || 0,
-    toolboxTop: toolbox?.scrollTop || 0,
     settingsTop: settings?.scrollTop || 0,
   };
 }
@@ -88,13 +86,11 @@ function restoreKnowledgeScroll(snapshot) {
   if (!snapshot || activeView !== 'knowledge') return;
   const docRail = document.querySelector('.knowledge-doc-rail');
   const reader = document.querySelector('.knowledge-reader');
-  const toolbox = document.querySelector('.knowledge-toolbox');
   const settings = document.querySelector('.knowledge-settings');
   if (docRail) docRail.scrollTop = Number(snapshot.docRailTop || 0);
   const sameSelectedDocument = snapshot.selectedDocId === knowledgeSpaceState?.selectedDocId
     || snapshot.selectedDocId === knowledgeSelectedDoc()?.id;
   if (sameSelectedDocument && reader) reader.scrollTop = Number(snapshot.readerTop || 0);
-  if (snapshot.tab === knowledgeRouteTab() && toolbox) toolbox.scrollTop = Number(snapshot.toolboxTop || 0);
   if (snapshot.tab === knowledgeRouteTab() && settings) settings.scrollTop = Number(snapshot.settingsTop || 0);
 }
 
@@ -157,9 +153,6 @@ function renderKnowledgeHome() {
       <section class="knowledge-reader">
         ${selected ? renderKnowledgeDocument(selected.id) : renderKnowledgeEmptyState()}
       </section>
-      <aside class="knowledge-toolbox">
-        ${renderKnowledgeCodexHandoffPanel()}
-      </aside>
     </section>
   `;
 }
@@ -210,7 +203,10 @@ function renderKnowledgeDocument(docId) {
           <p>${escapeHtml(doc.level === 1 ? 'Root Consensus' : `Level ${doc.level}`)}</p>
           <h2>${escapeHtml(doc.title)}</h2>
         </div>
-        ${doc.sourceUrl ? `<a href="${escapeHtml(doc.sourceUrl)}" target="_blank" rel="noreferrer noopener">Source</a>` : ''}
+        <div class="knowledge-document-actions">
+          ${doc.sourceUrl ? `<a href="${escapeHtml(doc.sourceUrl)}" target="_blank" rel="noreferrer noopener">Source</a>` : ''}
+          <button type="button" data-action="knowledge-open-agent-link" data-doc-id="${escapeHtml(doc.id)}">Copy Link to Agent</button>
+        </div>
       </header>
       <div class="knowledge-html">${doc.renderedHtml || ''}</div>
       ${anchors.length ? `
@@ -220,7 +216,6 @@ function renderKnowledgeDocument(docId) {
         </section>
       ` : ''}
       ${renderKnowledgeBacklinks(doc.backlinks || [])}
-      ${renderKnowledgeDraftEditor(doc)}
     </article>
   `;
 }
@@ -245,18 +240,6 @@ function renderKnowledgeBacklinks(backlinks) {
   `;
 }
 
-function renderKnowledgeDraftEditor(doc) {
-  if (!knowledgeCanEdit()) return '';
-  return `
-    <details class="knowledge-draft-editor">
-      <summary>Create review draft</summary>
-      <input id="knowledge-draft-summary" placeholder="Change summary" value="Update ${escapeHtml(doc.title)}" />
-      <textarea id="knowledge-proposed-markdown">${escapeHtml(doc.sourceMarkdown || '')}</textarea>
-      <button type="button" data-action="knowledge-create-draft" data-doc-id="${escapeHtml(doc.id)}">Create Draft</button>
-    </details>
-  `;
-}
-
 function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
   const serverSlug = encodeURIComponent(String(
     (typeof currentServerSlug === 'function' && currentServerSlug())
@@ -269,34 +252,27 @@ function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
   return `${window.location.origin}${path}`;
 }
 
-function knowledgeCodexPrompt(doc = knowledgeSelectedDoc()) {
-  const title = doc?.title || knowledgeSpace()?.title || 'Knowledge Space';
-  const url = currentKnowledgeDocUrl(doc);
-  return [
-    `请读取这个 MagClaw Knowledge Space 页面：${url}`,
-    `目标章节：${title}`,
-    '请基于页面内容和当前讨论，帮我判断是否需要修改共识文档；如果我有编辑权限，请生成 review draft，再进入预览/发布流程。',
-  ].join('\n');
+function knowledgeAgentLinkDoc() {
+  const docId = knowledgeAgentLinkState.docId || knowledgeSelectedDoc()?.id || '';
+  return knowledgeDocs().find((doc) => doc.id === docId) || knowledgeSelectedDoc();
 }
 
-function renderKnowledgeCodexHandoffPanel() {
-  const doc = knowledgeSelectedDoc();
+function renderKnowledgeAgentLinkModal() {
+  const doc = knowledgeAgentLinkDoc();
   const url = currentKnowledgeDocUrl(doc);
+  const copied = Boolean(knowledgeAgentLinkState.copied);
   return `
-    <section class="knowledge-tool-panel knowledge-codex-handoff">
-      <h2>Discuss in Codex</h2>
-      <label>
-        <span>Current page</span>
-        <input id="knowledge-codex-link" value="${escapeHtml(url)}" readonly />
-      </label>
-      <div class="knowledge-tool-actions">
-        <button type="button" data-action="copy-knowledge-codex-link">Copy Link</button>
-        <button type="button" data-action="copy-knowledge-codex-prompt">Copy Agent Prompt</button>
+    ${modalHeader('复制给 Agent', 'Knowledge Space')}
+    <div class="knowledge-agent-link-modal">
+      <p>这个链接可以发给同一 Server 里的 Agent 读取。Agent 需要有登录状态，并且有访问这台 Server 的权限。</p>
+      <div class="knowledge-agent-link-value${copied ? ' copied' : ''}" aria-live="polite">
+        <span>${escapeHtml(url)}</span>
+        <button type="button" class="knowledge-agent-copy-button" data-action="knowledge-copy-agent-link" data-link="${escapeHtml(url)}">${copied ? '✓ Copied' : 'Copy'}</button>
       </div>
-      ${knowledgeCanEdit() && doc ? `
-        <button class="knowledge-review-shortcut" type="button" data-action="knowledge-focus-draft" data-doc-id="${escapeHtml(doc.id)}">Create Review Draft</button>
-      ` : ''}
-    </section>
+      <div class="modal-actions">
+        <button type="button" class="primary-btn" data-action="close-modal">Done</button>
+      </div>
+    </div>
   `;
 }
 
@@ -1047,14 +1023,6 @@ async function handleKnowledgeAction(action, target) {
     render();
     return true;
   }
-  if (action === 'knowledge-focus-draft') {
-    const draft = document.querySelector('.knowledge-draft-editor');
-    if (draft) {
-      draft.open = true;
-      draft.scrollIntoView({ block: 'nearest' });
-    }
-    return true;
-  }
   if (action === 'knowledge-toggle-add-members') {
     knowledgeSettingsState = {
       ...knowledgeSettingsState,
@@ -1122,14 +1090,17 @@ async function handleKnowledgeAction(action, target) {
     await loadKnowledgeSpace({ force: true });
     return true;
   }
-  if (action === 'knowledge-copy-link' || action === 'copy-knowledge-codex-link') {
-    const copied = await tryCopyTextToClipboard(currentKnowledgeDocUrl());
-    toast(copied ? 'Knowledge link copied' : 'Copy failed');
+  if (action === 'knowledge-open-agent-link') {
+    knowledgeAgentLinkState = { docId: target.dataset.docId || knowledgeSelectedDoc()?.id || '', copied: false };
+    modal = 'knowledge-agent-link';
+    render();
     return true;
   }
-  if (action === 'copy-knowledge-codex-prompt') {
-    const copied = await tryCopyTextToClipboard(knowledgeCodexPrompt());
-    toast(copied ? 'Agent prompt copied' : 'Copy failed');
+  if (action === 'knowledge-copy-agent-link') {
+    const copied = await tryCopyTextToClipboard(target.dataset.link || currentKnowledgeDocUrl(knowledgeAgentLinkDoc()));
+    knowledgeAgentLinkState = { ...knowledgeAgentLinkState, copied: true };
+    render();
+    if (!copied) console.warn('Knowledge agent link copy failed.');
     return true;
   }
   if (action === 'knowledge-create-draft') {

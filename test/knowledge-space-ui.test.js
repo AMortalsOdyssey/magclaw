@@ -82,10 +82,23 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(app, /knowledge-feishu-secret/);
   assert.match(app, /knowledgeFeishuPatchFromInputs/);
   assert.match(app, /\/api\/knowledge\/settings/);
-  assert.match(app, /copy-knowledge-codex-link/);
-  assert.match(app, /copy-knowledge-codex-prompt/);
+  assert.match(app, /Copy Link to Agent/);
+  assert.match(app, /knowledge-open-agent-link/);
+  assert.match(app, /knowledge-copy-agent-link/);
+  assert.match(app, /knowledge-agent-link-modal/);
+  assert.match(app, /knowledge-agent-copy-button/);
+  assert.match(app, /\? '✓ Copied' : 'Copy'/);
+  assert.match(app, /'knowledge-agent-link': renderKnowledgeAgentLinkModal/);
+  assert.doesNotMatch(app, /<aside class="knowledge-toolbox"/);
+  assert.doesNotMatch(app, />Discuss in Codex</);
+  assert.doesNotMatch(app, /Copy Agent Prompt/);
+  assert.doesNotMatch(app, /copy-knowledge-codex-prompt/);
   assert.doesNotMatch(app, />Ask Consensus</);
   assert.doesNotMatch(app, />Align Discussion</);
+  assert.doesNotMatch(app, /Create review draft/);
+  assert.doesNotMatch(app, />Create Draft</);
+  assert.doesNotMatch(app, /knowledge-draft-editor/);
+  assert.doesNotMatch(app, /knowledge-focus-draft/);
 
   assert.match(styles, /\.knowledge-log-event\.color-green/);
   assert.match(styles, /\.knowledge-log-event\.color-amber/);
@@ -94,6 +107,9 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(styles, /#knowledge-graph-canvas/);
   assert.match(styles, /\.knowledge-layout-frame/);
   assert.match(styles, /\.knowledge-add-member-row\.disabled/);
+  assert.match(styles, /\.knowledge-agent-link-value\.copied/);
+  assert.match(styles, /\.modal-card\.modal-knowledge-agent-link/);
+  assert.match(styles, /\.knowledge-agent-copy-button/);
 });
 
 test('Knowledge Space preserves inner scroll surfaces across full renders', async () => {
