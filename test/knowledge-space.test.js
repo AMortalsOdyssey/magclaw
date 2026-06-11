@@ -100,6 +100,10 @@ test('settings encrypt Feishu secret and expose only masked status', () => {
     now: () => '2026-06-10T10:05:00.000Z',
   });
   assert.equal(result.settings.feishu.appSecretConfigured, true);
+  assert.notEqual(result.settings.feishu.chatId, 'oc_test');
+  assert.match(result.settings.feishu.chatId, /^oc\*+t$/);
+  assert.notEqual(result.settings.feishu.appSecretMasked, secret);
+  assert.match(result.settings.feishu.appSecretMasked, /^fak\*+est$/);
   assert.equal('appSecretEncrypted' in result.settings.feishu, false);
   assert.match(appState.knowledgeSpace.spaces.ws_knowledge.settings.feishu.appSecretEncrypted, /^enc:v1:/);
 });

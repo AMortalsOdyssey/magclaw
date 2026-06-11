@@ -98,6 +98,7 @@ let externalImportContextState = { recordId: null };
 let teamSharingWorkspaceState = { messageId: null, sessionId: '', loading: false, error: '', data: null, selectedPath: 'abstract.md', mode: 'preview', expandedFolders: { topics: true } };
 let knowledgeRoute = initialRouteState.knowledgeRoute || { view: 'home', docId: '', changeSessionId: '' };
 let knowledgeSpaceState = { loading: false, error: '', data: null, selectedDocId: knowledgeRoute.docId || '', tab: knowledgeRoute.view || 'home', qaQuery: '', qaResult: null, alignText: '', alignResult: null };
+let knowledgeSettingsState = { addOpen: false, selectedAddIds: [], removeHumanId: '' };
 let modal = null;
 let agentStartState = { agentId: null };
 let agentRestartState = { agentId: null, mode: 'restart' };

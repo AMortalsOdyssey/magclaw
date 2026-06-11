@@ -67,6 +67,37 @@ function knowledgeRouteTab() {
   return view;
 }
 
+function knowledgeScrollSnapshot() {
+  if (activeView !== 'knowledge') return null;
+  const docRail = document.querySelector('.knowledge-doc-rail');
+  const reader = document.querySelector('.knowledge-reader');
+  const toolbox = document.querySelector('.knowledge-toolbox');
+  const settings = document.querySelector('.knowledge-settings');
+  const selected = knowledgeSelectedDoc();
+  return {
+    tab: knowledgeRouteTab(),
+    selectedDocId: knowledgeSpaceState?.selectedDocId || selected?.id || knowledgeRoute?.docId || '',
+    docRailTop: docRail?.scrollTop || 0,
+    readerTop: reader?.scrollTop || 0,
+    toolboxTop: toolbox?.scrollTop || 0,
+    settingsTop: settings?.scrollTop || 0,
+  };
+}
+
+function restoreKnowledgeScroll(snapshot) {
+  if (!snapshot || activeView !== 'knowledge') return;
+  const docRail = document.querySelector('.knowledge-doc-rail');
+  const reader = document.querySelector('.knowledge-reader');
+  const toolbox = document.querySelector('.knowledge-toolbox');
+  const settings = document.querySelector('.knowledge-settings');
+  if (docRail) docRail.scrollTop = Number(snapshot.docRailTop || 0);
+  const sameSelectedDocument = snapshot.selectedDocId === knowledgeSpaceState?.selectedDocId
+    || snapshot.selectedDocId === knowledgeSelectedDoc()?.id;
+  if (sameSelectedDocument && reader) reader.scrollTop = Number(snapshot.readerTop || 0);
+  if (snapshot.tab === knowledgeRouteTab() && toolbox) toolbox.scrollTop = Number(snapshot.toolboxTop || 0);
+  if (snapshot.tab === knowledgeRouteTab() && settings) settings.scrollTop = Number(snapshot.settingsTop || 0);
+}
+
 function renderKnowledgeMain() {
   ensureKnowledgeSpaceLoad();
   if (knowledgeSpaceState.loading && !knowledgeSpaceState.data) {
@@ -127,8 +158,7 @@ function renderKnowledgeHome() {
         ${selected ? renderKnowledgeDocument(selected.id) : renderKnowledgeEmptyState()}
       </section>
       <aside class="knowledge-toolbox">
-        ${renderKnowledgeQaPanel()}
-        ${renderKnowledgeAlignPanel()}
+        ${renderKnowledgeCodexHandoffPanel()}
       </aside>
     </section>
   `;
@@ -227,29 +257,45 @@ function renderKnowledgeDraftEditor(doc) {
   `;
 }
 
-function renderKnowledgeQaPanel() {
-  const result = knowledgeSpaceState.qaResult;
-  return `
-    <section class="knowledge-tool-panel">
-      <h2>Ask Consensus</h2>
-      <textarea id="knowledge-qa-query" placeholder="Ask about a team consensus">${escapeHtml(knowledgeSpaceState.qaQuery || '')}</textarea>
-      <button type="button" data-action="knowledge-ask">Ask</button>
-      ${result ? `
-        <div class="knowledge-answer">${escapeHtml(result.answer || '')}</div>
-        ${renderKnowledgeMatches(result.matches || [])}
-      ` : ''}
-    </section>
-  `;
+function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
+  const serverSlug = encodeURIComponent(String(
+    (typeof currentServerSlug === 'function' && currentServerSlug())
+    || (typeof serverSlugFromPath === 'function' && serverSlugFromPath())
+    || 'local',
+  ).trim() || 'local');
+  const path = doc?.id
+    ? `/s/${serverSlug}/knowledge/docs/${encodeURIComponent(doc.id)}`
+    : `/s/${serverSlug}/knowledge`;
+  return `${window.location.origin}${path}`;
 }
 
-function renderKnowledgeAlignPanel() {
-  const result = knowledgeSpaceState.alignResult;
+function knowledgeCodexPrompt(doc = knowledgeSelectedDoc()) {
+  const title = doc?.title || knowledgeSpace()?.title || 'Knowledge Space';
+  const url = currentKnowledgeDocUrl(doc);
+  return [
+    `请读取这个 MagClaw Knowledge Space 页面：${url}`,
+    `目标章节：${title}`,
+    '请基于页面内容和当前讨论，帮我判断是否需要修改共识文档；如果我有编辑权限，请生成 review draft，再进入预览/发布流程。',
+  ].join('\n');
+}
+
+function renderKnowledgeCodexHandoffPanel() {
+  const doc = knowledgeSelectedDoc();
+  const url = currentKnowledgeDocUrl(doc);
   return `
-    <section class="knowledge-tool-panel">
-      <h2>Align Discussion</h2>
-      <textarea id="knowledge-align-text" placeholder="Paste current discussion">${escapeHtml(knowledgeSpaceState.alignText || '')}</textarea>
-      <button type="button" data-action="knowledge-align">Align</button>
-      ${result ? renderKnowledgeMatches(result.rules || []) : ''}
+    <section class="knowledge-tool-panel knowledge-codex-handoff">
+      <h2>Discuss in Codex</h2>
+      <label>
+        <span>Current page</span>
+        <input id="knowledge-codex-link" value="${escapeHtml(url)}" readonly />
+      </label>
+      <div class="knowledge-tool-actions">
+        <button type="button" data-action="copy-knowledge-codex-link">Copy Link</button>
+        <button type="button" data-action="copy-knowledge-codex-prompt">Copy Agent Prompt</button>
+      </div>
+      ${knowledgeCanEdit() && doc ? `
+        <button class="knowledge-review-shortcut" type="button" data-action="knowledge-focus-draft" data-doc-id="${escapeHtml(doc.id)}">Create Review Draft</button>
+      ` : ''}
     </section>
   `;
 }
@@ -814,38 +860,170 @@ function renderKnowledgeReviewChange(change, status) {
   `;
 }
 
+const KNOWLEDGE_ROLE_RANK = { owner: 3, admin: 2, member: 1 };
+
+function knowledgeRoleRank(role) {
+  return KNOWLEDGE_ROLE_RANK[String(role || 'member').toLowerCase()] || 0;
+}
+
+function sortedKnowledgeMembers(members = []) {
+  return [...members].sort((a, b) => {
+    const roleDelta = knowledgeRoleRank(b.role) - knowledgeRoleRank(a.role);
+    if (roleDelta) return roleDelta;
+    return String(a.name || a.email || a.id).localeCompare(String(b.name || b.email || b.id));
+  });
+}
+
+function knowledgeMemberMap(members = []) {
+  return new Map((members || []).filter((member) => member?.id).map((member) => [member.id, member]));
+}
+
+function knowledgeMemberFallback(humanId) {
+  return { id: humanId, name: humanId, email: '', role: 'member' };
+}
+
+function renderKnowledgeRolePill(role) {
+  const safeRole = String(role || 'member').toLowerCase();
+  return `<small class="knowledge-role-pill role-${escapeHtml(safeRole)}">${escapeHtml(safeRole)}</small>`;
+}
+
+function renderKnowledgeWhitelistCard(members, whitelist) {
+  const byId = knowledgeMemberMap(members);
+  const selectedAddIds = new Set(knowledgeSettingsState.selectedAddIds || []);
+  const whitelistRows = [...whitelist]
+    .map((id) => byId.get(id) || knowledgeMemberFallback(id))
+    .sort((a, b) => {
+      const roleDelta = knowledgeRoleRank(b.role) - knowledgeRoleRank(a.role);
+      if (roleDelta) return roleDelta;
+      return String(a.name || a.email || a.id).localeCompare(String(b.name || b.email || b.id));
+    });
+  const candidateRows = sortedKnowledgeMembers(members);
+  const selectedCount = candidateRows.filter((member) => selectedAddIds.has(member.id) && !whitelist.has(member.id)).length;
+  return `
+    <div class="knowledge-settings-card knowledge-whitelist-card">
+      <header class="knowledge-card-head">
+        <h2>Publishing Whitelist</h2>
+        <button type="button" data-action="knowledge-toggle-add-members">${knowledgeSettingsState.addOpen ? 'Close' : 'Add'}</button>
+      </header>
+      <div class="knowledge-whitelist-list">
+        ${whitelistRows.map((member) => `
+          <div class="knowledge-whitelist-row">
+            <div class="knowledge-member-main">
+              <strong>${escapeHtml(member.name || member.id)}</strong>
+              ${member.email ? `<span>${escapeHtml(member.email)}</span>` : ''}
+            </div>
+            ${renderKnowledgeRolePill(member.role)}
+            <button type="button" class="knowledge-row-delete" data-action="knowledge-request-remove-whitelist-member" data-human-id="${escapeHtml(member.id)}">Delete</button>
+          </div>
+        `).join('') || '<div class="knowledge-empty small">No whitelist members yet.</div>'}
+      </div>
+      ${knowledgeSettingsState.addOpen ? `
+        <div class="knowledge-add-member-panel">
+          <div class="knowledge-add-member-list">
+            ${candidateRows.map((member) => {
+              const alreadyAdded = whitelist.has(member.id);
+              const selected = selectedAddIds.has(member.id) && !alreadyAdded;
+              return `
+                <label class="knowledge-add-member-row${alreadyAdded ? ' disabled' : ''}${selected ? ' selected' : ''}" data-action="knowledge-toggle-add-member" data-human-id="${escapeHtml(member.id)}">
+                  <input type="checkbox" value="${escapeHtml(member.id)}" ${alreadyAdded || selected ? 'checked' : ''} ${alreadyAdded ? 'disabled' : ''} tabindex="-1" />
+                  <span class="knowledge-add-check" aria-hidden="true">${alreadyAdded || selected ? '✓' : ''}</span>
+                  <span class="knowledge-member-main">
+                    <strong>${escapeHtml(member.name || member.id)}</strong>
+                    ${member.email ? `<span>${escapeHtml(member.email)}</span>` : ''}
+                  </span>
+                  ${renderKnowledgeRolePill(member.role)}
+                </label>
+              `;
+            }).join('') || '<div class="knowledge-empty small">No members found.</div>'}
+          </div>
+          <button class="knowledge-save-settings" type="button" data-action="knowledge-save-whitelist-additions" ${selectedCount ? '' : 'disabled'}>Save ${selectedCount ? `(${selectedCount})` : ''}</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderKnowledgeFeishuField(id, label, value, placeholder = '') {
+  const displayValue = String(value || '');
+  return `
+    <label class="knowledge-field">
+      <span>${escapeHtml(label)}</span>
+      <input id="${escapeHtml(id)}" value="${escapeHtml(displayValue)}" data-masked-value="${escapeHtml(displayValue)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off" spellcheck="false" />
+    </label>
+  `;
+}
+
+function renderKnowledgeFeishuSettings(settings) {
+  const feishu = settings.feishu || {};
+  const secretPlaceholder = feishu.appSecretMasked || (feishu.appSecretConfigured ? 'Secret configured' : 'App Secret');
+  return `
+    <div class="knowledge-settings-card knowledge-feishu-card">
+      <h2>Feishu Notification</h2>
+      ${renderKnowledgeFeishuField('knowledge-feishu-app-id', 'App ID', feishu.appId || '', 'App ID')}
+      ${renderKnowledgeFeishuField('knowledge-feishu-chat-id', 'Chat ID', feishu.chatId || '', 'Chat ID')}
+      <label class="knowledge-field">
+        <span>App Secret</span>
+        <input id="knowledge-feishu-secret" type="password" data-masked-value="${escapeHtml(feishu.appSecretMasked || '')}" placeholder="${escapeHtml(secretPlaceholder)}" autocomplete="new-password" />
+      </label>
+      <p>${feishu.appSecretConfigured ? `Secret configured ${escapeHtml(feishu.appSecretConfiguredAt || '')}` : 'No secret configured.'}</p>
+      <button class="knowledge-save-settings" type="button" data-action="knowledge-save-settings">Save Feishu Settings</button>
+    </div>
+  `;
+}
+
 function renderKnowledgeSettings() {
   const members = knowledgeSpaceState?.data?.members || [];
   const settings = knowledgeSpace()?.settings || {};
   const whitelist = new Set(settings.whitelistHumanIds || []);
   return `
     <section class="knowledge-settings">
-      <div class="knowledge-settings-card">
-        <h2>Publishing Whitelist</h2>
-        <div class="knowledge-member-list">
-          ${members.map((member) => `
-            <label>
-              <input type="checkbox" class="knowledge-whitelist-input" value="${escapeHtml(member.id)}" ${whitelist.has(member.id) ? 'checked' : ''} />
-              <span>${escapeHtml(member.name || member.id)}</span>
-              <small>${escapeHtml(member.role || '')}</small>
-            </label>
-          `).join('') || '<div class="knowledge-empty small">No members found.</div>'}
-        </div>
-      </div>
-      <div class="knowledge-settings-card">
-        <h2>Feishu Notification</h2>
-        <input id="knowledge-feishu-app-id" placeholder="App ID" value="${escapeHtml(settings.feishu?.appId || '')}" />
-        <input id="knowledge-feishu-chat-id" placeholder="Chat ID" value="${escapeHtml(settings.feishu?.chatId || '')}" />
-        <input id="knowledge-feishu-secret" type="password" placeholder="${settings.feishu?.appSecretConfigured ? 'Secret configured; leave blank to keep' : 'App Secret'}" />
-        <p>${settings.feishu?.appSecretConfigured ? `Secret configured ${escapeHtml(settings.feishu.appSecretConfiguredAt || '')}` : 'No secret configured.'}</p>
-      </div>
-      <button class="knowledge-save-settings" type="button" data-action="knowledge-save-settings">Save Settings</button>
+      ${renderKnowledgeWhitelistCard(members, whitelist)}
+      ${renderKnowledgeFeishuSettings(settings)}
     </section>
   `;
 }
 
+function knowledgeFeishuPatchFromInputs() {
+  const feishu = {};
+  const readChangedInput = (selector, key) => {
+    const input = document.querySelector(selector);
+    if (!input) return;
+    const value = String(input.value || '').trim();
+    const maskedValue = String(input.dataset.maskedValue || '').trim();
+    if (value && value !== maskedValue) feishu[key] = value;
+  };
+  readChangedInput('#knowledge-feishu-app-id', 'appId');
+  readChangedInput('#knowledge-feishu-chat-id', 'chatId');
+  readChangedInput('#knowledge-feishu-secret', 'appSecret');
+  return feishu;
+}
+
+function knowledgeSettingsMemberById(humanId) {
+  const members = knowledgeSpaceState?.data?.members || [];
+  return knowledgeMemberMap(members).get(humanId) || knowledgeMemberFallback(humanId);
+}
+
+function renderKnowledgeWhitelistRemoveModal() {
+  const humanId = knowledgeSettingsState.removeHumanId || '';
+  if (!humanId) return '';
+  const member = knowledgeSettingsMemberById(humanId);
+  return `
+    ${modalHeader('Remove Whitelist Member', 'Knowledge Space')}
+    <div class="knowledge-remove-confirm">
+      <strong>${escapeHtml(member.name || member.id)}</strong>
+      ${member.email ? `<span>${escapeHtml(member.email)}</span>` : ''}
+      <p>This member will no longer be able to publish Knowledge Space changes.</p>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="primary-btn danger-btn" data-action="knowledge-confirm-remove-whitelist" data-human-id="${escapeHtml(humanId)}">Delete</button>
+    </div>
+  `;
+}
+
 async function handleKnowledgeAction(action, target) {
-  if (!String(action || '').startsWith('knowledge-')) return false;
+  const knowledgeAction = String(action || '');
+  if (!knowledgeAction.startsWith('knowledge-') && !knowledgeAction.startsWith('copy-knowledge-')) return false;
   if (action === 'knowledge-tab') {
     const tab = target.dataset.tab || 'home';
     knowledgeRoute = { view: tab, docId: '', changeSessionId: '' };
@@ -869,6 +1047,59 @@ async function handleKnowledgeAction(action, target) {
     render();
     return true;
   }
+  if (action === 'knowledge-focus-draft') {
+    const draft = document.querySelector('.knowledge-draft-editor');
+    if (draft) {
+      draft.open = true;
+      draft.scrollIntoView({ block: 'nearest' });
+    }
+    return true;
+  }
+  if (action === 'knowledge-toggle-add-members') {
+    knowledgeSettingsState = {
+      ...knowledgeSettingsState,
+      addOpen: !knowledgeSettingsState.addOpen,
+      selectedAddIds: [],
+    };
+    render();
+    return true;
+  }
+  if (action === 'knowledge-toggle-add-member') {
+    const humanId = target.dataset.humanId || target.value || '';
+    const whitelist = new Set(knowledgeSpace()?.settings?.whitelistHumanIds || []);
+    if (!humanId || whitelist.has(humanId)) return true;
+    const selected = new Set(knowledgeSettingsState.selectedAddIds || []);
+    if (selected.has(humanId)) selected.delete(humanId);
+    else selected.add(humanId);
+    knowledgeSettingsState = { ...knowledgeSettingsState, selectedAddIds: [...selected].filter(Boolean) };
+    render();
+    return true;
+  }
+  if (action === 'knowledge-save-whitelist-additions') {
+    const whitelist = new Set(knowledgeSpace()?.settings?.whitelistHumanIds || []);
+    for (const humanId of knowledgeSettingsState.selectedAddIds || []) whitelist.add(humanId);
+    await api('/api/knowledge/settings', { method: 'PATCH', body: JSON.stringify({ whitelistHumanIds: [...whitelist] }) });
+    knowledgeSettingsState = { ...knowledgeSettingsState, addOpen: false, selectedAddIds: [] };
+    toast('Whitelist updated');
+    await loadKnowledgeSpace({ force: true });
+    return true;
+  }
+  if (action === 'knowledge-request-remove-whitelist-member') {
+    knowledgeSettingsState = { ...knowledgeSettingsState, removeHumanId: target.dataset.humanId || '' };
+    modal = 'knowledge-whitelist-remove';
+    render();
+    return true;
+  }
+  if (action === 'knowledge-confirm-remove-whitelist') {
+    const humanId = target.dataset.humanId || knowledgeSettingsState.removeHumanId || '';
+    const whitelistHumanIds = (knowledgeSpace()?.settings?.whitelistHumanIds || []).filter((id) => id !== humanId);
+    await api('/api/knowledge/settings', { method: 'PATCH', body: JSON.stringify({ whitelistHumanIds }) });
+    modal = null;
+    knowledgeSettingsState = { ...knowledgeSettingsState, removeHumanId: '', selectedAddIds: [] };
+    toast('Whitelist member removed');
+    await loadKnowledgeSpace({ force: true });
+    return true;
+  }
   if (action === 'knowledge-import') {
     const markdown = document.querySelector('#knowledge-import-markdown')?.value || '';
     const sourceName = document.querySelector('#knowledge-import-title')?.value || '';
@@ -881,31 +1112,24 @@ async function handleKnowledgeAction(action, target) {
     return true;
   }
   if (action === 'knowledge-save-settings') {
-    const whitelistHumanIds = [...document.querySelectorAll('.knowledge-whitelist-input:checked')].map((input) => input.value);
-    const feishu = {
-      appId: document.querySelector('#knowledge-feishu-app-id')?.value || '',
-      chatId: document.querySelector('#knowledge-feishu-chat-id')?.value || '',
-      appSecret: document.querySelector('#knowledge-feishu-secret')?.value || '',
-    };
-    await api('/api/knowledge/settings', { method: 'PATCH', body: JSON.stringify({ whitelistHumanIds, feishu }) });
-    toast('Knowledge settings saved');
+    const feishu = knowledgeFeishuPatchFromInputs();
+    if (!Object.keys(feishu).length) {
+      toast('No Feishu changes');
+      return true;
+    }
+    await api('/api/knowledge/settings', { method: 'PATCH', body: JSON.stringify({ feishu }) });
+    toast('Feishu settings saved');
     await loadKnowledgeSpace({ force: true });
     return true;
   }
-  if (action === 'knowledge-ask') {
-    const query = document.querySelector('#knowledge-qa-query')?.value || '';
-    knowledgeSpaceState = { ...knowledgeSpaceState, qaQuery: query };
-    const result = await api('/api/knowledge/ask', { method: 'POST', body: JSON.stringify({ query }) });
-    knowledgeSpaceState = { ...knowledgeSpaceState, qaResult: result };
-    render();
+  if (action === 'knowledge-copy-link' || action === 'copy-knowledge-codex-link') {
+    const copied = await tryCopyTextToClipboard(currentKnowledgeDocUrl());
+    toast(copied ? 'Knowledge link copied' : 'Copy failed');
     return true;
   }
-  if (action === 'knowledge-align') {
-    const text = document.querySelector('#knowledge-align-text')?.value || '';
-    knowledgeSpaceState = { ...knowledgeSpaceState, alignText: text };
-    const result = await api('/api/knowledge/align', { method: 'POST', body: JSON.stringify({ text }) });
-    knowledgeSpaceState = { ...knowledgeSpaceState, alignResult: result };
-    render();
+  if (action === 'copy-knowledge-codex-prompt') {
+    const copied = await tryCopyTextToClipboard(knowledgeCodexPrompt());
+    toast(copied ? 'Agent prompt copied' : 'Copy failed');
     return true;
   }
   if (action === 'knowledge-create-draft') {

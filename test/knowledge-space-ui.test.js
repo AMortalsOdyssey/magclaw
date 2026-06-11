@@ -72,15 +72,41 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(app, /Affects \$\{titles\.length\} document/);
   assert.match(app, /retry-notification/);
   assert.match(app, /Published links are immutable read-only history/);
-  assert.match(app, /knowledge-whitelist-input/);
+  assert.match(app, /knowledge-toggle-add-members/);
+  assert.match(app, /knowledge-add-member-row/);
+  assert.match(app, /class="knowledge-add-member-row[\s\S]*data-action="knowledge-toggle-add-member"/);
+  assert.match(app, /knowledge-save-whitelist-additions/);
+  assert.match(app, /knowledge-request-remove-whitelist-member/);
+  assert.match(app, /knowledge-confirm-remove-whitelist/);
+  assert.doesNotMatch(app, /class="knowledge-whitelist-input"/);
   assert.match(app, /knowledge-feishu-secret/);
+  assert.match(app, /knowledgeFeishuPatchFromInputs/);
   assert.match(app, /\/api\/knowledge\/settings/);
-  assert.match(app, /\/api\/knowledge\/ask/);
-  assert.match(app, /\/api\/knowledge\/align/);
+  assert.match(app, /copy-knowledge-codex-link/);
+  assert.match(app, /copy-knowledge-codex-prompt/);
+  assert.doesNotMatch(app, />Ask Consensus</);
+  assert.doesNotMatch(app, />Align Discussion</);
 
   assert.match(styles, /\.knowledge-log-event\.color-green/);
   assert.match(styles, /\.knowledge-log-event\.color-amber/);
   assert.match(styles, /\.knowledge-log-event\.color-red/);
   assert.match(styles, /margin-left: calc\(var\(--indent\) \* 22px\)/);
   assert.match(styles, /#knowledge-graph-canvas/);
+  assert.match(styles, /\.knowledge-layout-frame/);
+  assert.match(styles, /\.knowledge-add-member-row\.disabled/);
+});
+
+test('Knowledge Space preserves inner scroll surfaces across full renders', async () => {
+  const app = await readAppSource();
+  const renderSource = app.slice(app.indexOf('function render()'), app.indexOf('function renderRail()'));
+  const stateUpdateSource = app.slice(app.indexOf('function applyStateUpdate'), app.indexOf('function applyRunEventUpdate'));
+
+  assert.match(app, /function knowledgeScrollSnapshot/);
+  assert.match(app, /function restoreKnowledgeScroll/);
+  assert.match(app, /querySelector\('\.knowledge-doc-rail'\)/);
+  assert.match(app, /querySelector\('\.knowledge-reader'\)/);
+  assert.match(app, /snapshot\.selectedDocId === knowledgeSpaceState\?\.selectedDocId/);
+  assert.match(renderSource, /knowledge: typeof knowledgeScrollSnapshot === 'function' \? knowledgeScrollSnapshot\(\) : null/);
+  assert.match(renderSource, /restoreKnowledgeScroll\(scrollSnapshot\.knowledge\)/);
+  assert.match(stateUpdateSource, /knowledge: typeof knowledgeScrollSnapshot === 'function' \? knowledgeScrollSnapshot\(\) : null/);
 });

@@ -322,11 +322,33 @@ export function isKnowledgeWhitelisted(space, actor) {
   return normalizeSpace(space).settings.whitelistHumanIds.includes(humanId);
 }
 
-function maskFeishuSettings(feishu = {}) {
+function maskKnowledgeSettingValue(value) {
+  const text = cleanString(value);
+  if (!text) return '';
+  if (text.length <= 4) return `${text.slice(0, 1)}${'*'.repeat(Math.max(2, text.length - 1))}`;
+  const prefixLength = Math.min(3, Math.max(2, Math.floor(text.length * 0.22)));
+  const suffixLength = Math.min(3, Math.max(1, Math.floor(text.length * 0.18)));
+  if (prefixLength + suffixLength >= text.length) {
+    return `${text.slice(0, 2)}${'*'.repeat(Math.max(2, text.length - 3))}${text.slice(-1)}`;
+  }
+  return `${text.slice(0, prefixLength)}${'*'.repeat(Math.max(4, text.length - prefixLength - suffixLength))}${text.slice(-suffixLength)}`;
+}
+
+function maskKnowledgeEncryptedSecret(value, env = process.env) {
+  if (!value) return '';
+  try {
+    return maskKnowledgeSettingValue(decryptKnowledgeSecret(value, env));
+  } catch {
+    return 'configured';
+  }
+}
+
+function maskFeishuSettings(feishu = {}, env = process.env) {
   return {
-    appId: feishu.appId || '',
-    chatId: feishu.chatId || '',
+    appId: maskKnowledgeSettingValue(feishu.appId),
+    chatId: maskKnowledgeSettingValue(feishu.chatId),
     appSecretConfigured: Boolean(feishu.appSecretEncrypted),
+    appSecretMasked: feishu.appSecretEncrypted ? maskKnowledgeEncryptedSecret(feishu.appSecretEncrypted, env) : '',
     appSecretConfiguredAt: feishu.appSecretConfiguredAt || '',
     updatedAt: feishu.updatedAt || '',
   };
@@ -338,7 +360,7 @@ function publicChangeSession(session) {
   return copy;
 }
 
-export function publicKnowledgeSpace(space, actor = null) {
+export function publicKnowledgeSpace(space, actor = null, options = {}) {
   const normalized = normalizeSpace(space);
   return {
     id: normalized.id,
@@ -352,7 +374,7 @@ export function publicKnowledgeSpace(space, actor = null) {
     },
     settings: {
       whitelistHumanIds: normalized.settings.whitelistHumanIds,
-      feishu: maskFeishuSettings(normalized.settings.feishu),
+      feishu: maskFeishuSettings(normalized.settings.feishu, options.env || process.env),
     },
     documents: normalized.documents.map((doc) => ({
       id: doc.id,
@@ -1023,7 +1045,7 @@ export function updateKnowledgeSettings({ state, workspaceId, patch = {}, actor 
     feishu.updatedAt = timestamp;
   }
   space.updatedAt = timestamp;
-  return { space, settings: publicKnowledgeSpace(space, actor).settings };
+  return { space, settings: publicKnowledgeSpace(space, actor, { env }).settings };
 }
 
 async function postFeishuCard({ feishu, card, fetchImpl = globalThis.fetch, env = process.env }) {

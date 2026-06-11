@@ -40,10 +40,12 @@
 }
 
 .knowledge-tabs button,
+.knowledge-card-head button,
 .knowledge-review-actions button,
 .knowledge-tool-panel button,
 .knowledge-import-panel button,
 .knowledge-save-settings,
+.knowledge-row-delete,
 .knowledge-draft-editor button {
   border: 1px solid #cdd7e1;
   background: #fff;
@@ -56,10 +58,12 @@
 }
 
 .knowledge-tabs button.active,
+.knowledge-card-head button:hover,
 .knowledge-review-actions button:hover,
 .knowledge-tool-panel button:hover,
 .knowledge-import-panel button:hover,
 .knowledge-save-settings:hover,
+.knowledge-row-delete:hover,
 .knowledge-draft-editor button:hover {
   border-color: #2d89bd;
   background: #e7f4fb;
@@ -225,7 +229,33 @@
   gap: 9px;
 }
 
+.knowledge-tool-panel label {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-tool-panel label span,
+.knowledge-field span {
+  color: #536779;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.knowledge-tool-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.knowledge-review-shortcut {
+  display: block;
+  color: #236d9b;
+  text-decoration: none;
+  font-weight: 700;
+}
+
 .knowledge-tool-panel textarea,
+.knowledge-tool-panel input,
 .knowledge-draft-editor textarea,
 .knowledge-import-panel textarea,
 .knowledge-settings input,
@@ -442,21 +472,160 @@
   margin-top: 0;
 }
 
-.knowledge-member-list {
+.knowledge-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.knowledge-card-head h2 {
+  margin: 0;
+}
+
+.knowledge-whitelist-list,
+.knowledge-add-member-list {
   display: grid;
   gap: 7px;
 }
 
-.knowledge-member-list label {
+.knowledge-whitelist-row,
+.knowledge-add-member-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 0;
+  border-top: 1px solid #edf1f5;
+}
+
+.knowledge-whitelist-row:first-child,
+.knowledge-add-member-row:first-child {
+  border-top: 0;
+}
+
+.knowledge-member-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.knowledge-member-main strong,
+.knowledge-member-main span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge-member-main span {
+  color: #667789;
+  font-size: 12px;
+}
+
+.knowledge-role-pill {
+  padding: 2px 7px;
+  border: 1px solid #d6e0e8;
+  border-radius: 999px;
+  background: #f5f8fb;
+  color: #536779;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.knowledge-role-pill.role-owner {
+  border-color: #9fd0ea;
+  background: #e7f4fb;
+  color: #1f5878;
+}
+
+.knowledge-role-pill.role-admin {
+  border-color: #d7c896;
+  background: #fff8df;
+  color: #705910;
+}
+
+.knowledge-row-delete {
+  min-height: 30px;
+  color: #8b1f2d;
+}
+
+.knowledge-add-member-panel {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #dce3ea;
+}
+
+.knowledge-add-member-row {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  cursor: pointer;
+}
+
+.knowledge-add-member-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.knowledge-add-member-row.disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
+.knowledge-add-member-row.selected .knowledge-add-check,
+.knowledge-add-member-row.disabled .knowledge-add-check {
+  border-color: #2d89bd;
+  background: #e7f4fb;
+  color: #1f5878;
+}
+
+.knowledge-add-check {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 1px solid #cdd7e1;
+  border-radius: 5px;
+  color: transparent;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.knowledge-field {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-feishu-card p {
+  margin: 0;
+  color: #667789;
+  font-size: 12px;
+}
+
+.knowledge-save-settings:disabled {
+  cursor: default;
+  opacity: 0.52;
 }
 
 .knowledge-save-settings {
-  grid-column: 1 / -1;
   width: fit-content;
+}
+
+.knowledge-remove-confirm {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-remove-confirm strong {
+  font-size: 16px;
+}
+
+.knowledge-remove-confirm span,
+.knowledge-remove-confirm p {
+  margin: 0;
+  color: #667789;
 }
 
 .knowledge-empty-state,

@@ -111,6 +111,18 @@
   grid-template-columns: 60px minmax(0, 1fr);
 }
 
+.collab-frame.knowledge-layout-frame {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 40vw));
+}
+
+.collab-frame.knowledge-layout-frame.thread-open {
+  grid-template-columns: 60px minmax(0, 1fr) 4px minmax(260px, min(var(--inspector-width, 340px), 60vw));
+}
+
+.collab-frame.knowledge-layout-frame.no-inspector {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
 .task-thread-modal-backdrop {
   z-index: 260;
   padding: 20px;

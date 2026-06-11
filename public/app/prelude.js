@@ -153,7 +153,7 @@ function readStoredUiState() {
   const rawView = String(parsed.activeView || '');
   const validView = rawView === 'system-notifications'
     ? 'inbox'
-    : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers', 'console'].includes(rawView)
+    : ['space', 'members', 'tasks', 'inbox', 'threads', 'saved', 'search', 'missions', 'cloud', 'computers', 'console', 'knowledge'].includes(rawView)
       ? rawView
     : 'space';
   const validTab = ['chat', 'tasks', 'files'].includes(parsed.activeTab) ? parsed.activeTab : 'chat';

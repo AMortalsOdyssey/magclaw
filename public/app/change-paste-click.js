@@ -528,6 +528,7 @@ document.addEventListener('click', async (event) => {
   let skipFinalRefresh = false;
   try {
     if (typeof handleKnowledgeAction === 'function' && await handleKnowledgeAction(action, target)) {
+      skipFinalRefresh = true;
       return;
     }
     if (action === 'copy-feishu-import-path' || action === 'copy-team-sharing-setup-command') {
@@ -1781,6 +1782,9 @@ document.addEventListener('click', async (event) => {
         }
         if (modal === 'member-reset-link') {
           memberResetLinkState = { email: '', link: '' };
+        }
+        if (modal === 'knowledge-whitelist-remove') {
+          knowledgeSettingsState = { ...knowledgeSettingsState, removeHumanId: '' };
         }
         if (modal === 'computer') {
           await discardProvisionalPairingComputer(latestPairingCommand);

@@ -2774,7 +2774,7 @@ test('search page matches Slock shortcuts filters persistence and master detail 
   assert.match(app, /let searchInputFocusRequested = false/);
   assert.match(renderSource, /const searchLayout = activeView === 'search'/);
   assert.match(renderSource, /\$\{searchLayout \? ' search-layout-frame' : ''\}/);
-  assert.match(renderSource, /\$\{taskFocusLayout \|\| searchLayout \? '' : '<div class="rail-resizer"/);
+  assert.match(renderSource, /\$\{taskFocusLayout \|\| searchLayout \|\| knowledgeFrameLayout \? '' : '<div class="rail-resizer"/);
   assert.match(renderSource, /if \(searchInputFocusRequested && activeView === 'search'\) focusSearchInputEnd\(\)/);
   assert.match(setViewSource, /if \(activeView === 'search'\) focusSearchInputEnd\(\)/);
   assert.match(app, /data-action="toggle-search-sender-menu"/);

@@ -1988,6 +1988,7 @@ function applyStateUpdate(nextState) {
     main: paneScrollSnapshot('main'),
     thread: paneScrollSnapshot('thread'),
     page: pageScrollSnapshot(),
+    knowledge: typeof knowledgeScrollSnapshot === 'function' ? knowledgeScrollSnapshot() : null,
   };
   const selectionBefore = `${selectedSpaceType}:${selectedSpaceId}`;
   const unreadBefore = railUnreadSignature();
@@ -2114,6 +2115,13 @@ function applyStateUpdate(nextState) {
   if (patchActiveTaskSurface(scrollSnapshot, { visibleChanged: activeTaskSurfaceChanged, threadVisibleChanged: activeConversationChanged })) return;
   if (patchActiveThreadSurface(scrollSnapshot, { visibleChanged: activeConversationChanged })) return;
   if (patchActiveConversationSurface(scrollSnapshot, { allowInspector: activeConversationChanged || unreadChanged })) return;
+  if (activeView === 'knowledge') {
+    if (railNeedsPatch) patchRailSurface();
+    window.requestAnimationFrame(() => {
+      if (typeof restoreKnowledgeScroll === 'function') restoreKnowledgeScroll(scrollSnapshot.knowledge);
+    });
+    return;
+  }
   if (railNeedsPatch) patchRailSurface();
   render();
 }

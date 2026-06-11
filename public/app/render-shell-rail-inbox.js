@@ -158,6 +158,7 @@ function render() {
     page: pageScrollSnapshot(),
     workspaceActivity: workspaceActivityScrollSnapshot(),
     rail: railScrollSnapshot(),
+    knowledge: typeof knowledgeScrollSnapshot === 'function' ? knowledgeScrollSnapshot() : null,
   };
   ensureSelection();
   persistUiState();
@@ -195,6 +196,7 @@ function render() {
       restorePageScroll(scrollSnapshot.page);
       restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
       restoreRailScroll(scrollSnapshot.rail);
+      if (typeof restoreKnowledgeScroll === 'function') restoreKnowledgeScroll(scrollSnapshot.knowledge);
       restoreProfileFormFocus(profileFocus);
       restoreAgentDetailFieldFocus(agentDetailFocus);
       restoreComputerNameFieldFocus(computerNameFocus);
@@ -213,14 +215,15 @@ function render() {
   }
   const taskFocusLayout = activeView === 'tasks';
   const searchLayout = activeView === 'search';
+  const knowledgeFrameLayout = activeView === 'knowledge';
   const settingsLayout = activeView === 'cloud' || activeView === 'console';
   const consoleLayout = activeView === 'console';
   root.innerHTML = `
     ${notificationBanner}
     ${appFlashBanner}
-    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadLayoutOpen ? ' tablet-inspector-main thread-open' : ''}${taskFocusLayout ? ' task-focus' : ''}${searchLayout ? ' search-layout-frame' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${knowledgeGraphLayout ? ' knowledge-graph-layout' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
+    <div class="app-frame collab-frame${inspectorHtml ? '' : ' no-inspector'}${threadLayoutOpen ? ' tablet-inspector-main thread-open' : ''}${taskFocusLayout ? ' task-focus' : ''}${searchLayout ? ' search-layout-frame' : ''}${knowledgeFrameLayout ? ' knowledge-layout-frame' : ''}${settingsLayout ? ' settings-layout-frame' : ''}${consoleLayout ? ' console-layout-frame' : ''}${knowledgeGraphLayout ? ' knowledge-graph-layout' : ''}${notificationBanner ? ' notification-banner-active' : ''}" style="${appFrameStyle()}">
       ${renderRail()}
-      ${taskFocusLayout || searchLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
+      ${taskFocusLayout || searchLayout || knowledgeFrameLayout ? '' : '<div class="rail-resizer" data-action="none" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" tabindex="0"></div>'}
       <main class="workspace collab-main">
         ${renderMain()}
         ${renderClickLoadingSurface('main')}
@@ -256,6 +259,7 @@ function render() {
     restorePageScroll(scrollSnapshot.page);
     restoreWorkspaceActivityScroll(scrollSnapshot.workspaceActivity);
     restoreRailScroll(scrollSnapshot.rail);
+    if (typeof restoreKnowledgeScroll === 'function') restoreKnowledgeScroll(scrollSnapshot.knowledge);
     restoreProfileFormFocus(profileFocus);
     restoreAgentDetailFieldFocus(agentDetailFocus);
     restoreComputerNameFieldFocus(computerNameFocus);
