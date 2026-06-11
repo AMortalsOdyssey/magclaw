@@ -525,6 +525,9 @@
 }
 
 .knowledge-role-pill {
+  justify-self: end;
+  width: fit-content;
+  white-space: nowrap;
   padding: 2px 7px;
   border: 1px solid #d6e0e8;
   border-radius: 999px;
@@ -559,7 +562,7 @@
 }
 
 .knowledge-add-member-row {
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   cursor: pointer;
 }
 
