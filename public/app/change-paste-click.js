@@ -527,7 +527,7 @@ document.addEventListener('click', async (event) => {
   const clickLoadingToken = beginClickLoading(action, target, localOnlyActions);
   let skipFinalRefresh = false;
   try {
-    if (typeof handleKnowledgeAction === 'function' && await handleKnowledgeAction(action, target)) {
+    if (typeof handleKnowledgeAction === 'function' && await handleKnowledgeAction(action, target, event)) {
       skipFinalRefresh = true;
       return;
     }

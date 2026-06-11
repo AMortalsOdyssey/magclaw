@@ -102,6 +102,10 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(app, /knowledge-copy-agent-link/);
   assert.match(app, /knowledge-agent-link-modal/);
   assert.match(app, /knowledge-agent-copy-button/);
+  assert.match(app, /function renderKnowledgeChildDocumentLinks/);
+  assert.match(app, /knowledge-child-doc-links/);
+  assert.match(app, /function currentKnowledgeDocPath/);
+  assert.match(app, /event\?\.preventDefault\?\.\(\)/);
   assert.match(app, /\? '✓ Copied' : 'Copy'/);
   assert.match(app, /'knowledge-agent-link': renderKnowledgeAgentLinkModal/);
   assert.doesNotMatch(app, /<aside class="knowledge-toolbox"/);
@@ -138,6 +142,10 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(styles, /\.knowledge-agent-link-value\.copied/);
   assert.match(styles, /\.modal-card\.modal-knowledge-agent-link/);
   assert.match(styles, /\.knowledge-agent-copy-button/);
+  assert.match(styles, /font-size: 16px/);
+  assert.match(styles, /line-height: 1\.86/);
+  assert.match(styles, /word-spacing: 0\.04em/);
+  assert.match(styles, /\.knowledge-child-doc-links a/);
   assert.doesNotMatch(styles, /knowledge-import-panel/);
   assert.doesNotMatch(styles, /knowledge-anchors/);
   assert.doesNotMatch(styles, /knowledge-backlinks/);

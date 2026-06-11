@@ -240,8 +240,34 @@ function stripLeadingMarkdownHeading(markdown = '', level = 1) {
   return normalized.replace(new RegExp(`^#{${cleanLevel}}\\s+.+(?:\\n+|$)`), '').trim();
 }
 
+function stripGeneratedRootDocumentLinks(markdown = '') {
+  return String(markdown || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .filter((line) => !/^\s*[-*]\s+\[[^\]]+\]\(#[^)]+\)\s*$/.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function documentDisplayMarkdown(doc = {}) {
-  return stripLeadingMarkdownHeading(doc.sourceMarkdown || '', doc.level || 1);
+  const markdown = stripLeadingMarkdownHeading(doc.sourceMarkdown || '', doc.level || 1);
+  return Number(doc.level || 1) <= 1 ? stripGeneratedRootDocumentLinks(markdown) : markdown;
+}
+
+function publicKnowledgeDocumentRow(doc = {}) {
+  const displayMarkdown = documentDisplayMarkdown(doc);
+  return {
+    id: doc.id,
+    parentId: doc.parentId || '',
+    title: decodeMarkdownEscapes(doc.title || ''),
+    level: doc.level || 1,
+    summary: displayMarkdown ? summarizeMarkdown(displayMarkdown) : decodeMarkdownEscapes(doc.summary || ''),
+    currentVersionId: doc.currentVersionId || '',
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+    sourceUrl: doc.sourceUrl || '',
+  };
 }
 
 function actorHumanId(actor) {
@@ -408,27 +434,14 @@ export function publicKnowledgeSpace(space, actor = null, options = {}) {
       whitelistHumanIds: normalized.settings.whitelistHumanIds,
       feishu: maskFeishuSettings(normalized.settings.feishu, options.env || process.env),
     },
-    documents: normalized.documents.map((doc) => {
-      const displayMarkdown = documentDisplayMarkdown(doc);
-      return {
-        id: doc.id,
-        parentId: doc.parentId || '',
-        title: doc.title,
-        level: doc.level || 1,
-        summary: displayMarkdown ? summarizeMarkdown(displayMarkdown) : doc.summary || '',
-        currentVersionId: doc.currentVersionId || '',
-        createdAt: doc.createdAt,
-        updatedAt: doc.updatedAt,
-        sourceUrl: doc.sourceUrl || '',
-      };
-    }),
+    documents: normalized.documents.map(publicKnowledgeDocumentRow),
     anchors: normalized.anchors.map((anchor) => ({
       id: anchor.id,
       docId: anchor.docId,
-      title: anchor.title,
+      title: decodeMarkdownEscapes(anchor.title || ''),
       level: anchor.level || 3,
       anchor: anchor.anchor,
-      summary: anchor.summary || '',
+      summary: decodeMarkdownEscapes(anchor.summary || ''),
       updatedAt: anchor.updatedAt,
       sourceUrl: anchor.sourceUrl || '',
     })),
@@ -577,10 +590,7 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
   const parsed = splitMarkdownByHeadings(markdown);
   const rootTitle = sourceName || parsed.rootTitle;
   const rootId = stableId('doc', workspaceId, rootTitle, 'root');
-  const rootBody = [
-    parsed.rootMarkdown.replace(/^#\s+.+$/m, '').trim(),
-    parsed.sections.map((section) => `- [${section.title}](#${slugify(section.title)})`).join('\n'),
-  ].filter(Boolean).join('\n\n');
+  const rootBody = parsed.rootMarkdown.replace(/^#\s+.+$/m, '').trim();
 
   const importedDocIds = new Set();
   const importedAnchorIds = new Set();
@@ -702,7 +712,29 @@ export function getKnowledgeDocument(space, docId) {
       sourceTitle: space.documents.find((item) => item.id === link.fromDocId)?.title || '',
     }));
   const anchors = space.anchors.filter((anchor) => anchor.docId === doc.id);
-  return { ...cloneJson(doc), renderedHtml: rendered.html, anchors, backlinks };
+  const hierarchyOrder = new Map(safeArray(space.links)
+    .filter((link) => link.fromDocId === doc.id && link.kind === 'hierarchy' && link.toDocId)
+    .map((link, index) => [link.toDocId, index]));
+  const childDocuments = space.documents
+    .filter((item) => item.parentId === doc.id)
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => (
+      (hierarchyOrder.get(left.item.id) ?? left.index) - (hierarchyOrder.get(right.item.id) ?? right.index)
+    ))
+    .map(({ item }) => publicKnowledgeDocumentRow(item));
+  return {
+    ...cloneJson(doc),
+    title: decodeMarkdownEscapes(doc.title || ''),
+    summary: decodeMarkdownEscapes(doc.summary || ''),
+    renderedHtml: rendered.html,
+    anchors: anchors.map((anchor) => ({
+      ...cloneJson(anchor),
+      title: decodeMarkdownEscapes(anchor.title || ''),
+      summary: decodeMarkdownEscapes(anchor.summary || ''),
+    })),
+    backlinks,
+    childDocuments,
+  };
 }
 
 function nodeDegree(edges, nodeId) {

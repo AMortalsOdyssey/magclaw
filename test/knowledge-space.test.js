@@ -77,6 +77,11 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   assert.doesNotMatch(memoryDoc.sourceMarkdown, /^##\s+Memory Module/m);
   assert.doesNotMatch(memoryDoc.renderedHtml, /<h2[^>]*>Memory Module<\/h2>/);
   assert.ok(memoryDoc.renderedHtml.includes(`id="${recallAnchor.anchor}"`));
+  const rootDoc = result.space.documents.find((doc) => doc.level === 1);
+  const displayedRoot = getKnowledgeDocument(result.space, rootDoc.id);
+  assert.equal(displayedRoot.childDocuments.length, 2);
+  assert.deepEqual(displayedRoot.childDocuments.map((doc) => doc.title), ['Memory Module', 'Publishing Flow']);
+  assert.doesNotMatch(displayedRoot.renderedHtml, /\[Memory Module\]\(#memory-module\)/);
 
   const answer = askKnowledgeConsensus(result.space, 'original consensus anchor');
   assert.match(answer.answer, /Matched/);
@@ -112,6 +117,9 @@ test('Knowledge Markdown display hides source escapes and duplicate document tit
   const displayed = getKnowledgeDocument(imported.space, doc.id);
   assert.doesNotMatch(displayed.renderedHtml, /<h2/);
   assert.match(displayed.renderedHtml, /底盘 \+ 心情/);
+
+  doc.title = '世界创建 \\+ 导演派生';
+  assert.equal(getKnowledgeDocument(imported.space, doc.id).title, '世界创建 + 导演派生');
 });
 
 test('settings encrypt Feishu secret and expose only masked status', () => {

@@ -109,10 +109,12 @@
   border: 1px solid transparent;
   background: transparent;
   border-radius: 6px;
-  padding: 9px 10px;
+  padding: 10px 11px;
   cursor: pointer;
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  line-height: 1.42;
+  letter-spacing: 0;
 }
 
 .knowledge-doc-row.level-2 {
@@ -121,10 +123,13 @@
 
 .knowledge-doc-row span {
   font-weight: 650;
+  font-size: 14px;
 }
 
 .knowledge-doc-row small {
   color: #738393;
+  font-size: 12px;
+  line-height: 1.36;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -171,26 +176,72 @@
   background: #fff;
   border: 1px solid #dce3ea;
   border-radius: 8px;
-  padding: 22px 26px;
-  line-height: 1.74;
+  padding: 26px 30px 28px;
+  color: #1d2a36;
+  font-size: 16px;
+  line-height: 1.86;
+  letter-spacing: 0;
+  word-spacing: 0.04em;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+.knowledge-html > :first-child {
+  margin-top: 0;
+}
+
+.knowledge-html > :last-child {
+  margin-bottom: 0;
 }
 
 .knowledge-html h1,
 .knowledge-html h2,
-.knowledge-html h3 {
+.knowledge-html h3,
+.knowledge-html h4,
+.knowledge-html h5,
+.knowledge-html h6 {
+  margin: 28px 0 12px;
+  color: #17212b;
+  line-height: 1.34;
   letter-spacing: 0;
 }
 
 .knowledge-html h1 {
-  font-size: 24px;
+  font-size: 26px;
 }
 
 .knowledge-html h2 {
-  font-size: 20px;
+  font-size: 22px;
 }
 
 .knowledge-html h3 {
-  font-size: 17px;
+  font-size: 18px;
+}
+
+.knowledge-html p,
+.knowledge-html ul,
+.knowledge-html ol,
+.knowledge-html pre,
+.knowledge-child-doc-links {
+  margin: 0 0 16px;
+}
+
+.knowledge-html ul,
+.knowledge-html ol {
+  padding-left: 1.45em;
+}
+
+.knowledge-html li {
+  margin: 7px 0;
+  padding-left: 2px;
+}
+
+.knowledge-html li::marker {
+  color: #667789;
+}
+
+.knowledge-html strong {
+  font-weight: 720;
 }
 
 .knowledge-html pre {
@@ -198,6 +249,39 @@
   padding: 12px;
   background: #f3f6f9;
   border-radius: 6px;
+  line-height: 1.58;
+}
+
+.knowledge-child-doc-links {
+  display: grid;
+  gap: 0;
+  margin-top: 4px;
+  border-top: 1px solid #dce3ea;
+}
+
+.knowledge-child-doc-links a {
+  display: grid;
+  gap: 4px;
+  padding: 13px 0;
+  border-bottom: 1px solid #edf2f6;
+  color: #236d9b;
+  text-decoration: none;
+  line-height: 1.42;
+}
+
+.knowledge-child-doc-links a:hover span {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.knowledge-child-doc-links span {
+  font-weight: 720;
+}
+
+.knowledge-child-doc-links small {
+  color: #667789;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .knowledge-settings-card,

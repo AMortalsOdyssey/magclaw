@@ -194,8 +194,32 @@ function renderKnowledgeDocument(docId) {
           <button type="button" data-action="knowledge-open-agent-link" data-doc-id="${escapeHtml(doc.id)}">Copy Link to Agent</button>
         </div>
       </header>
-      <div class="knowledge-html">${doc.renderedHtml || ''}</div>
+      ${renderKnowledgeDocumentBody(doc)}
     </article>
+  `;
+}
+
+function renderKnowledgeDocumentBody(doc = {}) {
+  return `
+    <div class="knowledge-html">
+      ${doc.renderedHtml || ''}
+      ${renderKnowledgeChildDocumentLinks(doc)}
+    </div>
+  `;
+}
+
+function renderKnowledgeChildDocumentLinks(doc = {}) {
+  const childDocuments = Array.isArray(doc.childDocuments) ? doc.childDocuments : [];
+  if (Number(doc.level || 1) > 1 || !childDocuments.length) return '';
+  return `
+    <nav class="knowledge-child-doc-links" aria-label="Knowledge document hierarchy">
+      ${childDocuments.map((child) => `
+        <a href="${escapeHtml(currentKnowledgeDocPath(child))}" data-action="knowledge-select-doc" data-doc-id="${escapeHtml(child.id)}">
+          <span>${escapeHtml(child.title)}</span>
+          ${child.summary ? `<small>${escapeHtml(child.summary)}</small>` : ''}
+        </a>
+      `).join('')}
+    </nav>
   `;
 }
 
@@ -209,15 +233,19 @@ async function loadKnowledgeDocument(docId) {
   render();
 }
 
-function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
+function currentKnowledgeDocPath(doc = knowledgeSelectedDoc()) {
   const serverSlug = encodeURIComponent(String(
     (typeof currentServerSlug === 'function' && currentServerSlug())
     || (typeof serverSlugFromPath === 'function' && serverSlugFromPath())
     || 'local',
   ).trim() || 'local');
-  const path = doc?.id
+  return doc?.id
     ? `/s/${serverSlug}/knowledge/docs/${encodeURIComponent(doc.id)}`
     : `/s/${serverSlug}/knowledge`;
+}
+
+function currentKnowledgeDocUrl(doc = knowledgeSelectedDoc()) {
+  const path = currentKnowledgeDocPath(doc);
   return `${window.location.origin}${path}`;
 }
 
@@ -1098,7 +1126,7 @@ function renderKnowledgeWhitelistRemoveModal() {
   `;
 }
 
-async function handleKnowledgeAction(action, target) {
+async function handleKnowledgeAction(action, target, event = null) {
   const knowledgeAction = String(action || '');
   if (!knowledgeAction.startsWith('knowledge-') && !knowledgeAction.startsWith('copy-knowledge-')) return false;
   if (action === 'knowledge-tab') {
@@ -1123,6 +1151,7 @@ async function handleKnowledgeAction(action, target) {
     return true;
   }
   if (action === 'knowledge-select-doc') {
+    event?.preventDefault?.();
     const docId = target.dataset.docId || '';
     knowledgeRoute = { view: 'docs', docId, changeSessionId: '' };
     knowledgeSpaceState = { ...knowledgeSpaceState, tab: 'home', selectedDocId: docId };
