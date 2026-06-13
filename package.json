@@ -38,8 +38,10 @@
     "playwright": "^1.59.1"
   },
   "dependencies": {
+    "@google/genai": "^2.8.0",
     "@larksuiteoapi/node-sdk": "^1.66.0",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "ws": "^8.21.0"
   },
   "overrides": {
     "axios": "^1.16.1"
