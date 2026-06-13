@@ -4384,3 +4384,160 @@ export async function updateTeamSharingPackage(flags = {}, env = process.env) {
     await lock.release();
   }
 }
+
+const TEAM_SHARING_CODEX_RESTART_HINT = 'Open a new Codex thread or restart Codex to pick up refreshed plugin skills.';
+
+function teamSharingUpdateApplyCommand(latestVersion = '') {
+  const cleanVersion = cleanTemplateVersion(latestVersion);
+  return cleanVersion && cleanVersion !== '0.0.0'
+    ? `team-sharing update --target-version ${cleanVersion}`
+    : 'team-sharing update';
+}
+
+function teamSharingCheckedAt(check = {}) {
+  const checkedAtMs = Number(check.checkedAtMs || 0);
+  if (Number.isFinite(checkedAtMs) && checkedAtMs > 0) return new Date(checkedAtMs).toISOString();
+  return now();
+}
+
+async function readTeamSharingLastUpdate(env = process.env) {
+  const paths = teamSharingPaths({ env });
+  const state = await readJsonFile(paths.updateState, {});
+  return state?.lastUpdate || null;
+}
+
+function teamSharingPackageUpdateSummary(check = {}, overrides = {}) {
+  const currentVersion = String(check.currentVersion || overrides.currentVersion || '').trim();
+  const latestVersion = String(check.latestVersion || overrides.latestVersion || currentVersion || '').trim();
+  const updateAvailable = check.upgradeAvailable === undefined
+    ? semverGreater(latestVersion, currentVersion)
+    : Boolean(check.upgradeAvailable);
+  const action = String(overrides.action || (updateAvailable ? 'notice' : 'skipped')).trim();
+  return {
+    ok: overrides.ok !== undefined ? Boolean(overrides.ok) : true,
+    packageName: TEAM_SHARING_PACKAGE_NAME,
+    currentVersion,
+    latestVersion,
+    updateAvailable,
+    updateMode: String(check.updateMode || overrides.updateMode || 'silent'),
+    action,
+    applyCommand: updateAvailable ? teamSharingUpdateApplyCommand(latestVersion) : '',
+    checkedAt: overrides.checkedAt || teamSharingCheckedAt(check),
+    lastUpdate: overrides.lastUpdate || null,
+    releaseNotesMarkdown: String(check.releaseNotesMarkdown || overrides.releaseNotesMarkdown || ''),
+    ...(overrides.reason ? { reason: overrides.reason } : {}),
+    ...(overrides.error ? { error: overrides.error } : {}),
+    ...(overrides.restartHint ? { restartHint: overrides.restartHint } : {}),
+    ...(overrides.result ? { result: overrides.result } : {}),
+  };
+}
+
+export async function maybeAutoUpdateTeamSharingPackage(flags = {}, env = process.env) {
+  const trigger = String(flags.trigger || 'manual').trim().toLowerCase() || 'manual';
+  const manual = Boolean(flags.manual || flags.yes || flags.force || trigger === 'manual');
+  const currentVersion = String(
+    flags.currentVersion
+      || env.MAGCLAW_TEAM_SHARING_VERSION
+      || env.MAGCLAW_ENTRY_PACKAGE_VERSION
+      || await currentTeamSharingPackageVersion(env)
+      || '0.0.0',
+  ).trim();
+  const directLatestVersion = String(flags.latestVersion || flags.targetVersion || flags.version || '').trim();
+  const checkedAt = now();
+  let check = directLatestVersion
+    ? {
+      ok: true,
+      source: 'provided',
+      currentVersion,
+      latestVersion: directLatestVersion,
+      upgradeAvailable: semverGreater(directLatestVersion, currentVersion),
+      updateMode: 'silent',
+      checkedAt,
+      releaseNotesMarkdown: String(flags.releaseNotesMarkdown || ''),
+    }
+    : null;
+  const readLastUpdate = () => readTeamSharingLastUpdate(env);
+  try {
+    if (!check) {
+      check = await checkTeamSharingUpgrade({
+        force: Boolean(flags.force),
+        currentVersion,
+        serverUrl: flags.serverUrl,
+        ttlMs: flags.ttlMs,
+        nowMs: flags.nowMs,
+      }, env);
+    }
+    const lastUpdate = await readLastUpdate();
+    const summaryBase = { checkedAt, lastUpdate };
+    if (env.MAGCLAW_TEAM_SHARING_AUTO_UPDATE === '0' && !manual) {
+      return teamSharingPackageUpdateSummary(check, {
+        ...summaryBase,
+        action: 'skipped',
+        reason: 'auto_update_disabled',
+      });
+    }
+    const updateAvailable = check.upgradeAvailable === undefined
+      ? semverGreater(check.latestVersion || currentVersion, currentVersion)
+      : Boolean(check.upgradeAvailable);
+    if (!updateAvailable) {
+      return teamSharingPackageUpdateSummary(check, {
+        ...summaryBase,
+        action: 'skipped',
+      });
+    }
+    const updateMode = String(check.updateMode || 'silent').trim().toLowerCase();
+    if (updateMode !== 'silent' && !manual) {
+      return teamSharingPackageUpdateSummary(check, {
+        ...summaryBase,
+        action: 'notice',
+        updateMode,
+      });
+    }
+    const result = await updateTeamSharingPackage({
+      ...flags,
+      currentVersion,
+      latestVersion: check.latestVersion,
+      releaseNotesMarkdown: check.releaseNotesMarkdown || flags.releaseNotesMarkdown || '',
+      all: flags.all !== undefined ? Boolean(flags.all) : true,
+      target: flags.target || 'all',
+      check: false,
+      checkOnly: false,
+      manual,
+    }, env);
+    const afterLastUpdate = await readLastUpdate();
+    if (result?.ok && result?.updated) {
+      return teamSharingPackageUpdateSummary(check, {
+        checkedAt,
+        lastUpdate: afterLastUpdate,
+        action: 'applied',
+        restartHint: TEAM_SHARING_CODEX_RESTART_HINT,
+        result,
+      });
+    }
+    if (result?.ok) {
+      return teamSharingPackageUpdateSummary(check, {
+        checkedAt,
+        lastUpdate: afterLastUpdate || lastUpdate,
+        action: result.skipped ? 'skipped' : 'notice',
+        reason: result.reason || '',
+        result,
+      });
+    }
+    return teamSharingPackageUpdateSummary(check, {
+      ok: false,
+      checkedAt,
+      lastUpdate: afterLastUpdate || lastUpdate,
+      action: 'failed',
+      error: result?.error || result?.reason || 'Team Sharing update failed.',
+      result,
+    });
+  } catch (error) {
+    return teamSharingPackageUpdateSummary(check || { currentVersion, latestVersion: currentVersion, upgradeAvailable: false }, {
+      ok: false,
+      checkedAt,
+      lastUpdate: await readLastUpdate().catch(() => null),
+      action: 'failed',
+      error: error?.message || String(error),
+    });
+  }
+}

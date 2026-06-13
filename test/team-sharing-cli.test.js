@@ -40,6 +40,7 @@ import {
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
   updateTeamSharingPackage,
+  maybeAutoUpdateTeamSharingPackage,
   getTeamSharingSessionReporting,
   setTeamSharingSessionReporting,
   teamSharingMachineFingerprint,
@@ -2416,6 +2417,96 @@ test('team sharing update all skips missing projects and isolates project sync f
   assert.equal(result.skippedProjects[0].reason, 'missing_project');
   assert.equal(result.failedProjects.length, 1);
   assert.equal(result.failedProjects[0].path, badProject);
+});
+
+test('team sharing auto update applies silent updates and reports a stable summary', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-auto-update-project-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-auto-update-source-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-auto-update-home-'));
+  const binDir = path.join(home, 'bin');
+  const env = {
+    HOME: home,
+    CODEX_HOME: path.join(home, '.codex'),
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+    MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND: '1',
+  };
+  await mkdir(path.join(source, 'bin'), { recursive: true });
+  await cp(path.resolve('team-sharing', 'codex-plugin'), path.join(source, 'codex-plugin'), { recursive: true });
+  await writeFile(path.join(source, 'package.json'), JSON.stringify({
+    name: '@magclaw/team-sharing',
+    version: '0.1.56',
+    type: 'module',
+    bin: { 'team-sharing': 'bin/team-sharing.js' },
+  }));
+  await writeFile(path.join(source, 'bin', 'team-sharing.js'), [
+    '#!/usr/bin/env node',
+    'if (process.argv.includes("-V") || process.argv.includes("--version")) { console.log("0.1.56"); process.exit(0); }',
+    'console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));',
+  ].join('\n'));
+  await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-auto-update"}\n');
+  await loginTeamSharingProfile({ token: 'tm_secret', serverUrl: 'https://magclaw.example', workspaceId: 'ws_team' }, env);
+  await setupTeamSharing({
+    cwd,
+    yes: true,
+    target: 'codex',
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'auto-update',
+    noLogin: true,
+    binDir,
+  }, env);
+
+  const beforeHooks = await readFile(path.join(cwd, '.codex', 'hooks.json'), 'utf8');
+  const result = await maybeAutoUpdateTeamSharingPackage({
+    trigger: 'doctor',
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    all: true,
+    target: 'codex',
+    binDir,
+  }, env);
+  const paths = teamSharingPaths({ cwd, env });
+  const state = JSON.parse(await readFile(paths.updateActive, 'utf8'));
+  const skill = await readFile(path.join(home, '.magclaw', 'team-sharing', 'codex-marketplace', 'plugins', 'magclaw-team-sharing', 'skills', 'search', 'SKILL.md'), 'utf8');
+  const afterHooks = await readFile(path.join(cwd, '.codex', 'hooks.json'), 'utf8');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.packageName, '@magclaw/team-sharing');
+  assert.equal(result.action, 'applied');
+  assert.equal(result.currentVersion, '0.1.55');
+  assert.equal(result.latestVersion, '0.1.56');
+  assert.equal(result.updateAvailable, true);
+  assert.equal(result.updateMode, 'silent');
+  assert.match(result.applyCommand, /team-sharing update/);
+  assert.equal(result.restartHint, 'Open a new Codex thread or restart Codex to pick up refreshed plugin skills.');
+  assert.equal(state.active.version, '0.1.56');
+  assert.equal(state.active.health.status, 'healthy');
+  assert.match(skill, /@magclaw\/team-sharing@0\.1\.56/);
+  assert.equal(afterHooks, beforeHooks);
+});
+
+test('team sharing auto update can be disabled for non-manual triggers', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-auto-disabled-home-'));
+  const env = {
+    HOME: home,
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+    MAGCLAW_TEAM_SHARING_AUTO_UPDATE: '0',
+  };
+
+  const result = await maybeAutoUpdateTeamSharingPackage({
+    trigger: 'hook',
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, 'skipped');
+  assert.equal(result.reason, 'auto_update_disabled');
+  assert.equal(result.packageName, '@magclaw/team-sharing');
+  assert.equal(result.updateAvailable, true);
 });
 
 test('team sharing update check falls back to npm registry when server package update API fails', async () => {

@@ -46,7 +46,10 @@ export const DAEMON_VERSION = String(PACKAGE_JSON.version || '0.0.0');
 export const CLI_CORE_VERSION = DAEMON_VERSION;
 const DAEMON_PACKAGE_NAME = '@magclaw/daemon';
 const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
+const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';
 const KNOWN_ENTRY_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
+const PACKAGE_UPDATE_NOTICE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME, CLI_CORE_PACKAGE_NAME]);
+const DEFAULT_PACKAGE_UPDATE_TTL_MS = 12 * 60 * 60 * 1000;
 const SOURCE_CODEX_HOME = path.resolve(process.env.MAGCLAW_CODEX_HOME_SOURCE || process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
 const CODEX_HOME_SHARED_ENTRIES = ['auth.json', 'plugins', 'vendor_imports'];
 export const CAPABILITIES = [
@@ -201,6 +204,190 @@ function runtimePackageInfo(env = process.env, service = {}) {
     bin: packageBin,
     spec: packageSpec,
   };
+}
+
+function semverParts(value = '') {
+  return String(value || '').replace(/^[^\d]*/, '').split(/[.-]/).slice(0, 3).map((part) => Number(part) || 0);
+}
+
+function semverGreater(left = '', right = '') {
+  const a = semverParts(left);
+  const b = semverParts(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] > b[index]) return true;
+    if (a[index] < b[index]) return false;
+  }
+  return false;
+}
+
+function packageUpdateEnvKey(packageName = '') {
+  const suffix = String(packageName || '')
+    .replace(/^@/, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toUpperCase();
+  return suffix ? `MAGCLAW_PACKAGE_UPDATE_LATEST__${suffix}` : '';
+}
+
+function packageUpdateCachePath(packageName = '', env = process.env) {
+  const safeName = safeFilePart(String(packageName || '').replace(/^@/, '').replace(/\//g, '_'));
+  return path.join(daemonRoot(env), 'package-updates', `${safeName}.json`);
+}
+
+function packageUpdateApplyCommand({ latestVersion = '', profile = DEFAULT_PROFILE, entryPackage = {} } = {}) {
+  const cleanVersion = String(latestVersion || '').trim();
+  if (!cleanVersion) return '';
+  const profileArg = profile ? ` --profile ${safeProfileName(profile)}` : '';
+  if (entryPackage.name === COMPUTER_PACKAGE_NAME || entryPackage.kind === 'computer') {
+    return `magclaw-computer upgrade${profileArg} --target-version ${cleanVersion}`;
+  }
+  return `magclaw upgrade${profileArg} --to ${cleanVersion}`;
+}
+
+async function fetchNpmPackageLatestVersion(packageName = '', env = process.env) {
+  const timeoutMs = Math.max(1_000, Number(env.MAGCLAW_PACKAGE_UPDATE_TIMEOUT_MS || 4_000) || 4_000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const encodedPackageName = encodeURIComponent(packageName);
+    const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data?.error || `npm registry returned ${response.status}`);
+    return String(data?.['dist-tags']?.latest || '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function packageUpdateNoticeSummary({
+  packageName = '',
+  currentVersion = '',
+  latestVersion = '',
+  checkedAtMs = Date.now(),
+  source = '',
+  profile = DEFAULT_PROFILE,
+  entryPackage = {},
+  lastUpdate = null,
+  error = '',
+} = {}) {
+  const updateAvailable = semverGreater(latestVersion, currentVersion);
+  return {
+    packageName,
+    currentVersion,
+    latestVersion: latestVersion || currentVersion,
+    updateAvailable,
+    updateMode: 'notice',
+    action: error ? 'failed' : updateAvailable ? 'notice' : 'skipped',
+    applyCommand: updateAvailable ? packageUpdateApplyCommand({ latestVersion, profile, entryPackage }) : '',
+    checkedAt: new Date(checkedAtMs).toISOString(),
+    lastUpdate,
+    ...(source ? { source } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+async function checkMagClawPackageUpdate(options = {}, env = process.env) {
+  const packageName = String(options.packageName || '').trim();
+  const currentVersion = String(options.currentVersion || '').trim();
+  const checkedAtMs = typeof options.nowMs === 'function' ? options.nowMs() : Date.now();
+  const profile = safeProfileName(options.profile || DEFAULT_PROFILE);
+  const entryPackage = options.entryPackage || runtimePackageInfo(env);
+  if (!PACKAGE_UPDATE_NOTICE_NAMES.has(packageName)) {
+    return packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion: currentVersion,
+      checkedAtMs,
+      profile,
+      entryPackage,
+      error: packageName ? `Unsupported package ${packageName}` : 'packageName is required',
+    });
+  }
+  const envKey = packageUpdateEnvKey(packageName);
+  const envLatestVersion = String((envKey && env[envKey]) || '').trim();
+  const cachePath = packageUpdateCachePath(packageName, env);
+  const cache = await readJsonFile(cachePath, null);
+  const ttlMs = Math.max(60_000, Number(options.ttlMs || env.MAGCLAW_PACKAGE_UPDATE_TTL_MS || DEFAULT_PACKAGE_UPDATE_TTL_MS) || DEFAULT_PACKAGE_UPDATE_TTL_MS);
+  const freshCache = cache?.checkedAtMs && checkedAtMs - Number(cache.checkedAtMs) < ttlMs;
+  if (envLatestVersion) {
+    const summary = packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion: envLatestVersion,
+      checkedAtMs,
+      source: 'env',
+      profile,
+      entryPackage,
+      lastUpdate: cache?.lastUpdate || null,
+    });
+    await writeJsonFile(cachePath, {
+      checkedAtMs,
+      latestVersion: envLatestVersion,
+      source: 'env',
+      lastUpdate: summary.lastUpdate,
+    });
+    return summary;
+  }
+  if (!options.force && freshCache && cache?.latestVersion) {
+    return packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion: String(cache.latestVersion || currentVersion),
+      checkedAtMs: Number(cache.checkedAtMs),
+      source: cache.source || 'cache',
+      profile,
+      entryPackage,
+      lastUpdate: cache.lastUpdate || null,
+    });
+  }
+  if (env.MAGCLAW_PACKAGE_UPDATE_DISABLE_NETWORK === '1') {
+    return packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion: String(cache?.latestVersion || currentVersion),
+      checkedAtMs,
+      source: cache?.latestVersion ? 'cache' : 'disabled',
+      profile,
+      entryPackage,
+      lastUpdate: cache?.lastUpdate || null,
+    });
+  }
+  try {
+    const latestVersion = await fetchNpmPackageLatestVersion(packageName, env) || currentVersion;
+    const summary = packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion,
+      checkedAtMs,
+      source: 'npm',
+      profile,
+      entryPackage,
+      lastUpdate: cache?.lastUpdate || null,
+    });
+    await writeJsonFile(cachePath, {
+      checkedAtMs,
+      latestVersion,
+      source: 'npm',
+      lastUpdate: summary.lastUpdate,
+    });
+    return summary;
+  } catch (error) {
+    return packageUpdateNoticeSummary({
+      packageName,
+      currentVersion,
+      latestVersion: String(cache?.latestVersion || currentVersion),
+      checkedAtMs,
+      source: cache?.latestVersion ? 'cache' : 'npm',
+      profile,
+      entryPackage,
+      lastUpdate: cache?.lastUpdate || null,
+      ...(cache?.latestVersion ? {} : { error: error?.message || String(error) }),
+    });
+  }
 }
 
 function localTimestamp(date = new Date()) {
@@ -6002,13 +6189,28 @@ async function uninstallBackground(profile, env = process.env) {
   return stopped;
 }
 
-async function status(profile) {
-  const paths = profilePaths(profile);
-  const config = await readProfile(paths.profile);
+async function status(profile, env = process.env) {
+  const paths = profilePaths(profile, env);
+  const config = await readProfile(paths.profile, env);
   const configStat = await stat(paths.config).catch(() => null);
-  const lock = await activeDaemonLock(paths.profile);
-  const computerLock = await activeComputerLock();
-  const service = backgroundServiceStatus(paths.profile);
+  const lock = await activeDaemonLock(paths.profile, env);
+  const computerLock = await activeComputerLock(env);
+  const service = backgroundServiceStatus(paths.profile, env);
+  const entryPackage = runtimePackageInfo(env, service);
+  const [packageUpdate, cliCoreUpdate] = await Promise.all([
+    checkMagClawPackageUpdate({
+      packageName: entryPackage.name,
+      currentVersion: entryPackage.version || DAEMON_VERSION,
+      profile: paths.profile,
+      entryPackage,
+    }, env),
+    checkMagClawPackageUpdate({
+      packageName: CLI_CORE_PACKAGE_NAME,
+      currentVersion: CLI_CORE_VERSION,
+      profile: paths.profile,
+      entryPackage,
+    }, env),
+  ]);
   return {
     profile: paths.profile,
     configPath: paths.config,
@@ -6023,6 +6225,8 @@ async function status(profile) {
     hasMachineToken: Boolean(config.token),
     hasPairToken: Boolean(config.pairToken),
     service,
+    packageUpdate,
+    cliCoreUpdate,
   };
 }
 
@@ -6102,6 +6306,21 @@ function profileListUpdatedMs(profile = {}) {
 
 async function doctor(env = process.env) {
   const runtimes = await detectRuntimes(env);
+  const entryPackage = runtimePackageInfo(env);
+  const [packageUpdate, cliCoreUpdate] = await Promise.all([
+    checkMagClawPackageUpdate({
+      packageName: entryPackage.name,
+      currentVersion: entryPackage.version || DAEMON_VERSION,
+      profile: DEFAULT_PROFILE,
+      entryPackage,
+    }, env),
+    checkMagClawPackageUpdate({
+      packageName: CLI_CORE_PACKAGE_NAME,
+      currentVersion: CLI_CORE_VERSION,
+      profile: DEFAULT_PROFILE,
+      entryPackage,
+    }, env),
+  ]);
   return {
     ok: true,
     daemonVersion: DAEMON_VERSION,
@@ -6110,6 +6329,8 @@ async function doctor(env = process.env) {
     arch: os.arch(),
     profileRoot: daemonRoot(env),
     runtimes,
+    packageUpdate,
+    cliCoreUpdate,
   };
 }
 
@@ -6770,6 +6991,10 @@ async function renderComputerAggregateStatus(env = process.env) {
 function formatComputerStatus(report = {}) {
   const profiles = report.profiles || [];
   if (report.profile) {
+    const updateLines = report.packageUpdate?.updateAvailable ? [
+      `Package:      ${report.packageUpdate.currentVersion} -> ${report.packageUpdate.latestVersion}`,
+      `Upgrade:      ${report.packageUpdate.applyCommand}`,
+    ] : [];
     return [
       `Profile:      ${report.profile}`,
       `Configured:   ${report.configured ? 'yes' : 'no'}`,
@@ -6777,6 +7002,7 @@ function formatComputerStatus(report = {}) {
       `Service:      ${report.service?.mode || 'foreground'}${report.service?.active ? ' active' : ''}`,
       `Server URL:   ${report.serverUrl || '-'}`,
       `Computer ID:  ${report.computerId || '-'}`,
+      ...updateLines,
       `Config:       ${report.configPath}`,
       '',
     ].join('\n');
@@ -6796,7 +7022,7 @@ function formatComputerStatus(report = {}) {
 }
 
 async function computerStatus(flags = {}, env = process.env) {
-  if (hasComputerTarget(flags)) return status(computerTargetProfile(flags, flags.profile || DEFAULT_PROFILE));
+  if (hasComputerTarget(flags)) return status(computerTargetProfile(flags, flags.profile || DEFAULT_PROFILE), env);
   return renderComputerAggregateStatus(env);
 }
 
@@ -6848,7 +7074,7 @@ async function computerDoctor(flags = {}, env = process.env) {
   const target = hasComputerTarget(flags) ? computerTargetProfile(flags, flags.profile || DEFAULT_PROFILE) : '';
   const runtime = await doctor(env);
   const aggregate = await renderComputerAggregateStatus(env);
-  const selected = target ? await status(target) : null;
+  const selected = target ? await status(target, env) : null;
   const cleaned = cleanup ? await cleanupComputerResidue(env) : [];
   const checks = [
     { name: 'MAGCLAW_DAEMON_HOME', ok: true, detail: aggregate.root },
@@ -7143,7 +7369,7 @@ export async function main(argv = process.argv, env = process.env) {
       printJson({ ...(await restartSavedBackground(flags, env)), alias: 'restore' });
       break;
     case 'status':
-      printJson(await status(flags.profile));
+      printJson(await status(flags.profile, env));
       break;
     case 'list':
       if (flags.json) {

@@ -7,7 +7,6 @@ import {
   renderTeamSharingFeedbackText,
 } from './onboarding-feedback.js';
 import {
-  checkTeamSharingUpgrade,
   deleteTeamSharingLink,
   disableTeamSharingSkill,
   editTeamSharingLink,
@@ -18,6 +17,7 @@ import {
   listTeamSharingProjects,
   loginTeamSharingProfile,
   logoutTeamSharingProfile,
+  maybeAutoUpdateTeamSharingPackage,
   readTeamSharingContext,
   readTeamSharingLink,
   removeTeamSharingHooks,
@@ -217,7 +217,16 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
   switch (subcommand) {
     case 'setup':
     case 'install':
-      printResult(await setupTeamSharing(flags, env), flags, env, { defaultFormat: 'text' });
+      {
+        const result = await setupTeamSharing(flags, env);
+        result.packageUpdate = await maybeAutoUpdateTeamSharingPackage({
+          ...flags,
+          trigger: 'setup',
+          all: true,
+          target: flags.target || 'all',
+        }, env);
+        printResult(result, flags, env, { defaultFormat: 'text' });
+      }
       break;
     case 'login':
       printJson(await loginTeamSharingProfile(flags, env));
@@ -252,12 +261,19 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         const project = await statusTeamSharingProject(flags, env);
         const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
         const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
+        const packageUpdate = await maybeAutoUpdateTeamSharingPackage({
+          ...flags,
+          trigger: 'status',
+          all: true,
+          target: flags.target || 'all',
+        }, env);
         const ok = Boolean(project.ok && hooks.ok && skill.ok);
         printResult({
           ok,
           project,
           hooks,
           skill,
+          packageUpdate,
           feedback: buildTeamSharingOnboardingFeedback({
             operation: 'status',
             ok,
@@ -273,14 +289,20 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         const project = await statusTeamSharingProject(flags, env);
         const hooks = await statusTeamSharingHooks({ ...flags, target: flags.target || 'all' }, env);
         const skill = await statusTeamSharingSkill({ ...flags, target: flags.target || 'all' }, env);
-        const upgrade = await checkTeamSharingUpgrade({ force: Boolean(flags.force) }, env).catch((error) => ({ ok: false, error: error.message }));
-        const ok = Boolean(project.ok && hooks.ok && skill.ok && upgrade.ok !== false);
+        const packageUpdate = await maybeAutoUpdateTeamSharingPackage({
+          ...flags,
+          trigger: 'doctor',
+          all: true,
+          target: flags.target || 'all',
+        }, env);
+        const ok = Boolean(project.ok && hooks.ok && skill.ok && packageUpdate.ok !== false);
         printResult({
           ok,
           project,
           hooks,
           skill,
-          upgrade,
+          upgrade: packageUpdate,
+          packageUpdate,
           feedback: buildTeamSharingOnboardingFeedback({
             operation: 'doctor',
             ok,
@@ -346,7 +368,16 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
           const hookPayload = await readHookPayloadStdin();
           if (hookPayload) syncFlags.hookPayload = hookPayload;
         }
-        printJson(await syncTeamSharingTranscript(syncFlags, env));
+        const result = await syncTeamSharingTranscript(syncFlags, env);
+        if (syncFlags.hookEvent || syncFlags.hookEventName || syncFlags.hookPayload) {
+          result.packageUpdate = await maybeAutoUpdateTeamSharingPackage({
+            ...flags,
+            trigger: 'hook',
+            all: true,
+            target: flags.target || 'all',
+          }, env);
+        }
+        printJson(result);
       }
       break;
     case 'session-reporting':

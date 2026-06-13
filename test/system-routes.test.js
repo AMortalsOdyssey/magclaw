@@ -608,6 +608,26 @@ test('system route group returns package-specific update notes', async () => {
   assert.match(res.data.releaseNotesMarkdown, /registered projects silently/);
 });
 
+test('system route group preserves package update errors', async () => {
+  const deps = routeDeps({
+    packageUpdateSnapshot: async (options) => ({
+      ok: false,
+      error: `Unsupported package ${options.packageName}`,
+    }),
+  });
+  const res = makeResponse();
+
+  assert.equal(await handleSystemApi(
+    { method: 'GET', on: () => {} },
+    res,
+    new URL('http://local/api/package-updates?packageName=%40magclaw%2Funknown&currentVersion=0.1.0'),
+    deps,
+  ), true);
+
+  assert.equal(res.statusCode, 400);
+  assert.equal(res.data.error, 'Unsupported package @magclaw/unknown');
+});
+
 test('system settings route updates runtime settings through injected state', async () => {
   const deps = routeDeps({
     readJson: async () => ({

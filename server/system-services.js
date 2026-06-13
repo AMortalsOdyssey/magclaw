@@ -141,6 +141,12 @@ const PACKAGE_RELEASE_COMPONENTS = Object.freeze({
   '@magclaw/cli-core': 'cliCore',
   '@magclaw/team-sharing': 'teamSharing',
 });
+const PACKAGE_UPDATE_MODES = Object.freeze({
+  '@magclaw/daemon': 'notice',
+  '@magclaw/computer': 'notice',
+  '@magclaw/cli-core': 'notice',
+  '@magclaw/team-sharing': 'silent',
+});
 
 export function createSystemServices(deps) {
   const {
@@ -3156,6 +3162,7 @@ export function createSystemServices(deps) {
     const packageName = String(options.packageName || '').trim();
     if (!packageName) return { ok: false, error: 'packageName is required' };
     const component = PACKAGE_RELEASE_COMPONENTS[packageName] || '';
+    if (!component) return { ok: false, error: `Unsupported package ${packageName}` };
     const packageVersions = await packageVersionSnapshot({ force: Boolean(options.force) });
     const notes = publicReleaseNotes();
     const componentNotes = component ? notes[component] : null;
@@ -3181,7 +3188,7 @@ export function createSystemServices(deps) {
         currentVersion,
         latestVersion,
         updateAvailable: semverGreater(latestVersion, currentVersion),
-        updateMode: packageName === '@magclaw/team-sharing' ? 'silent' : 'manual',
+        updateMode: PACKAGE_UPDATE_MODES[packageName] || 'manual',
         cacheTtlSeconds: PACKAGE_UPDATE_CACHE_TTL_SECONDS,
       },
       releaseNotesMarkdown: compactReleaseNotesMarkdown(releaseNotes),

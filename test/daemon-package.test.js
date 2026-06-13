@@ -254,7 +254,7 @@ test('daemon run service state preserves launchd background mode for service-lau
 });
 
 test('daemon version and foreground log lines are structured', () => {
-  assert.equal(DAEMON_VERSION, '0.1.40');
+  assert.equal(DAEMON_VERSION, '0.1.41');
   assert.equal(
     formatDaemonLogLine('info', 'daemon', 'MagClaw daemon ready.', new Date(2026, 4, 14, 8, 9, 10)),
     '2026-05-14 08:09:10 INFO DAEMON MagClaw daemon ready.',
@@ -701,6 +701,87 @@ test('upgrade worker targets the current entry package instead of always upgradi
     assert.equal(plan.packageSpec, '@magclaw/computer@0.1.30');
   } finally {
     await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test('daemon status reports package update notices without running the upgrade worker', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-package-update-status-'));
+  try {
+    const env = {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: home,
+      MAGCLAW_ENTRY_PACKAGE_NAME: '@magclaw/daemon',
+      MAGCLAW_ENTRY_PACKAGE_VERSION: '0.1.41',
+      MAGCLAW_PACKAGE_UPDATE_TTL_MS: '60000',
+      MAGCLAW_PACKAGE_UPDATE_DISABLE_NETWORK: '1',
+      MAGCLAW_PACKAGE_UPDATE_LATEST__MAGCLAW_DAEMON: '0.1.42',
+      MAGCLAW_PACKAGE_UPDATE_LATEST__MAGCLAW_CLI_CORE: '0.1.42',
+    };
+    const result = spawnSync(process.execPath, [
+      DAEMON_BIN,
+      'status',
+      '--profile',
+      'update-status',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env,
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.packageUpdate.packageName, '@magclaw/daemon');
+    assert.equal(payload.packageUpdate.currentVersion, '0.1.41');
+    assert.equal(payload.packageUpdate.latestVersion, '0.1.42');
+    assert.equal(payload.packageUpdate.updateAvailable, true);
+    assert.equal(payload.packageUpdate.action, 'notice');
+    assert.equal(payload.packageUpdate.applyCommand, 'magclaw upgrade --profile update-status --to 0.1.42');
+    assert.equal(payload.cliCoreUpdate.packageName, '@magclaw/cli-core');
+    assert.equal(payload.cliCoreUpdate.action, 'notice');
+    assert.equal(payload.service?.pendingCommandId, undefined);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test('computer status reports computer package update commands without auto-upgrading', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-computer-package-update-status-'));
+  try {
+    const env = {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: home,
+      MAGCLAW_ENTRY_PACKAGE_NAME: '@magclaw/computer',
+      MAGCLAW_ENTRY_PACKAGE_VERSION: '0.1.40',
+      MAGCLAW_DAEMON_PACKAGE_NAME: '@magclaw/computer',
+      MAGCLAW_DAEMON_PACKAGE_KIND: 'computer',
+      MAGCLAW_DAEMON_PACKAGE_BIN: 'magclaw-computer',
+      MAGCLAW_PACKAGE_UPDATE_DISABLE_NETWORK: '1',
+      MAGCLAW_PACKAGE_UPDATE_LATEST__MAGCLAW_COMPUTER: '0.1.42',
+      MAGCLAW_PACKAGE_UPDATE_LATEST__MAGCLAW_CLI_CORE: '0.1.42',
+    };
+    const result = spawnSync(process.execPath, [
+      COMPUTER_BIN,
+      'status',
+      '--profile',
+      'computer-update',
+      '--json',
+    ], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env,
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.packageUpdate.packageName, '@magclaw/computer');
+    assert.equal(payload.packageUpdate.latestVersion, '0.1.42');
+    assert.equal(payload.packageUpdate.action, 'notice');
+    assert.equal(payload.packageUpdate.applyCommand, 'magclaw-computer upgrade --profile computer-update --target-version 0.1.42');
+    assert.equal(payload.cliCoreUpdate.packageName, '@magclaw/cli-core');
+    assert.equal(payload.cliCoreUpdate.action, 'notice');
+    assert.equal(payload.service?.pendingCommandId, undefined);
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });
 

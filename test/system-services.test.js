@@ -2025,6 +2025,46 @@ test('package version snapshot falls back to local versions when NPM is unavaila
   assert.equal(snapshot.packages['@magclaw/computer'].source, 'npm-cache');
 });
 
+test('package update snapshot exposes package-specific update modes', async () => {
+  const latestVersions = {
+    '@magclaw/team-sharing': '0.2.1',
+    '@magclaw/daemon': '0.1.41',
+    '@magclaw/computer': '0.1.41',
+    '@magclaw/cli-core': '0.1.41',
+  };
+  const services = makeServices(null, {
+    npmPackageVersions: {
+      latest: (packageName, fallback = '') => latestVersions[packageName] || fallback,
+      maybeRefreshAll: () => {},
+    },
+  });
+
+  const teamSharing = await services.packageUpdateSnapshot({
+    packageName: '@magclaw/team-sharing',
+    currentVersion: '0.2.0',
+  });
+  const daemon = await services.packageUpdateSnapshot({
+    packageName: '@magclaw/daemon',
+    currentVersion: '0.1.40',
+  });
+  const computer = await services.packageUpdateSnapshot({
+    packageName: '@magclaw/computer',
+    currentVersion: '0.1.40',
+  });
+  const cliCore = await services.packageUpdateSnapshot({
+    packageName: '@magclaw/cli-core',
+    currentVersion: '0.1.40',
+  });
+
+  assert.equal(teamSharing.package.name, '@magclaw/team-sharing');
+  assert.equal(teamSharing.package.latestVersion, '0.2.1');
+  assert.equal(teamSharing.package.updateAvailable, true);
+  assert.equal(teamSharing.package.updateMode, 'silent');
+  assert.equal(daemon.package.updateMode, 'notice');
+  assert.equal(computer.package.updateMode, 'notice');
+  assert.equal(cliCore.package.updateMode, 'notice');
+});
+
 test('bootstrap state omits large internal server indexes from public payloads', () => {
   const services = makeServices((state) => {
     state.teamSharing = {
