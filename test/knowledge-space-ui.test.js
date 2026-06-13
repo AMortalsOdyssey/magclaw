@@ -43,6 +43,14 @@ test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels,
   const app = await readAppSource();
   const graphSource = app.slice(app.indexOf('function renderKnowledgeGraphPanel'), app.indexOf('function renderKnowledgeChangelog'));
 
+  assert.match(graphSource, /knowledge-graph-search/);
+  assert.match(graphSource, /data-action="knowledge-graph-search"/);
+  assert.match(graphSource, /knowledgeGraphSearchQuery/);
+  assert.match(graphSource, /knowledge-graph-tooltip/);
+  assert.match(graphSource, /touchstart/);
+  assert.match(graphSource, /touchmove/);
+  assert.match(graphSource, /touchend/);
+  assert.match(graphSource, /touch-action: none/);
   assert.match(graphSource, /addEventListener\('wheel'/);
   assert.match(graphSource, /addEventListener\('mousedown'/);
   assert.match(graphSource, /draggingNode/);
@@ -122,6 +130,7 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.doesNotMatch(app, />Align Discussion</);
   assert.doesNotMatch(app, /Create review draft/);
   assert.doesNotMatch(app, />Create Draft</);
+  assert.doesNotMatch(app, /knowledge-create-draft/);
   assert.doesNotMatch(app, /knowledge-draft-editor/);
   assert.doesNotMatch(app, /knowledge-focus-draft/);
   assert.doesNotMatch(app, /Import Markdown/);
@@ -137,7 +146,14 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.match(styles, /\.knowledge-log-event\.color-amber/);
   assert.match(styles, /\.knowledge-log-event\.color-red/);
   assert.match(styles, /margin-left: calc\(var\(--indent\) \* 22px\)/);
+  assert.match(styles, /--knowledge-bg/);
+  assert.match(styles, /--knowledge-border/);
+  assert.match(styles, /\.knowledge-status-badge/);
+  assert.match(styles, /\.knowledge-document-meta/);
+  assert.match(styles, /\.modal-card\.modal-knowledge-publish/);
   assert.match(styles, /#knowledge-graph-canvas/);
+  assert.match(styles, /\.knowledge-graph-search/);
+  assert.match(styles, /\.knowledge-graph-tooltip/);
   assert.match(styles, /\.knowledge-layout-frame/);
   assert.match(styles, /\.knowledge-settings-shell/);
   assert.match(styles, /\.knowledge-settings-tabs/);
@@ -155,6 +171,32 @@ test('Knowledge review, settings, and Change Log controls render expected state 
   assert.doesNotMatch(styles, /knowledge-import-panel/);
   assert.doesNotMatch(styles, /knowledge-anchors/);
   assert.doesNotMatch(styles, /knowledge-backlinks/);
+});
+
+test('Knowledge document metadata, badges, and publish confirmation modal are retained Web scope', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+
+  assert.match(app, /function renderKnowledgeStatusBadge/);
+  assert.match(app, /knowledge-status-badge/);
+  assert.match(app, /function renderKnowledgeDocumentMeta/);
+  assert.match(app, /knowledge-document-meta/);
+  assert.match(app, /Current version/);
+  assert.match(app, /Updated/);
+  assert.match(app, /data-action="knowledge-open-publish-confirm"/);
+  assert.match(app, /modal = 'knowledge-publish'/);
+  assert.match(app, /function renderKnowledgePublishModal/);
+  assert.match(app, /knowledge-publish-confirm/);
+  assert.match(app, /data-action="knowledge-confirm-publish"/);
+  assert.match(app, /'knowledge-publish': renderKnowledgePublishModal/);
+  assert.doesNotMatch(app, /window\.confirm\('Publish this Knowledge Space change session\?'\)/);
+
+  assert.match(styles, /\.knowledge-status-badge\.status-draft/);
+  assert.match(styles, /\.knowledge-status-badge\.status-diff/);
+  assert.match(styles, /\.knowledge-status-badge\.status-preview/);
+  assert.match(styles, /\.knowledge-status-badge\.status-published/);
+  assert.match(styles, /\.knowledge-document-meta/);
+  assert.match(styles, /\.knowledge-publish-confirm/);
 });
 
 test('Knowledge Space preserves inner scroll surfaces across full renders', async () => {

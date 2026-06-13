@@ -9,8 +9,12 @@ import {
 import {
   deleteTeamSharingLink,
   disableTeamSharingSkill,
+  alignKnowledgeConsensus,
+  askKnowledgeConsensusCommand,
   editTeamSharingLink,
+  editKnowledgeConsensus,
   initTeamSharingProject,
+  importKnowledgeConsensus,
   installTeamSharingHooks,
   installTeamSharingSkill,
   listTeamSharingLinks,
@@ -176,6 +180,10 @@ function renderTeamSharingHelp() {
     '  list-links List MagClaw share links for the current server',
     '  delete-link Delete one MagClaw share link by URL or share ID',
     '  share-artifact Create a public MagClaw share link from a local file',
+    '  import-consensus Import Markdown into Knowledge Space with Team Sharing login',
+    '  ask-consensus Ask Knowledge Space consensus with Team Sharing login',
+    '  edit-consensus Draft a Knowledge Space document edit from Markdown',
+    '  align-consensus Check discussion text against Knowledge Space consensus',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  session-reporting Control reporting for one local session (off|on|status)',
     '  skills   Install/remove/status the local Team Sharing skill',
@@ -360,6 +368,18 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
     case 'share-artifact':
     case 'quickshare':
       printJson(await shareTeamSharingArtifact(flags, env));
+      break;
+    case 'import-consensus':
+      printJson(await importKnowledgeConsensus(flags, env));
+      break;
+    case 'ask-consensus':
+      printJson(await askKnowledgeConsensusCommand(flags, env));
+      break;
+    case 'edit-consensus':
+      printJson(await editKnowledgeConsensus(flags, env));
+      break;
+    case 'align-consensus':
+      printJson(await alignKnowledgeConsensus(flags, env));
       break;
     case 'sync':
       {

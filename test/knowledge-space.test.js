@@ -15,6 +15,7 @@ import {
   moveKnowledgeSessionToDiff,
   moveKnowledgeSessionToPreview,
   publishKnowledgeSession,
+  renderKnowledgeDiff,
   renderKnowledgeMarkdown,
   updateKnowledgeSettings,
 } from '../server/knowledge-space.js';
@@ -48,7 +49,7 @@ function actor(humanId = 'hum_owner', role = 'owner') {
   return { member: { workspaceId: 'ws_knowledge', humanId, role } };
 }
 
-test('Markdown import creates root and H2 documents, H3 anchors, graph data, and searchable consensus', () => {
+test('Markdown import creates root and H2 documents, H3 anchors, graph data, and searchable consensus', async () => {
   const appState = state();
   const result = importKnowledgeMarkdown({
     state: appState,
@@ -85,13 +86,142 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   assert.deepEqual(displayedRoot.childDocuments.map((doc) => doc.title), ['Memory Module', 'Publishing Flow']);
   assert.doesNotMatch(displayedRoot.renderedHtml, /\[Memory Module\]\(#memory-module\)/);
 
-  const answer = askKnowledgeConsensus(result.space, 'original consensus anchor');
+  const answer = await askKnowledgeConsensus(result.space, 'original consensus anchor');
   assert.match(answer.answer, /Matched/);
   assert.equal(answer.matches[0].title, 'Recall Boundary');
 
-  const alignment = alignKnowledgeDiscussion(result.space, 'We need a diff before publishing.');
+  const alignment = await alignKnowledgeDiscussion(result.space, 'We need a diff before publishing.', { env: { MAGCLAW_LLM_DISABLED: '1' } });
   assert.equal(alignment.rules.some((rule) => rule.title === 'Diff Preview'), true);
-  assert.equal(alignment.alignmentGaps.length > 0, true);
+  assert.equal(alignment.alignmentGaps.length, 0);
+});
+
+test('re-importing an existing root creates a draft instead of silently overwriting published content', () => {
+  const appState = state();
+  const first = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_knowledge',
+    markdown: SAMPLE_MARKDOWN,
+    actor: actor(),
+    now: () => '2026-06-10T10:00:00.000Z',
+  });
+  assert.equal(first.mode, 'published');
+  assert.equal(first.session.status, 'published');
+
+  const edited = `${SAMPLE_MARKDOWN.replace(
+    'Memory rules should be explicit and retrievable.',
+    'Memory rules MUST be explicit, retrievable, and cite a consensus anchor.',
+  )}\n## New Operating Rule\n\nNew rule staged by re-import.\n`;
+  const second = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_knowledge',
+    markdown: edited,
+    actor: actor(),
+    now: () => '2026-06-11T10:00:00.000Z',
+  });
+
+  assert.equal(second.mode, 'draft');
+  assert.equal(second.session.status, 'draft');
+  assert.equal(second.session.immutable, false);
+  assert.equal(second.session.changes.some((change) => change.isNew && /New Operating Rule/.test(change.newDocMeta?.title || '')), true);
+  const memoryDoc = appState.knowledgeSpace.spaces.ws_knowledge.documents.find((doc) => doc.title === 'Memory Module');
+  assert.match(memoryDoc.sourceMarkdown, /Memory rules should be explicit and retrievable\./);
+  assert.doesNotMatch(memoryDoc.sourceMarkdown, /MUST be explicit/);
+});
+
+test('renderKnowledgeMarkdown supports blockquote, table, and horizontal rule blocks', () => {
+  const md = [
+    '> 这是一段引用',
+    '> 第二行引用',
+    '',
+    '| 模块 | 状态 |',
+    '| --- | --- |',
+    '| 检索 | 待修 |',
+    '| 发布 | 完成 |',
+    '',
+    '---',
+    '',
+    '正文段落。',
+  ].join('\n');
+  const { html } = renderKnowledgeMarkdown(md);
+  assert.match(html, /<blockquote>[\s\S]*这是一段引用[\s\S]*第二行引用[\s\S]*<\/blockquote>/);
+  assert.match(html, /<table class="knowledge-md-table">/);
+  assert.match(html, /<th>模块<\/th>/);
+  assert.match(html, /<td>检索<\/td>/);
+  assert.doesNotMatch(html, /\| --- \|/);
+  assert.match(html, /<hr>/);
+});
+
+test('heading split and anchor extraction ignore headings inside fenced code blocks', () => {
+  const appState = state();
+  const md = [
+    '# Root',
+    '',
+    'Intro.',
+    '',
+    '## Real Section',
+    '',
+    '```bash',
+    '# shell comment, not root',
+    '### fake anchor',
+    'echo hi',
+    '```',
+    '',
+    '### Real Anchor',
+    '',
+    'Actual anchor body.',
+  ].join('\n');
+  const result = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_code',
+    markdown: md,
+    actor: actor(),
+    now: () => '2026-06-12T00:00:00.000Z',
+  });
+  assert.deepEqual(result.space.documents.map((doc) => doc.title), ['Root', 'Real Section']);
+  assert.deepEqual(result.space.anchors.map((anchor) => anchor.title), ['Real Anchor']);
+});
+
+test('renderKnowledgeDiff uses LCS rows so inserted lines do not mark the tail changed', () => {
+  const html = renderKnowledgeDiff('line1\nline2\nline3', 'line1\nINSERTED\nline2\nline3');
+  assert.equal((html.match(/class="added"/g) || []).length, 1);
+  assert.equal((html.match(/class="same"/g) || []).length, 3);
+  assert.doesNotMatch(html, /class="changed"/);
+});
+
+test('askKnowledgeConsensus matches Chinese queries without whitespace tokenization', async () => {
+  const appState = state();
+  importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_cn',
+    markdown: '# 团队共识\n\n## 记忆模块\n\n记忆规则必须显式且可检索，并引用共识锚点。',
+    actor: actor(),
+    now: () => '2026-06-12T00:00:00.000Z',
+  });
+  const result = await askKnowledgeConsensus(appState.knowledgeSpace.spaces.ws_cn, '记忆规则可检索吗', { env: {} });
+  assert.ok(result.matches.length > 0);
+  assert.match(result.matches[0].title, /记忆模块/);
+});
+
+test('alignKnowledgeDiscussion suppresses template-noise gaps when LLM is unavailable', async () => {
+  const appState = state();
+  importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_align',
+    markdown: '# C\n\n## 安全\n\n密钥必须注入环境变量。',
+    actor: actor(),
+    now: () => '2026-06-12T00:00:00.000Z',
+  });
+  const out = await alignKnowledgeDiscussion(appState.knowledgeSpace.spaces.ws_align, '我们把密钥写死在代码里吧', { env: {} });
+  assert.equal(out.rules.length > 0, true);
+  assert.deepEqual(out.alignmentGaps, []);
+});
+
+test('encryptKnowledgeSecret refuses the hardcoded fallback key in production', () => {
+  assert.throws(
+    () => encryptKnowledgeSecret('app-secret-value', { NODE_ENV: 'production' }),
+    /MAGCLAW_KNOWLEDGE_SECRET_KEY/,
+  );
+  assert.ok(encryptKnowledgeSecret('app-secret-value', { NODE_ENV: 'development' }).startsWith('enc:v1:'));
 });
 
 test('Knowledge Markdown display hides source escapes and duplicate document titles', () => {
@@ -147,6 +277,38 @@ test('settings encrypt Feishu secret and expose only masked status', () => {
   assert.match(result.settings.feishu.appSecretMasked, /^fak\*+est$/);
   assert.equal('appSecretEncrypted' in result.settings.feishu, false);
   assert.match(appState.knowledgeSpace.spaces.ws_knowledge.settings.feishu.appSecretEncrypted, /^enc:v1:/);
+});
+
+test('settings updates are audited with the acting admin', () => {
+  const appState = state();
+  importKnowledgeMarkdown({ state: appState, workspaceId: 'ws_audit', markdown: SAMPLE_MARKDOWN, actor: actor() });
+  updateKnowledgeSettings({
+    state: appState,
+    workspaceId: 'ws_audit',
+    patch: { whitelistHumanIds: ['hum_editor'] },
+    actor: actor('hum_admin', 'admin'),
+    now: () => '2026-06-11T10:00:00.000Z',
+  });
+  const space = appState.knowledgeSpace.spaces.ws_audit;
+  const last = space.changelogEvents.at(-1);
+  assert.equal(last.type, 'settings_updated');
+  assert.equal(last.actorHumanId, 'hum_admin');
+  assert.deepEqual(last.metadata.whitelistHumanIds, ['hum_editor']);
+});
+
+test('change session baseVersionId is server-authoritative', () => {
+  const appState = state();
+  importKnowledgeMarkdown({ state: appState, workspaceId: 'ws_version', markdown: SAMPLE_MARKDOWN, actor: actor() });
+  const space = appState.knowledgeSpace.spaces.ws_version;
+  const memory = space.documents.find((doc) => doc.title === 'Memory Module');
+  const { session } = createKnowledgeChangeSession({
+    state: appState,
+    workspaceId: 'ws_version',
+    changes: [{ docId: memory.id, proposedMarkdown: `${memory.sourceMarkdown}\n\nNew line.`, baseVersionId: 'ver_FORGED_LATEST' }],
+    actor: actor(),
+  });
+  assert.equal(session.changes[0].baseVersionId, memory.currentVersionId);
+  assert.notEqual(session.changes[0].baseVersionId, 'ver_FORGED_LATEST');
 });
 
 test('change sessions move as one unit, publish conflicts return to diff, and Feishu failure does not roll back', async () => {

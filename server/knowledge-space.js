@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { llmConfigFromEnv, llmConfigReady, requestLlmJson } from './llm-client.js';
+
 const RECENT_LEAF_WINDOW_MS = 72 * 60 * 60 * 1000;
 const KNOWLEDGE_SECRET_PREFIX = 'enc:v1:';
 const CHANGE_STATES = new Set(['draft', 'diff', 'preview', 'published']);
@@ -9,6 +11,7 @@ const EVENT_INDENT = {
   conflict: 2,
   preview: 1,
   published: 0,
+  settings_updated: 1,
   notification_failed: 1,
   notification_sent: 1,
 };
@@ -110,6 +113,8 @@ export function renderKnowledgeMarkdown(markdown = '') {
   let listType = '';
   let inCode = false;
   let codeLines = [];
+  let quoteLines = [];
+  let tableRows = [];
   const headingSlugs = new Map();
 
   const flushParagraph = () => {
@@ -131,6 +136,34 @@ export function renderKnowledgeMarkdown(markdown = '') {
     }
     html.push(`<li>${renderInlineMarkdown(content)}</li>`);
   };
+  const parseTableRow = (line) => line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim());
+  const isTableSeparator = (cells) => cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  const isTableLine = (line) => /^\s*\|.+\|\s*$/.test(line) || /^\s*[^|]+\|.+\s*$/.test(line);
+  const flushQuote = () => {
+    if (!quoteLines.length) return;
+    html.push(`<blockquote>\n<p>${renderInlineMarkdown(quoteLines.join(' '))}</p>\n</blockquote>`);
+    quoteLines = [];
+  };
+  const flushTable = () => {
+    if (!tableRows.length) return;
+    const rows = tableRows.map(parseTableRow);
+    if (rows.length >= 2 && isTableSeparator(rows[1])) {
+      const header = rows[0].map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`).join('');
+      const body = rows.slice(2)
+        .filter((row) => row.some((cell) => cell.trim()))
+        .map((row) => `<tr>${row.map((cell) => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`)
+        .join('');
+      html.push(`<table class="knowledge-md-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`);
+    } else {
+      paragraph.push(...tableRows.map((line) => line.trim()));
+    }
+    tableRows = [];
+  };
 
   for (const rawLine of lines) {
     const line = rawLine.replace(/\s+$/g, '');
@@ -140,6 +173,8 @@ export function renderKnowledgeMarkdown(markdown = '') {
         codeLines = [];
         inCode = false;
       } else {
+        flushQuote();
+        flushTable();
         flushParagraph();
         closeList();
         inCode = true;
@@ -152,6 +187,8 @@ export function renderKnowledgeMarkdown(markdown = '') {
     }
     const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
+      flushQuote();
+      flushTable();
       flushParagraph();
       closeList();
       const level = heading[1].length;
@@ -162,22 +199,54 @@ export function renderKnowledgeMarkdown(markdown = '') {
       html.push(`<h${level} id="${escapeHtml(id)}">${renderInlineMarkdown(rawTitle)}</h${level}>`);
       continue;
     }
+    if (/^\s*>/.test(line)) {
+      flushTable();
+      flushParagraph();
+      closeList();
+      quoteLines.push(line.replace(/^\s*>\s?/, '').trim());
+      continue;
+    }
+    if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushQuote();
+      flushTable();
+      flushParagraph();
+      closeList();
+      html.push('<hr>');
+      continue;
+    }
+    if (isTableLine(line)) {
+      flushQuote();
+      flushParagraph();
+      closeList();
+      tableRows.push(line);
+      continue;
+    }
     if (/^\s*[-*]\s+/.test(line)) {
+      flushQuote();
+      flushTable();
       pushListItem('ul', line.replace(/^\s*[-*]\s+/, ''));
       continue;
     }
     if (/^\s*\d+\.\s+/.test(line)) {
+      flushQuote();
+      flushTable();
       pushListItem('ol', line.replace(/^\s*\d+\.\s+/, ''));
       continue;
     }
     if (!line.trim()) {
+      flushQuote();
+      flushTable();
       flushParagraph();
       closeList();
       continue;
     }
+    flushQuote();
+    flushTable();
     paragraph.push(line.trim());
   }
   if (inCode) html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
+  flushQuote();
+  flushTable();
   flushParagraph();
   closeList();
   return { html: html.join('\n'), headings };
@@ -205,22 +274,32 @@ function splitMarkdownByHeadings(markdown = '') {
   let rootLines = [];
   const h2Sections = [];
   let current = null;
+  let inCode = false;
 
   for (const line of lines) {
-    const h1 = line.match(/^#\s+(.+)$/);
-    const h2 = line.match(/^##\s+(.+)$/);
-    if (h1 && !rootTitle) {
-      rootTitle = decodeMarkdownEscapes(h1[1].trim());
-      rootLines.push(line);
-      continue;
-    }
-    if (h2) {
-      current = { title: decodeMarkdownEscapes(h2[1].trim()), lines: [line] };
-      h2Sections.push(current);
-      continue;
+    const fence = /^```/.test(line.trim());
+    if (!inCode) {
+      const h1 = line.match(/^#\s+(.+)$/);
+      const h2 = line.match(/^##\s+(.+)$/);
+      if (h1 && !rootTitle) {
+        rootTitle = decodeMarkdownEscapes(h1[1].trim());
+        rootLines.push(line);
+        if (fence) inCode = !inCode;
+        continue;
+      }
+      if (h2) {
+        current = { title: decodeMarkdownEscapes(h2[1].trim()), lines: [line] };
+        h2Sections.push(current);
+        if (fence) inCode = !inCode;
+        continue;
+      }
     }
     if (current) current.lines.push(line);
     else rootLines.push(line);
+    if (fence) {
+      inCode = !inCode;
+      continue;
+    }
   }
   if (!rootTitle) rootTitle = 'Knowledge Space';
   return {
@@ -466,13 +545,14 @@ function addChangelog(space, session, event) {
       createdAt: session.createdAt,
       updatedAt: now,
       publishedAt: session.publishedAt || '',
-      actorHumanId: session.actorHumanId || '',
+      actorHumanId: event.actorHumanId || session.actorHumanId || '',
     };
     space.changelogGroups.push(group);
   }
   group.status = session.status;
   group.updatedAt = now;
   group.publishedAt = session.publishedAt || group.publishedAt || '';
+  group.actorHumanId = group.actorHumanId || event.actorHumanId || session.actorHumanId || '';
   const type = event.type || session.status;
   space.changelogEvents.push({
     id: event.id || stableId('cle', space.workspaceId, session.id, type, now, space.changelogEvents.length),
@@ -485,6 +565,7 @@ function addChangelog(space, session, event) {
     color: event.color || eventColor(type),
     indent: Number.isFinite(event.indent) ? event.indent : (EVENT_INDENT[type] ?? EVENT_INDENT[event.status] ?? 0),
     createdAt: now,
+    actorHumanId: event.actorHumanId || session.actorHumanId || '',
     link: event.link || `/s/${encodeURIComponent(space.workspaceId)}/knowledge/reviews/${encodeURIComponent(session.id)}`,
     metadata: event.metadata || {},
   });
@@ -527,14 +608,18 @@ function anchorBlocks(markdown = '') {
   const lines = String(markdown || '').replace(/\r\n?/g, '\n').split('\n');
   const blocks = [];
   let current = null;
+  let inCode = false;
   for (const line of lines) {
-    const h3 = line.match(/^###\s+(.+)$/);
+    const fence = /^```/.test(line.trim());
+    const h3 = !inCode ? line.match(/^###\s+(.+)$/) : null;
     if (h3) {
       current = { title: decodeMarkdownEscapes(h3[1].trim()), lines: [line] };
       blocks.push(current);
+      if (fence) inCode = !inCode;
       continue;
     }
     if (current) current.lines.push(line);
+    if (fence) inCode = !inCode;
   }
   return blocks.map((block) => ({
     title: block.title,
@@ -590,7 +675,42 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
   const parsed = splitMarkdownByHeadings(markdown);
   const rootTitle = sourceName || parsed.rootTitle;
   const rootId = stableId('doc', workspaceId, rootTitle, 'root');
-  const rootBody = parsed.rootMarkdown.replace(/^#\s+.+$/m, '').trim();
+  const rootBody = stripLeadingMarkdownHeading(parsed.rootMarkdown, 1);
+
+  const rootExists = safeArray(space.documents).some((doc) => doc.id === rootId);
+  if (rootExists) {
+    const changes = [{ docId: rootId, proposedMarkdown: rootBody }];
+    for (const section of parsed.sections) {
+      const sectionMarkdown = stripLeadingMarkdownHeading(section.markdown, 2);
+      const docId = stableId('doc', workspaceId, rootTitle, section.title);
+      const exists = safeArray(space.documents).some((doc) => doc.id === docId);
+      changes.push(exists
+        ? { docId, proposedMarkdown: sectionMarkdown }
+        : {
+          docId,
+          isNew: true,
+          title: section.title,
+          level: 2,
+          parentId: rootId,
+          sourceUrl,
+          proposedMarkdown: sectionMarkdown,
+        });
+    }
+    const result = createKnowledgeChangeSession({
+      state,
+      workspaceId,
+      summary: `Re-import ${rootTitle}`,
+      changes,
+      actor,
+      now,
+    });
+    return {
+      space,
+      session: result.session,
+      mode: 'draft',
+      imported: { documents: changes.length, anchors: 0 },
+    };
+  }
 
   const importedDocIds = new Set();
   const importedAnchorIds = new Set();
@@ -693,7 +813,7 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
     detail: `${importedDocIds.size} documents and ${importedAnchorIds.size} anchors imported.`,
     createdAt: timestamp,
   });
-  return { space, session, imported: { documents: importedDocIds.size, anchors: importedAnchorIds.size } };
+  return { space, session, mode: 'published', imported: { documents: importedDocIds.size, anchors: importedAnchorIds.size } };
 }
 
 export function getKnowledgeDocument(space, docId) {
@@ -834,11 +954,38 @@ function knowledgeGraphRadius(node, degree) {
   return Math.max(2.6, Math.min(11, base + Math.min(2.6, Math.sqrt(degree + 1) * 0.55)));
 }
 
+function searchTokens(value) {
+  const text = cleanString(value).toLowerCase();
+  const tokens = new Set();
+  for (const match of text.matchAll(/[a-z0-9][a-z0-9_-]{1,}/g)) {
+    tokens.add(match[0]);
+  }
+  for (const match of text.matchAll(/[\u3400-\u9fff]+/g)) {
+    const chars = [...match[0]];
+    for (const char of chars) tokens.add(char);
+    for (let size = 2; size <= 4; size += 1) {
+      for (let index = 0; index <= chars.length - size; index += 1) {
+        tokens.add(chars.slice(index, index + size).join(''));
+      }
+    }
+  }
+  return [...tokens].filter(Boolean);
+}
+
+function tokenWeight(token) {
+  if (/^[\u3400-\u9fff]$/.test(token)) return 0.35;
+  return Math.max(1, Math.min(8, [...token].length));
+}
+
 function scoreText(query, text) {
-  const words = cleanString(query).toLowerCase().split(/[\s,，。.!?、;；:：]+/).filter(Boolean);
+  const words = searchTokens(query);
   if (!words.length) return 0;
   const haystack = cleanString(text).toLowerCase();
-  return words.reduce((score, word) => score + (haystack.includes(word) ? Math.max(1, Math.min(6, word.length)) : 0), 0);
+  const textTokens = new Set(searchTokens(text));
+  return words.reduce((score, word) => {
+    if (textTokens.has(word)) return score + tokenWeight(word);
+    return haystack.includes(word) ? score + Math.min(3, tokenWeight(word)) : score;
+  }, 0);
 }
 
 function knowledgeSearch(space, query, limit = 5) {
@@ -873,41 +1020,107 @@ function knowledgeSearch(space, query, limit = 5) {
     .slice(0, limit);
 }
 
-export function askKnowledgeConsensus(space, query) {
+export async function askKnowledgeConsensus(space, query, options = {}) {
   const matches = knowledgeSearch(space, query, 5);
+  const fallbackAnswer = matches.length
+    ? `Matched ${matches.length} consensus item${matches.length === 1 ? '' : 's'}. Start with: ${matches[0].summary || matches[0].title}`
+    : 'No matching consensus item was found in this Knowledge Space.';
+  const config = llmConfigFromEnv(options.env || process.env);
+  if (matches.length && llmConfigReady(config) && options.env?.MAGCLAW_LLM_DISABLED !== '1') {
+    try {
+      const payload = await requestLlmJson({
+        config,
+        system: 'You answer questions using only the provided MagClaw Knowledge Space consensus items. Return JSON with an "answer" string.',
+        user: JSON.stringify({
+          question: cleanString(query),
+          matches: matches.map((match) => ({
+            title: match.title,
+            summary: match.summary,
+            href: match.href,
+          })),
+        }),
+        maxTokens: 1200,
+      });
+      const answer = cleanString(payload?.answer);
+      if (answer) return { answer, matches, llm: { used: true } };
+    } catch (error) {
+      console.warn(`[knowledge-space] ask LLM failed: ${cleanString(error?.message || error)}`);
+    }
+  }
   return {
-    answer: matches.length
-      ? `Matched ${matches.length} consensus item${matches.length === 1 ? '' : 's'}. Start with: ${matches[0].summary || matches[0].title}`
-      : 'No matching consensus item was found in this Knowledge Space.',
+    answer: fallbackAnswer,
     matches,
+    llm: { used: false },
   };
 }
 
-export function alignKnowledgeDiscussion(space, text) {
+export async function alignKnowledgeDiscussion(space, text, options = {}) {
   const matches = knowledgeSearch(space, text, 6);
+  const config = llmConfigFromEnv(options.env || process.env);
+  if (!matches.length || !llmConfigReady(config) || options.env?.MAGCLAW_LLM_DISABLED === '1') {
+    return { rules: matches, alignmentGaps: [], llm: { used: false } };
+  }
+  try {
+    const payload = await requestLlmJson({
+      config,
+      system: [
+        'You compare a discussion against MagClaw Knowledge Space consensus items.',
+        'Return strict JSON: {"alignmentGaps":[{"docId":"","anchorId":"","title":"","observation":"","suggestedAdjustment":"","confidence":0.0}]}',
+        'Only include high-confidence, actionable gaps. Do not include generic reminders.',
+      ].join('\n'),
+      user: JSON.stringify({
+        discussion: cleanString(text),
+        consensus: matches.map((match) => ({
+          docId: match.docId,
+          anchorId: match.anchorId || '',
+          title: match.title,
+          summary: match.summary,
+        })),
+      }),
+      maxTokens: 1600,
+    });
+    const minConfidence = Number.isFinite(Number(options.minConfidence)) ? Number(options.minConfidence) : 0.7;
+    const alignmentGaps = safeArray(payload?.alignmentGaps)
+      .map((gap) => ({
+        docId: cleanString(gap.docId),
+        anchorId: cleanString(gap.anchorId),
+        title: cleanString(gap.title),
+        observation: cleanString(gap.observation),
+        suggestedAdjustment: cleanString(gap.suggestedAdjustment),
+        confidence: Number(gap.confidence || 0),
+      }))
+      .filter((gap) => gap.title && gap.observation && gap.suggestedAdjustment && gap.confidence >= minConfidence);
+    return { rules: matches, alignmentGaps, llm: { used: true } };
+  } catch (error) {
+    console.warn(`[knowledge-space] align LLM failed: ${cleanString(error?.message || error)}`);
+  }
   return {
     rules: matches,
-    alignmentGaps: matches.slice(0, 3).map((match) => ({
-      docId: match.docId,
-      anchorId: match.anchorId || '',
-      title: match.title,
-      observation: `Check whether the current discussion explicitly satisfies "${match.title}".`,
-      suggestedAdjustment: match.summary || 'Restate the decision against this consensus item before proceeding.',
-    })),
+    alignmentGaps: [],
+    llm: { used: false },
   };
 }
 
 function normalizeChangeInput(space, change = {}) {
   const docId = cleanString(change.docId);
   const doc = space.documents.find((item) => item.id === docId);
-  if (!doc) throw new Error(`Unknown knowledge document: ${docId || '(missing)'}`);
-  const proposedMarkdown = cleanString(change.proposedMarkdown || change.markdown || doc.sourceMarkdown);
+  if (!doc && !change.isNew) throw new Error(`Unknown knowledge document: ${docId || '(missing)'}`);
+  const proposedMarkdown = cleanString(change.proposedMarkdown || change.markdown || doc?.sourceMarkdown || '');
   return {
-    docId: doc.id,
-    baseVersionId: cleanString(change.baseVersionId || doc.currentVersionId),
+    docId: doc?.id || docId,
+    isNew: Boolean(change.isNew && !doc),
+    newDocMeta: change.isNew && !doc
+      ? {
+        title: cleanString(change.title || change.newDocMeta?.title || docId),
+        level: Number(change.level || change.newDocMeta?.level || 1),
+        parentId: cleanString(change.parentId || change.newDocMeta?.parentId),
+        sourceUrl: cleanString(change.sourceUrl || change.newDocMeta?.sourceUrl),
+      }
+      : null,
+    baseVersionId: cleanString(doc?.currentVersionId || ''),
     proposedMarkdown,
     proposedHtml: renderKnowledgeMarkdown(proposedMarkdown).html,
-    diffHtml: renderKnowledgeDiff(doc.sourceMarkdown || '', proposedMarkdown),
+    diffHtml: renderKnowledgeDiff(doc?.sourceMarkdown || '', proposedMarkdown),
     status: 'draft',
   };
 }
@@ -915,15 +1128,28 @@ function normalizeChangeInput(space, change = {}) {
 export function renderKnowledgeDiff(before = '', after = '') {
   const beforeLines = String(before || '').replace(/\r\n?/g, '\n').split('\n');
   const afterLines = String(after || '').replace(/\r\n?/g, '\n').split('\n');
-  const max = Math.max(beforeLines.length, afterLines.length);
+  const dp = Array.from({ length: beforeLines.length + 1 }, () => Array(afterLines.length + 1).fill(0));
+  for (let left = beforeLines.length - 1; left >= 0; left -= 1) {
+    for (let right = afterLines.length - 1; right >= 0; right -= 1) {
+      dp[left][right] = beforeLines[left] === afterLines[right]
+        ? dp[left + 1][right + 1] + 1
+        : Math.max(dp[left + 1][right], dp[left][right + 1]);
+    }
+  }
   const rows = [];
-  for (let index = 0; index < max; index += 1) {
-    const left = beforeLines[index] ?? '';
-    const right = afterLines[index] ?? '';
-    if (left === right) {
-      rows.push(`<tr class="same"><td>${index + 1}</td><td>${escapeHtml(left)}</td><td>${escapeHtml(right)}</td></tr>`);
+  let left = 0;
+  let right = 0;
+  while (left < beforeLines.length || right < afterLines.length) {
+    if (left < beforeLines.length && right < afterLines.length && beforeLines[left] === afterLines[right]) {
+      rows.push(`<tr class="same"><td>${left + 1}</td><td>${escapeHtml(beforeLines[left])}</td><td>${escapeHtml(afterLines[right])}</td></tr>`);
+      left += 1;
+      right += 1;
+    } else if (right < afterLines.length && (left >= beforeLines.length || dp[left][right + 1] >= dp[left + 1]?.[right])) {
+      rows.push(`<tr class="added"><td></td><td></td><td>${escapeHtml(afterLines[right])}</td></tr>`);
+      right += 1;
     } else {
-      rows.push(`<tr class="changed"><td>${index + 1}</td><td>${escapeHtml(left)}</td><td>${escapeHtml(right)}</td></tr>`);
+      rows.push(`<tr class="removed"><td>${left + 1}</td><td>${escapeHtml(beforeLines[left])}</td><td></td></tr>`);
+      left += 1;
     }
   }
   return `<table class="knowledge-diff-table"><thead><tr><th>#</th><th>Published</th><th>Proposed</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
@@ -1012,6 +1238,10 @@ function detectPublishConflicts(space, session) {
   const conflicts = [];
   for (const change of safeArray(session.changes)) {
     const doc = space.documents.find((item) => item.id === change.docId);
+    if (change.isNew) {
+      if (doc) conflicts.push({ docId: change.docId, reason: 'document_created', latestVersionId: doc.currentVersionId || '' });
+      continue;
+    }
     if (!doc) {
       conflicts.push({ docId: change.docId, reason: 'document_deleted', latestVersionId: '' });
       continue;
@@ -1032,8 +1262,78 @@ function detectPublishConflicts(space, session) {
   return conflicts;
 }
 
+function upsertKnowledgeLink(space, link) {
+  const existing = space.links.find((item) => item.id === link.id);
+  if (existing) Object.assign(existing, link);
+  else space.links.push(link);
+}
+
+function rebuildNewDocumentAnchorsAndLinks(space, doc, markdown, timestamp, sourceUrl = '') {
+  if (doc.parentId) {
+    upsertKnowledgeLink(space, {
+      id: stableId('lnk', doc.parentId, doc.id, 'child', doc.title),
+      workspaceId: space.workspaceId,
+      fromDocId: doc.parentId,
+      fromAnchorId: '',
+      toDocId: doc.id,
+      toAnchorId: '',
+      kind: 'hierarchy',
+      label: doc.title,
+      url: '',
+    });
+  }
+  const links = [];
+  const blocks = anchorBlocks(markdown);
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index];
+    const anchorId = stableId('anch', doc.id, block.title);
+    const anchor = {
+      id: anchorId,
+      workspaceId: space.workspaceId,
+      docId: doc.id,
+      title: block.title,
+      level: 3,
+      slug: slugify(block.title),
+      anchor: slugify(block.title),
+      summary: summarizeMarkdown(block.markdown),
+      updatedAt: timestamp,
+      sourceUrl,
+    };
+    const existingAnchor = space.anchors.find((item) => item.id === anchor.id);
+    if (existingAnchor) Object.assign(existingAnchor, anchor);
+    else space.anchors.push(anchor);
+    links.push({
+      id: stableId('lnk', doc.id, anchorId, 'anchor', index),
+      workspaceId: space.workspaceId,
+      fromDocId: doc.id,
+      fromAnchorId: '',
+      toDocId: doc.id,
+      toAnchorId: anchorId,
+      kind: 'anchor',
+      label: block.title,
+      url: '',
+    });
+    links.push(...linksFromMarkdown(block.markdown, doc.id, anchorId));
+  }
+  for (const link of links) upsertKnowledgeLink(space, link);
+}
+
 function publishChanges(space, session, now, actor) {
   for (const change of safeArray(session.changes)) {
+    if (change.isNew && change.newDocMeta) {
+      const { doc } = upsertDocumentFromMarkdown(space, {
+        id: change.docId,
+        title: change.newDocMeta.title,
+        markdown: change.proposedMarkdown,
+        parentId: change.newDocMeta.parentId,
+        level: change.newDocMeta.level,
+        sourceUrl: change.newDocMeta.sourceUrl,
+      }, { now, actor });
+      const version = space.versions.find((item) => item.id === doc.currentVersionId);
+      if (version) version.changeSessionId = session.id;
+      rebuildNewDocumentAnchorsAndLinks(space, doc, change.proposedMarkdown, now, change.newDocMeta.sourceUrl);
+      continue;
+    }
     const doc = space.documents.find((item) => item.id === change.docId);
     if (!doc) continue;
     const rendered = renderKnowledgeMarkdown(change.proposedMarkdown);
@@ -1059,13 +1359,18 @@ function publishChanges(space, session, now, actor) {
   }
 }
 
+function explicitKnowledgeSecretRequired(env = process.env) {
+  return env.NODE_ENV === 'production'
+    || env.MAGCLAW_DEPLOYMENT === 'cloud'
+    || env.MAGCLAW_CLOUD_DEPLOY === '1';
+}
+
 function secretKey(env = process.env) {
-  const seed = cleanString(
-    env.MAGCLAW_KNOWLEDGE_SECRET_KEY
-    || env.MAGCLAW_SESSION_SECRET
-    || env.MAGCLAW_AUTH_SECRET
-    || 'magclaw-knowledge-space-local-dev',
-  );
+  const explicit = cleanString(env.MAGCLAW_KNOWLEDGE_SECRET_KEY);
+  if (explicitKnowledgeSecretRequired(env) && !explicit) {
+    throw new Error('MAGCLAW_KNOWLEDGE_SECRET_KEY is required for Knowledge Space secret encryption in production/cloud deployments.');
+  }
+  const seed = cleanString(explicit || env.MAGCLAW_SESSION_SECRET || env.MAGCLAW_AUTH_SECRET || 'magclaw-knowledge-space-local-dev');
   return crypto.createHash('sha256').update(seed).digest();
 }
 
@@ -1097,23 +1402,56 @@ export function updateKnowledgeSettings({ state, workspaceId, patch = {}, actor 
   normalizeSpace(space);
   if (!isKnowledgeAdmin(actor)) throw new Error('Only owner/admin users can update Knowledge Space settings.');
   const timestamp = isoNow(now);
+  let changed = false;
   if (Array.isArray(patch.whitelistHumanIds)) {
     space.settings.whitelistHumanIds = [...new Set(patch.whitelistHumanIds.map(cleanString).filter(Boolean))];
+    changed = true;
   }
   if (patch.feishu && typeof patch.feishu === 'object') {
     const feishu = space.settings.feishu;
-    if (patch.feishu.appId !== undefined) feishu.appId = cleanString(patch.feishu.appId);
-    if (patch.feishu.chatId !== undefined) feishu.chatId = cleanString(patch.feishu.chatId);
+    if (patch.feishu.appId !== undefined) {
+      feishu.appId = cleanString(patch.feishu.appId);
+      changed = true;
+    }
+    if (patch.feishu.chatId !== undefined) {
+      feishu.chatId = cleanString(patch.feishu.chatId);
+      changed = true;
+    }
     if (patch.feishu.appSecret !== undefined) {
       const secret = cleanString(patch.feishu.appSecret);
       if (secret) {
         feishu.appSecretEncrypted = encryptKnowledgeSecret(secret, env);
         feishu.appSecretConfiguredAt = timestamp;
+        changed = true;
       }
     }
     feishu.updatedAt = timestamp;
   }
   space.updatedAt = timestamp;
+  if (changed) {
+    const auditSession = {
+      id: stableId('chg', space.workspaceId, 'settings', timestamp, actorHumanId(actor)),
+      workspaceId: space.workspaceId,
+      status: 'published',
+      summary: 'Knowledge settings updated',
+      actorHumanId: actorHumanId(actor),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      publishedAt: timestamp,
+    };
+    addChangelog(space, auditSession, {
+      type: 'settings_updated',
+      title: 'Knowledge settings updated',
+      detail: 'Knowledge Space settings were updated.',
+      actorHumanId: actorHumanId(actor),
+      createdAt: timestamp,
+      metadata: {
+        whitelistHumanIds: [...space.settings.whitelistHumanIds],
+        feishuConfigured: Boolean(space.settings.feishu?.appSecretEncrypted),
+      },
+      link: `/s/${encodeURIComponent(space.workspaceId)}/knowledge/settings`,
+    });
+  }
   return { space, settings: publicKnowledgeSpace(space, actor, { env }).settings };
 }
 
@@ -1166,12 +1504,12 @@ function knowledgePublishCard(space, session, publicBaseUrl = '') {
     config: { wide_screen_mode: true },
     header: {
       template: 'green',
-      title: { tag: 'plain_text', content: 'MagClaw Knowledge Space Published' },
+      title: { tag: 'plain_text', content: 'MagClaw 共识库已发布' },
     },
     elements: [
-      { tag: 'div', text: { tag: 'lark_md', content: `**${session.summary || 'Knowledge update'}**` } },
-      { tag: 'div', text: { tag: 'lark_md', content: docTitles.map((title) => `- ${title}`).join('\n') || '- No documents listed' } },
-      ...(publicBaseUrl ? [{ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: 'Open publish link' }, url, type: 'primary' }] }] : []),
+      { tag: 'div', text: { tag: 'lark_md', content: `**${session.summary || '共识更新'}**` } },
+      { tag: 'div', text: { tag: 'lark_md', content: docTitles.map((title) => `- ${title}`).join('\n') || '- 暂无文档' } },
+      ...(publicBaseUrl ? [{ tag: 'action', actions: [{ tag: 'button', text: { tag: 'plain_text', content: '打开发布记录' }, url, type: 'primary' }] }] : []),
     ],
   };
 }

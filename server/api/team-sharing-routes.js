@@ -1,6 +1,17 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import {
+  alignKnowledgeDiscussion,
+  askKnowledgeConsensus,
+  createKnowledgeChangeSession,
+  ensureKnowledgeSpace,
+  getKnowledgeDocument,
+  importKnowledgeMarkdown,
+  isKnowledgeAdmin,
+  isKnowledgeWhitelisted,
+  publicKnowledgeSpace,
+} from '../knowledge-space.js';
+import {
   applyTeamSharingFeedback,
   contextWindowForTeamSharingSession,
   normalizeTeamSharingSearchMode,
@@ -4602,6 +4613,16 @@ function parseTeamSharingInspectableLink(raw = '', baseUrl = '') {
       sessionId: decodeURIComponent(context[1] || ''),
     };
   }
+  const knowledgeDoc = parsed.pathname.match(/^\/s\/([^/]+)\/knowledge\/docs\/([^/]+)\/?$/);
+  if (knowledgeDoc) {
+    return {
+      ok: true,
+      kind: 'knowledge_doc',
+      url: parsed,
+      serverSlug: decodeURIComponent(knowledgeDoc[1] || ''),
+      docId: decodeURIComponent(knowledgeDoc[2] || ''),
+    };
+  }
   const share = parsed.pathname.match(/^\/s\/([^/]+)\/?$/) || parsed.pathname.match(/^\/share\/([^/]+)\/?$/);
   if (share) {
     return {
@@ -4615,6 +4636,35 @@ function parseTeamSharingInspectableLink(raw = '', baseUrl = '') {
 }
 
 function inspectableTargetForLink(teamSharingState = {}, state = {}, parsed = {}) {
+  if (parsed.kind === 'knowledge_doc') {
+    const workspace = workspaceByIdOrSlug(state, parsed.serverSlug);
+    const workspaceId = String(workspace?.id || parsed.serverSlug || '').trim();
+    const space = ensureKnowledgeSpace(state, workspaceId || 'local');
+    const doc = getKnowledgeDocument(space, parsed.docId);
+    if (!doc) {
+      return {
+        ok: false,
+        status: 404,
+        reason: 'not_found',
+        kind: 'knowledge_doc',
+        target: { serverSlug: parsed.serverSlug || '', docId: parsed.docId || '' },
+        error: 'Knowledge document not found.',
+      };
+    }
+    return {
+      ok: true,
+      kind: 'knowledge_doc',
+      workspaceId,
+      document: doc,
+      target: {
+        serverSlug: String(parsed.serverSlug || '').trim(),
+        docId: String(parsed.docId || '').trim(),
+        title: String(doc.title || '').trim(),
+        workspaceId,
+        server: publicTeamSharingServer(state, workspaceId),
+      },
+    };
+  }
   if (parsed.kind === 'share') {
     const share = ensureTeamSharingShares(teamSharingState).find((item) => item.id === parsed.shareId && item.revokedAt == null);
     if (!share) {
@@ -4716,6 +4766,69 @@ function inspectableTargetForLink(teamSharingState = {}, state = {}, parsed = {}
     target: {},
     error: 'Only MagClaw Team Sharing share/context links are supported.',
   };
+}
+
+function workspaceIdForKnowledgeTarget(state = {}, value = '', fallback = '') {
+  const clean = String(value || '').trim();
+  const workspace = workspaceByIdOrSlug(state, clean);
+  return String(workspace?.id || clean || fallback || state.connection?.workspaceId || state.cloud?.workspace?.id || 'local').trim();
+}
+
+function knowledgeActorForTeamSharingIdentity({ actor = null, currentUser = null, tokenRecord = null, state = {}, workspaceId = '' } = {}) {
+  const cleanWorkspaceId = String(workspaceId || '').trim() || 'local';
+  if (actor?.member && String(actor.member.workspaceId || cleanWorkspaceId).trim() === cleanWorkspaceId) return actor;
+  if (cleanWorkspaceId === 'local') {
+    return {
+      member: { workspaceId: cleanWorkspaceId, humanId: 'local', role: 'owner', status: 'active' },
+      user: { id: 'local', name: 'Local User' },
+    };
+  }
+  const identity = tokenRecord?.user || currentUser || {};
+  const member = activeWorkspaceMemberForIdentity(state, identity, cleanWorkspaceId);
+  if (!member && tokenRecord && String(tokenRecord.workspaceId || '').trim() !== cleanWorkspaceId) return null;
+  const humanId = String(member?.humanId || member?.id || identity.id || identity.userId || '').trim();
+  if (!humanId) return null;
+  return {
+    member: {
+      workspaceId: cleanWorkspaceId,
+      humanId,
+      role: String(member?.role || 'member').trim(),
+      status: String(member?.status || 'active').trim(),
+      email: String(member?.email || identity.email || '').trim(),
+      name: String(member?.name || identity.name || '').trim(),
+    },
+    user: {
+      id: String(identity.id || member?.userId || humanId).trim(),
+      email: String(identity.email || member?.email || '').trim(),
+      name: String(identity.name || member?.name || '').trim(),
+    },
+  };
+}
+
+function teamSharingKnowledgeAccess({ req, actor = null, currentUser = null, teamSharingState = {}, state = {}, workspaceId = '' } = {}) {
+  const tokenRecord = actor ? null : tokenRecordForRequest(teamSharingState, req);
+  const tokenAccess = tokenWorkspaceAccess(state, tokenRecord, workspaceId, 'This Knowledge Space belongs to another server.');
+  if (tokenAccess && !tokenAccess.ok) return { ...tokenAccess, actor: null };
+  if (!actor && !currentUser && !tokenRecord) return { ok: false, status: 401, reason: 'login_required', error: 'Team Sharing CLI login is required.', actor: null };
+  const effectiveActor = knowledgeActorForTeamSharingIdentity({ actor, currentUser, tokenRecord, state, workspaceId });
+  if (!effectiveActor) return { ok: false, status: 403, reason: 'server_membership_required', error: 'Join this server before reading Knowledge Space.', actor: null };
+  return {
+    ok: true,
+    status: 200,
+    reason: 'ok',
+    workspaceId,
+    actorId: actorHumanId(effectiveActor),
+    via: tokenAccess?.via || (actor ? 'browser' : tokenRecord ? 'token' : 'browser'),
+    actor: effectiveActor,
+  };
+}
+
+function sendTeamSharingKnowledgeAccessError(sendJson, res, access = {}, fallback = 'Knowledge Space access denied.') {
+  sendJson(res, access.status || 403, {
+    ok: false,
+    reason: access.reason || (access.status === 401 ? 'login_required' : 'server_membership_required'),
+    error: access.error || fallback,
+  });
 }
 
 function teamSharingLinkAction({ reason = '', serverUrl = '', originalUrl = '' } = {}) {
@@ -5236,7 +5349,9 @@ export async function handleTeamSharingApi(req, res, url, deps) {
 
     const access = targetResult.kind === 'share'
       ? shareAccess(req, { actor, currentUser: browserUser, teamSharingState, share: targetResult.share, state })
-      : teamSharingWorkspaceAccessResult({ actor, currentUser: browserUser, state, tokenRecord, session: targetResult.session });
+      : targetResult.kind === 'knowledge_doc'
+        ? teamSharingKnowledgeAccess({ req, actor, currentUser: browserUser, teamSharingState, state, workspaceId: targetResult.workspaceId })
+        : teamSharingWorkspaceAccessResult({ actor, currentUser: browserUser, state, tokenRecord, session: targetResult.session });
     const reason = access.ok ? 'ok' : access.status === 401 ? (tokenIssue?.reason || 'login_required') : 'server_membership_required';
     const response = {
       ok: Boolean(access.ok),
@@ -5258,6 +5373,134 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     };
     sendJson(res, 200, response);
     return true;
+  }
+
+  const knowledgeDocMatch = url.pathname.match(/^\/api\/team-sharing\/knowledge\/([^/]+)\/docs\/([^/]+)\/?$/);
+  if (req.method === 'GET' && knowledgeDocMatch) {
+    const serverSlug = decodeURIComponent(knowledgeDocMatch[1] || '');
+    const docId = decodeURIComponent(knowledgeDocMatch[2] || '');
+    const effectiveWorkspaceId = workspaceIdForKnowledgeTarget(state, serverSlug, workspaceId);
+    const access = teamSharingKnowledgeAccess({ req, actor, currentUser: browserUser, teamSharingState, state, workspaceId: effectiveWorkspaceId });
+    if (!access.ok) {
+      sendTeamSharingKnowledgeAccessError(sendJson, res, access, 'Join this server before reading Knowledge Space.');
+      return true;
+    }
+    const space = ensureKnowledgeSpace(state, effectiveWorkspaceId, { now });
+    const doc = getKnowledgeDocument(space, docId);
+    if (!doc) {
+      sendJson(res, 404, { ok: false, kind: 'knowledge_doc', reason: 'not_found', error: 'Knowledge document not found.' });
+      return true;
+    }
+    addSystemEvent('team_sharing_knowledge_doc_read', `Team Sharing Knowledge document read: ${compactText(doc.title || docId, 90)}`, {
+      workspaceId: effectiveWorkspaceId,
+      docId,
+      actorId: access.actorId || '',
+    });
+    sendJson(res, 200, {
+      ok: true,
+      kind: 'knowledge_doc',
+      serverSlug,
+      docId,
+      document: doc,
+      space: publicKnowledgeSpace(space, access.actor),
+      url: `${publicUrlFromRequest(req)}/s/${encodeURIComponent(serverSlug)}/knowledge/docs/${encodeURIComponent(docId)}`,
+    });
+    return true;
+  }
+
+  const knowledgeActionMatch = url.pathname.match(/^\/api\/team-sharing\/knowledge\/([^/]+)\/(import|ask|edit|align)\/?$/);
+  if (req.method === 'POST' && knowledgeActionMatch) {
+    const serverSlug = decodeURIComponent(knowledgeActionMatch[1] || '');
+    const action = String(knowledgeActionMatch[2] || '').trim();
+    const body = await readJson(req);
+    const effectiveWorkspaceId = workspaceIdForKnowledgeTarget(state, body.workspaceId || body.workspace || serverSlug, workspaceId);
+    const access = teamSharingKnowledgeAccess({ req, actor, currentUser: browserUser, teamSharingState, state, workspaceId: effectiveWorkspaceId });
+    if (!access.ok) {
+      sendTeamSharingKnowledgeAccessError(sendJson, res, access, 'Join this server before using Knowledge Space.');
+      return true;
+    }
+    const space = ensureKnowledgeSpace(state, effectiveWorkspaceId, { now });
+    try {
+      if (action === 'import') {
+        if (!isKnowledgeAdmin(access.actor)) {
+          sendJson(res, 403, { ok: false, reason: 'admin_required', error: 'Only Server owners/admins can import Knowledge Space Markdown.' });
+          return true;
+        }
+        const result = importKnowledgeMarkdown({
+          state,
+          workspaceId: effectiveWorkspaceId,
+          markdown: body.markdown || body.content || '',
+          sourceName: body.sourceName || body.title || '',
+          sourceUrl: body.sourceUrl || '',
+          actor: access.actor,
+          now,
+        });
+        await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_knowledge_import' });
+        broadcastState();
+        addSystemEvent('team_sharing_knowledge_imported', 'Team Sharing imported Knowledge Space Markdown.', {
+          workspaceId: effectiveWorkspaceId,
+          documents: result.imported.documents,
+          anchors: result.imported.anchors,
+          actorId: access.actorId || '',
+        });
+        sendJson(res, 201, {
+          ok: true,
+          mode: result.mode || 'published',
+          session: result.session,
+          imported: result.imported,
+          space: publicKnowledgeSpace(result.space, access.actor),
+        });
+        return true;
+      }
+      if (action === 'ask') {
+        const answer = await askKnowledgeConsensus(space, body.query || body.question || '', { env: deps.env || process.env });
+        sendJson(res, 200, { ok: true, matches: [], ...(answer && typeof answer === 'object' ? answer : { answer: String(answer || '') }) });
+        return true;
+      }
+      if (action === 'align') {
+        const aligned = await alignKnowledgeDiscussion(space, body.text || body.query || '', { env: deps.env || process.env });
+        sendJson(res, 200, { ok: true, rules: [], alignmentGaps: [], ...(aligned && typeof aligned === 'object' ? aligned : { summary: String(aligned || '') }) });
+        return true;
+      }
+      if (action === 'edit') {
+        if (!isKnowledgeAdmin(access.actor) && !isKnowledgeWhitelisted(space, access.actor)) {
+          sendJson(res, 403, { ok: false, reason: 'editor_required', error: 'Only Server owners/admins or Knowledge Space whitelist members can draft content changes.' });
+          return true;
+        }
+        const docId = String(body.docId || body.doc || '').trim();
+        const proposedMarkdown = String(body.proposedMarkdown || body.markdown || body.content || '').trim();
+        if (!docId || !proposedMarkdown) {
+          sendJson(res, 400, { ok: false, reason: 'invalid_request', error: 'Knowledge edit requires docId and Markdown content.' });
+          return true;
+        }
+        const result = createKnowledgeChangeSession({
+          state,
+          workspaceId: effectiveWorkspaceId,
+          summary: body.summary || body.title || 'Knowledge consensus edit',
+          changes: [{
+            docId,
+            proposedMarkdown,
+          }],
+          actor: access.actor,
+          now,
+        });
+        await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_knowledge_edit' });
+        broadcastState();
+        addSystemEvent('team_sharing_knowledge_edit_drafted', 'Team Sharing drafted a Knowledge Space change.', {
+          workspaceId: effectiveWorkspaceId,
+          docId,
+          changeSessionId: result.session.id,
+          actorId: access.actorId || '',
+        });
+        sendJson(res, 201, { ok: true, session: result.session, space: publicKnowledgeSpace(result.space, access.actor) });
+        return true;
+      }
+    } catch (error) {
+      const message = error?.message || 'Knowledge Space request failed.';
+      const status = /not found|unknown knowledge document/i.test(message) ? 404 : /only|requires|whitelist|member|admin/i.test(message) ? 403 : 400;
+      sendJson(res, status, { ok: false, reason: status === 404 ? 'not_found' : status === 403 ? 'forbidden' : 'invalid_request', error: message });
+      return true;
+    }
   }
 
   const publicShareMatch = url.pathname.match(/^\/s\/([^/]+)$/) || url.pathname.match(/^\/share\/([^/]+)$/);

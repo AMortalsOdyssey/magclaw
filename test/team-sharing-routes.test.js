@@ -158,6 +158,44 @@ async function syncRouteSession(deps, body) {
   return res;
 }
 
+async function issueTeamSharingRouteToken(deps, {
+  actor = { member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner', email: 'owner@example.test' }, user: { id: 'user_owner', email: 'owner@example.test' } },
+  fingerprint = `mfp_${'a'.repeat(64)}`,
+} = {}) {
+  const start = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    start,
+    new URL('https://magclaw.example/api/team-sharing/auth/start'),
+    {
+      ...deps,
+      currentActor: () => actor,
+      readJson: async () => ({ machineFingerprint: fingerprint }),
+    },
+  ), true);
+  const token = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    token,
+    new URL('https://magclaw.example/api/team-sharing/auth/token'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({ deviceCode: start.data.deviceCode, machineFingerprint: fingerprint }),
+    },
+  ), true);
+  return {
+    token: token.data.token,
+    fingerprint,
+    headers: {
+      authorization: `Bearer ${token.data.token}`,
+      'x-magclaw-machine-fingerprint': fingerprint,
+      host: 'magclaw.example',
+      'x-forwarded-proto': 'https',
+    },
+  };
+}
+
 function createContextPageHarness(html = '', options = {}) {
   const script = String(html || '').match(/<script>([\s\S]*?)<\/script>/)?.[1] || '';
   assert.ok(script, 'context page should embed a script');
@@ -3243,6 +3281,124 @@ test('team sharing context page redirects unauthenticated browsers to login with
 
   assert.equal(res.statusCode, 302);
   assert.match(decodeURIComponent(res.headers.location), /returnTo=\/team-sharing\/context\/sess_route\?anchorEventId=evt_1&limit=21&order=asc/);
+});
+
+test('team sharing token can read, import, ask, edit, align, and inspect Knowledge documents', async () => {
+  const deps = routeDeps({
+    currentActor: () => null,
+  });
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_owner', userId: 'user_owner', role: 'owner', status: 'active', email: 'owner@example.test' },
+    { workspaceId: 'ws_route', humanId: 'hum_reader', userId: 'user_reader', role: 'member', status: 'active', email: 'reader@example.test' },
+    { workspaceId: 'ws_other', humanId: 'hum_other', userId: 'user_other', role: 'owner', status: 'active', email: 'other@example.test' },
+  ];
+  const owner = await issueTeamSharingRouteToken(deps, {
+    actor: { member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner', email: 'owner@example.test' }, user: { id: 'user_owner', email: 'owner@example.test', name: 'Owner' } },
+    fingerprint: `mfp_${'1'.repeat(64)}`,
+  });
+
+  const importRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: owner.headers },
+    importRes,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/import'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({
+        markdown: '# Team Consensus\n\n## Memory Module\n\nMemory should be retrievable.\n\n### Recall Boundary\n\nReturn stable anchors.',
+        sourceName: 'Team Consensus',
+      }),
+    },
+  ), true);
+  assert.equal(importRes.statusCode, 201);
+  assert.equal(importRes.data.ok, true);
+  assert.equal(importRes.data.imported.documents, 2);
+
+  const doc = deps.state.knowledgeSpace.spaces.ws_route.documents.find((item) => item.title === 'Memory Module');
+  assert.ok(doc?.id);
+
+  const readRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: owner.headers },
+    readRes,
+    new URL(`https://magclaw.example/api/team-sharing/knowledge/server-route/docs/${encodeURIComponent(doc.id)}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(readRes.statusCode, 200);
+  assert.equal(readRes.data.kind, 'knowledge_doc');
+  assert.equal(readRes.data.document.title, 'Memory Module');
+  assert.match(readRes.data.url, /\/s\/server-route\/knowledge\/docs\//);
+
+  const inspectRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: owner.headers },
+    inspectRes,
+    new URL(`https://magclaw.example/api/team-sharing/links/inspect?url=${encodeURIComponent(`https://magclaw.example/s/server-route/knowledge/docs/${doc.id}`)}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(inspectRes.statusCode, 200);
+  assert.equal(inspectRes.data.ok, true);
+  assert.equal(inspectRes.data.kind, 'knowledge_doc');
+  assert.equal(inspectRes.data.target.docId, doc.id);
+  assert.equal(inspectRes.data.auth.via, 'token');
+
+  const askRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: owner.headers },
+    askRes,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/ask'),
+    { ...deps, currentActor: () => null, readJson: async () => ({ query: 'Memory' }) },
+  ), true);
+  assert.equal(askRes.statusCode, 200);
+  assert.equal(askRes.data.ok, true);
+  assert.equal(Array.isArray(askRes.data.matches), true);
+  assert.match(String(askRes.data.answer || ''), /consensus|matched|found|Knowledge/i);
+
+  const editRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: owner.headers },
+    editRes,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/edit'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({
+        docId: doc.id,
+        markdown: 'Memory should be retrievable with stable anchors.',
+        summary: 'Tighten memory consensus',
+      }),
+    },
+  ), true);
+  assert.equal(editRes.statusCode, 201);
+  assert.equal(editRes.data.session.status, 'draft');
+  assert.equal(editRes.data.session.changes[0].docId, doc.id);
+
+  const alignRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: owner.headers },
+    alignRes,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/align'),
+    { ...deps, currentActor: () => null, readJson: async () => ({ text: 'Need memory to be retrievable.' }) },
+  ), true);
+  assert.equal(alignRes.statusCode, 200);
+  assert.equal(alignRes.data.ok, true);
+  assert.equal(alignRes.data.rules.length > 0, true);
+
+  const other = await issueTeamSharingRouteToken(deps, {
+    actor: { member: { workspaceId: 'ws_other', humanId: 'hum_other', role: 'owner', email: 'other@example.test' }, user: { id: 'user_other', email: 'other@example.test', name: 'Other' } },
+    fingerprint: `mfp_${'2'.repeat(64)}`,
+  });
+  const blocked = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: other.headers },
+    blocked,
+    new URL(`https://magclaw.example/api/team-sharing/knowledge/server-route/docs/${encodeURIComponent(doc.id)}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(blocked.statusCode, 403);
+  assert.equal(blocked.data.reason, 'server_membership_required');
+  assert.doesNotMatch(JSON.stringify({ read: readRes.data, blocked: blocked.data }), new RegExp(`${owner.token}|${other.token}|Bearer`));
 });
 
 test('team sharing context page redirects signed-in nonmembers to server join with returnTo', async () => {

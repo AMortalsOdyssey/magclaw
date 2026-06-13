@@ -1,13 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}read-link
-description: Use when a user provides a MagClaw Team Sharing share or original-context URL and wants it read, summarized, explained, or inspected.
+description: Use when a user provides a MagClaw Team Sharing share, original-context, or Knowledge document URL and wants it read, summarized, explained, or inspected.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Team Sharing Read Link
 
-Use this skill for protected MagClaw Team Sharing links, including `/s/<shareId>`, `/share/<shareId>`, `/team-sharing/context/<sessionId>`, and `/s/<serverSlug>/team-sharing/context/<sessionId>`.
+Use this skill for protected MagClaw Team Sharing links, including `/s/<shareId>`, `/share/<shareId>`, `/team-sharing/context/<sessionId>`, `/s/<serverSlug>/team-sharing/context/<sessionId>`, and `/s/<serverSlug>/knowledge/docs/<docId>`.
 
 Read [references/read-link.md](references/read-link.md) before acting.
 

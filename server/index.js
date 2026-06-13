@@ -133,6 +133,7 @@ import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
 import { handleTeamSharingApi } from './api/team-sharing-routes.js';
 import { handleKnowledgeApi } from './api/knowledge-routes.js';
+import { assertKnowledgeDeploySafe, assertKnowledgeSecretConfigured } from './deploy-guard.js';
 import { applyServerYamlConfig } from './config-yaml.js';
 import {
   createEmbeddingClient,
@@ -2389,6 +2390,18 @@ async function handleRequest(req, res) {
 
 await ensureStorage();
 await cloudAuth.initializeStorage();
+{
+  const knowledgeCloudDeploy = process.env.MAGCLAW_DEPLOYMENT === 'cloud' || process.env.NODE_ENV === 'production';
+  assertKnowledgeDeploySafe({
+    isCloudDeploy: knowledgeCloudDeploy,
+    isLoginRequired: () => cloudAuth.isLoginRequired(),
+    env: process.env,
+  });
+  assertKnowledgeSecretConfigured({
+    isCloudDeploy: knowledgeCloudDeploy,
+    env: process.env,
+  });
+}
 await runAgentMemoryMirrorMigration('startup');
 if (cloudRepository?.isEnabled?.() && typeof cloudRepository.subscribeRealtimeEvents === 'function') {
   await cloudRepository.subscribeRealtimeEvents(scheduleRealtimeReload).catch((error) => {

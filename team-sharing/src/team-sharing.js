@@ -39,6 +39,10 @@ const TEAM_SHARING_AGENT_SKILL_IDS = Object.freeze([
   'share-artifact',
   'edit-link',
   'manage-links',
+  'import-consensus',
+  'ask-consensus',
+  'edit-consensus',
+  'align-consensus',
 ]);
 
 function now() {
@@ -2562,6 +2566,17 @@ function parseTeamSharingReadableLink(value = '') {
       sessionId: decodeURIComponent(contextMatch[1] || ''),
     };
   }
+  const knowledgeDocMatch = url.pathname.match(/^\/s\/([^/]+)\/knowledge\/docs\/([^/]+)\/?$/);
+  if (knowledgeDocMatch) {
+    return {
+      ok: true,
+      type: 'knowledge_doc',
+      url,
+      serverUrl: url.origin,
+      serverSlug: decodeURIComponent(knowledgeDocMatch[1] || ''),
+      docId: decodeURIComponent(knowledgeDocMatch[2] || ''),
+    };
+  }
   const shareMatch = url.pathname.match(/^\/s\/([^/]+)\/?$/) || url.pathname.match(/^\/share\/([^/]+)\/?$/);
   if (shareMatch) {
     return {
@@ -2633,7 +2648,9 @@ function localReadLinkAccessFailure({ parsed = {}, serverUrl = '', reason = 'log
     target: inspectData.target || (
       parsed.type === 'share'
         ? { shareId: parsed.shareId || '' }
-        : { sessionId: parsed.sessionId || '', serverSlug: parsed.serverSlug || '' }
+        : parsed.type === 'knowledge_doc'
+          ? { docId: parsed.docId || '', serverSlug: parsed.serverSlug || '' }
+          : { sessionId: parsed.sessionId || '', serverSlug: parsed.serverSlug || '' }
     ),
     auth: {
       ...(inspectData.auth || {}),
@@ -2738,6 +2755,28 @@ export async function readTeamSharingLink(flags = {}, env = process.env) {
       });
     }
     return shareResult;
+  }
+  if (parsed.type === 'knowledge_doc') {
+    const result = await teamSharingRequestJson({
+      serverUrl: requestServerUrl,
+      token,
+      machineFingerprint,
+      pathname: `/api/team-sharing/knowledge/${encodeURIComponent(parsed.serverSlug)}/docs/${encodeURIComponent(parsed.docId)}`,
+      timeoutMs: requestTimeoutMs(flags, env),
+    });
+    return {
+      ...result,
+      kind: result.kind || 'knowledge_doc',
+      linkUrl: parsed.url.toString(),
+      serverUrl: requestServerUrl,
+      serverSlug: parsed.serverSlug,
+      docId: parsed.docId,
+      ...(!inspectUnavailableForReadLink(inspect) ? {
+        inspection: inspect.data,
+        access: inspect.data?.access,
+        target: inspect.data?.target,
+      } : {}),
+    };
   }
   const apiPath = contextLinkApiPath(parsed);
   const result = await teamSharingRequestJson({
@@ -2977,6 +3016,24 @@ function formatTeamSharingShareMarkdown(result = {}) {
   ].join('\n').trim();
 }
 
+function formatTeamSharingKnowledgeMarkdown(result = {}) {
+  const doc = result.document || {};
+  const title = String(doc.title || result.docId || 'MagClaw Knowledge Document').trim();
+  const content = String(doc.sourceMarkdown || doc.markdown || doc.summary || '').trim();
+  const meta = [
+    result.url ? `Link: ${result.url}` : '',
+    doc.currentVersionId ? `Version: ${doc.currentVersionId}` : '',
+    doc.updatedAt ? `Updated: ${doc.updatedAt}` : '',
+  ].filter(Boolean);
+  return [
+    `# ${title}`,
+    '',
+    ...meta,
+    ...(meta.length ? [''] : []),
+    content,
+  ].join('\n').trim();
+}
+
 function formatTeamSharingReadLinkAccessMarkdown(result = {}) {
   const reason = String(result.reason || result.access?.reason || 'access_required').trim();
   const target = result.target || {};
@@ -3015,6 +3072,8 @@ export function formatTeamSharingReadLinkResult(result = {}, format = 'markdown'
   }
   const markdown = result.kind === 'context'
     ? formatTeamSharingContextMarkdown(result)
+    : result.kind === 'knowledge_doc'
+      ? formatTeamSharingKnowledgeMarkdown(result)
     : formatTeamSharingShareMarkdown(result);
   if (cleanFormat === 'text') {
     return markdown
@@ -3199,6 +3258,135 @@ function readPatchPayload(flags = {}) {
   const filePath = path.resolve(flags.cwd || process.cwd(), text);
   if (existsSync(filePath)) return JSON.parse(readFileSync(filePath, 'utf8'));
   return JSON.parse(text);
+}
+
+function teamSharingConsensusServerUrl(flags = {}, fallback = '') {
+  const server = stringFlagValue(flags.server);
+  if (/^https?:\/\//i.test(server)) return normalizeServerUrl(flags.serverUrl || server);
+  return normalizeServerUrl(flags.serverUrl || fallback || DEFAULT_SERVER_URL);
+}
+
+function teamSharingConsensusWorkspace(flags = {}, projectConfig = {}) {
+  const server = stringFlagValue(flags.server);
+  return stringFlagValue(
+    flags.workspace
+    || flags.workspaceId
+    || flags.serverSlug
+    || flags.serverId
+    || (!/^https?:\/\//i.test(server) ? server : '')
+    || projectConfig.workspaceId
+    || 'local',
+  );
+}
+
+async function readMarkdownInput(flags = {}, usage = 'Markdown content is required.') {
+  const cwd = path.resolve(flags.cwd || process.cwd());
+  const fileArg = stringFlagValue(flags.file || flags.path || flags.markdownFile || flags._?.[1]);
+  const inline = flags.markdown ?? flags.content ?? flags.text ?? '';
+  if (fileArg) return readFile(path.resolve(cwd, fileArg), 'utf8');
+  if (inline !== undefined && inline !== null && String(inline).trim()) return String(inline);
+  const error = new Error(usage);
+  error.status = 400;
+  throw error;
+}
+
+async function resolveTeamSharingConsensusClient(flags = {}, env = process.env) {
+  const base = await resolveTeamSharingClient({
+    ...flags,
+    server: undefined,
+    workspace: undefined,
+    workspaceId: flags.loginWorkspaceId || flags.loginWorkspace || undefined,
+    serverSlug: undefined,
+    serverId: undefined,
+    serverUrl: teamSharingConsensusServerUrl(flags, flags.serverUrl),
+  }, env, { allowLogin: true });
+  const serverUrl = teamSharingConsensusServerUrl(flags, base.serverUrl);
+  const workspace = teamSharingConsensusWorkspace(flags, base.project.config);
+  return { ...base, serverUrl, workspace };
+}
+
+export async function importKnowledgeConsensus(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const markdown = await readMarkdownInput(flags, 'Usage: team-sharing import-consensus --server <server> --workspace <workspace> --file <markdown-file>');
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/import`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    body: {
+      workspaceId: workspace,
+      markdown,
+      sourceName: flags.sourceName || flags.title || '',
+      sourceUrl: flags.sourceUrl || '',
+    },
+  });
+}
+
+export async function askKnowledgeConsensusCommand(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const query = stringFlagValue(flags.query || flags.question || flags._?.[1]);
+  if (!query) {
+    const error = new Error('Usage: team-sharing ask-consensus --server <server> --workspace <workspace> --query <question>');
+    error.status = 400;
+    throw error;
+  }
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/ask`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    body: { workspaceId: workspace, query },
+  });
+}
+
+export async function editKnowledgeConsensus(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const docId = stringFlagValue(flags.doc || flags.docId || flags.document || flags._?.[1]);
+  if (!docId) {
+    const error = new Error('Usage: team-sharing edit-consensus --server <server> --workspace <workspace> --doc <docId> --file <markdown-file>');
+    error.status = 400;
+    throw error;
+  }
+  const markdown = await readMarkdownInput({ ...flags, _: flags._?.slice(1) || [] }, 'Knowledge edit requires Markdown content.');
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/edit`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    body: {
+      workspaceId: workspace,
+      docId,
+      markdown,
+      summary: flags.summary || flags.title || '',
+    },
+  });
+}
+
+export async function alignKnowledgeConsensus(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const text = flags.file || flags.path
+    ? await readMarkdownInput(flags, 'Knowledge align requires --text or --file.')
+    : stringFlagValue(flags.text || flags.query || flags._?.[1]);
+  if (!String(text || '').trim()) {
+    const error = new Error('Usage: team-sharing align-consensus --server <server> --workspace <workspace> --text <text>');
+    error.status = 400;
+    throw error;
+  }
+  return teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'POST',
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/align`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    body: { workspaceId: workspace, text },
+  });
 }
 
 export async function shareTeamSharingArtifact(flags = {}, env = process.env) {

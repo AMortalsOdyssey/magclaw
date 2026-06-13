@@ -161,9 +161,16 @@ function renderKnowledgeDocListItem(doc, selectedId) {
   return `
     <button class="knowledge-doc-row ${doc.id === selectedId ? 'active' : ''} level-${Number(doc.level || 1)}" type="button" data-action="knowledge-select-doc" data-doc-id="${escapeHtml(doc.id)}">
       <span>${escapeHtml(doc.title)}</span>
+      ${renderKnowledgeStatusBadge(Number(doc.level || 1) <= 1 ? 'root' : 'section', Number(doc.level || 1) <= 1 ? 'Root' : `L${Number(doc.level || 1)}`)}
       <small>${escapeHtml(doc.summary || '')}</small>
     </button>
   `;
+}
+
+function renderKnowledgeStatusBadge(status = 'draft', label = '') {
+  const cleanStatus = String(status || 'draft').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  const text = label || cleanStatus.replace(/[_-]+/g, ' ');
+  return `<small class="knowledge-status-badge status-${escapeHtml(cleanStatus)}">${escapeHtml(text)}</small>`;
 }
 
 function renderKnowledgeEmptyState() {
@@ -195,8 +202,20 @@ function renderKnowledgeDocument(docId) {
           <button type="button" data-action="knowledge-open-agent-link" data-doc-id="${escapeHtml(doc.id)}">Copy Link to Agent</button>
         </div>
       </header>
+      ${renderKnowledgeDocumentMeta(doc)}
       ${renderKnowledgeDocumentBody(doc)}
     </article>
+  `;
+}
+
+function renderKnowledgeDocumentMeta(doc = {}) {
+  return `
+    <div class="knowledge-document-meta" aria-label="Knowledge document metadata">
+      ${renderKnowledgeStatusBadge(Number(doc.level || 1) <= 1 ? 'root' : 'section', Number(doc.level || 1) <= 1 ? 'Root consensus' : `Level ${Number(doc.level || 1)}`)}
+      <span>Updated ${escapeHtml(doc.updatedAt || '')}</span>
+      <span>Current version ${escapeHtml(doc.currentVersionId || 'unknown')}</span>
+      ${doc.sourceUrl ? '<span>Source linked</span>' : '<span>Markdown source</span>'}
+    </div>
   `;
 }
 
@@ -300,11 +319,21 @@ function renderKnowledgeMatches(matches) {
   `;
 }
 
+function knowledgeGraphSearchQuery() {
+  return String(knowledgeSpaceState.graphSearchQuery || '').trim();
+}
+
 function renderKnowledgeGraphPanel() {
   setTimeout(() => loadKnowledgeGraph().catch((error) => console.warn('Failed to load graph:', error)), 0);
+  const query = knowledgeGraphSearchQuery();
   return `
     <section class="knowledge-graph-panel">
-      <canvas id="knowledge-graph-canvas" width="1280" height="760" aria-label="Knowledge graph"></canvas>
+      <div class="knowledge-graph-search">
+        <input id="knowledge-graph-search" data-action="knowledge-graph-search" value="${escapeHtml(query)}" placeholder="Search nodes" autocomplete="off" spellcheck="false" />
+        ${query ? '<button type="button" data-action="knowledge-graph-clear-search">Clear</button>' : ''}
+      </div>
+      <canvas id="knowledge-graph-canvas" width="1280" height="760" aria-label="Knowledge graph" style="touch-action: none"></canvas>
+      <div class="knowledge-graph-tooltip" hidden></div>
       <div class="knowledge-graph-legend">
         <span><i class="blue"></i> Consensus hierarchy</span>
         <span><i class="red"></i> Leaf updated within 72h</span>
@@ -342,6 +371,7 @@ function setupKnowledgeGraph(graph) {
     panX: 0,
     panY: 0,
     hoveredId: '',
+    searchFocusedId: '',
     draggingNode: null,
     panning: null,
     clickCandidate: null,
@@ -353,6 +383,7 @@ function setupKnowledgeGraph(graph) {
     knowledgeGraphRuntime.resizeObserver.observe(canvas);
   }
   bindKnowledgeGraphEvents(canvas);
+  focusKnowledgeGraphSearchResult({ recenter: false });
   animateKnowledgeGraph(knowledgeGraphAnimationToken);
 }
 
@@ -495,7 +526,64 @@ function bindKnowledgeGraphEvents(canvas) {
     if (!knowledgeGraphRuntime || knowledgeGraphRuntime.panning || knowledgeGraphRuntime.draggingNode) return;
     knowledgeGraphRuntime.hoveredId = '';
     canvas.style.cursor = '';
+    updateKnowledgeGraphTooltip();
     queueKnowledgeGraphRender();
+  });
+  canvas.addEventListener('touchstart', (event) => {
+    if (!knowledgeGraphRuntime || !event.touches?.length) return;
+    event.preventDefault();
+    const touch = event.touches[0];
+    const point = graphPointer(touch);
+    const node = nearestKnowledgeNode(point.x, point.y, 12 / knowledgeGraphRuntime.scale);
+    knowledgeGraphRuntime.clickCandidate = node?.href
+      ? { nodeId: node.id, href: node.href, x: touch.clientX, y: touch.clientY }
+      : null;
+    if (node) {
+      knowledgeGraphRuntime.draggingNode = node;
+      node.fx = point.x;
+      node.fy = point.y;
+      node.vx = 0;
+      node.vy = 0;
+    } else {
+      knowledgeGraphRuntime.panning = { x: touch.clientX, y: touch.clientY, panX: knowledgeGraphRuntime.panX, panY: knowledgeGraphRuntime.panY };
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (event) => {
+    if (!knowledgeGraphRuntime || !event.touches?.length) return;
+    event.preventDefault();
+    const touch = event.touches[0];
+    const point = graphPointer(touch);
+    if (knowledgeGraphRuntime.clickCandidate) {
+      const moved = Math.hypot(touch.clientX - knowledgeGraphRuntime.clickCandidate.x, touch.clientY - knowledgeGraphRuntime.clickCandidate.y);
+      if (moved > KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT) knowledgeGraphRuntime.clickCandidate = null;
+    }
+    if (knowledgeGraphRuntime.draggingNode) {
+      knowledgeGraphRuntime.draggingNode.fx = point.x;
+      knowledgeGraphRuntime.draggingNode.fy = point.y;
+      return;
+    }
+    if (knowledgeGraphRuntime.panning) {
+      const pan = knowledgeGraphRuntime.panning;
+      knowledgeGraphRuntime.panX = pan.panX + touch.clientX - pan.x;
+      knowledgeGraphRuntime.panY = pan.panY + touch.clientY - pan.y;
+      queueKnowledgeGraphRender();
+    }
+  }, { passive: false });
+  canvas.addEventListener('touchend', (event) => {
+    if (!knowledgeGraphRuntime) return;
+    const touch = event.changedTouches?.[0];
+    const candidate = knowledgeGraphRuntime.clickCandidate;
+    if (candidate && touch) {
+      const movement = Math.hypot(touch.clientX - candidate.x, touch.clientY - candidate.y);
+      if (movement <= KNOWLEDGE_GRAPH_CLICK_MOVE_LIMIT) window.location.assign(currentKnowledgePathFromHref(candidate.href));
+    }
+    knowledgeGraphRuntime.clickCandidate = null;
+    if (knowledgeGraphRuntime.draggingNode) {
+      delete knowledgeGraphRuntime.draggingNode.fx;
+      delete knowledgeGraphRuntime.draggingNode.fy;
+      knowledgeGraphRuntime.draggingNode = null;
+    }
+    knowledgeGraphRuntime.panning = null;
   });
   if (!knowledgeGraphWindowEventsBound) {
     knowledgeGraphWindowEventsBound = true;
@@ -543,12 +631,14 @@ function bindKnowledgeGraphEvents(canvas) {
       if (!point.inside) {
         knowledgeGraphRuntime.hoveredId = '';
         if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = '';
+        updateKnowledgeGraphTooltip();
         queueKnowledgeGraphRender();
         return;
       }
       const hovered = nearestKnowledgeNode(point.x, point.y, 9 / knowledgeGraphRuntime.scale);
       knowledgeGraphRuntime.hoveredId = hovered?.id || '';
       if (knowledgeGraphRuntime.canvas?.isConnected) knowledgeGraphRuntime.canvas.style.cursor = hovered?.href ? 'pointer' : '';
+      updateKnowledgeGraphTooltip(point.localX, point.localY, hovered);
       queueKnowledgeGraphRender();
     });
     window.addEventListener('resize', () => resizeKnowledgeGraphCanvas());
@@ -587,6 +677,53 @@ function nearestKnowledgeNode(x, y, padding = 0) {
     }
   }
   return best;
+}
+
+function knowledgeGraphSearchMatch(query = knowledgeGraphSearchQuery()) {
+  const rt = knowledgeGraphRuntime;
+  const clean = String(query || '').trim().toLowerCase();
+  if (!rt || !clean) return null;
+  return rt.graph.nodes.find((node) => String(node.title || '').toLowerCase().includes(clean))
+    || rt.graph.nodes.find((node) => String(node.summary || '').toLowerCase().includes(clean))
+    || null;
+}
+
+function focusKnowledgeGraphSearchResult(options = {}) {
+  const rt = knowledgeGraphRuntime;
+  if (!rt) return;
+  const node = knowledgeGraphSearchMatch();
+  rt.searchFocusedId = node?.id || '';
+  if (node) {
+    rt.hoveredId = node.id;
+    if (options.recenter !== false) {
+      rt.panX = rt.width / 2 - node.x * rt.scale;
+      rt.panY = rt.height / 2 - node.y * rt.scale;
+    }
+  } else if (!knowledgeGraphSearchQuery()) {
+    rt.searchFocusedId = '';
+  }
+  updateKnowledgeGraphTooltip();
+  queueKnowledgeGraphRender();
+}
+
+function updateKnowledgeGraphTooltip(localX = null, localY = null, node = null) {
+  const rt = knowledgeGraphRuntime;
+  const tooltip = document.querySelector('.knowledge-graph-tooltip');
+  if (!tooltip || !rt) return;
+  const activeNode = node || rt.graph.nodes.find((item) => item.id === rt.hoveredId || item.id === rt.searchFocusedId);
+  if (!activeNode) {
+    tooltip.hidden = true;
+    return;
+  }
+  const x = Number.isFinite(localX) ? localX : activeNode.x * rt.scale + rt.panX;
+  const y = Number.isFinite(localY) ? localY : activeNode.y * rt.scale + rt.panY;
+  tooltip.hidden = false;
+  tooltip.style.left = `${Math.min(rt.width - 220, Math.max(12, x + 14))}px`;
+  tooltip.style.top = `${Math.min(rt.height - 96, Math.max(12, y + 14))}px`;
+  tooltip.innerHTML = `
+    <strong>${escapeHtml(activeNode.title || 'Knowledge node')}</strong>
+    <span>${escapeHtml(activeNode.summary || activeNode.kind || '')}</span>
+  `;
 }
 
 function animateKnowledgeGraph(token) {
@@ -693,20 +830,21 @@ function drawKnowledgeGraph() {
   ctx.translate(rt.panX, rt.panY);
   ctx.scale(rt.scale, rt.scale);
   const neighbors = new Set();
-  if (rt.hoveredId) {
-    neighbors.add(rt.hoveredId);
+  const focusId = rt.hoveredId || rt.searchFocusedId;
+  if (focusId) {
+    neighbors.add(focusId);
     for (const edge of rt.graph.edges) {
-      if (edge.source === rt.hoveredId) neighbors.add(edge.target);
-      if (edge.target === rt.hoveredId) neighbors.add(edge.source);
+      if (edge.source === focusId) neighbors.add(edge.target);
+      if (edge.target === focusId) neighbors.add(edge.source);
     }
   }
-  const dim = rt.hoveredId ? 0.12 : 1;
+  const dim = focusId ? 0.12 : 1;
   const byId = new Map(rt.graph.nodes.map((node) => [node.id, node]));
   for (const edge of rt.graph.edges) {
     const source = byId.get(edge.source);
     const target = byId.get(edge.target);
     if (!source || !target) continue;
-    const active = !rt.hoveredId || (neighbors.has(source.id) && neighbors.has(target.id));
+    const active = !focusId || (neighbors.has(source.id) && neighbors.has(target.id));
     ctx.strokeStyle = active ? knowledgeEdgeColor(edge) : `rgba(86, 99, 110, ${0.13 * dim})`;
     ctx.lineWidth = (active ? 0.92 : 0.48) / Math.sqrt(rt.scale);
     ctx.beginPath();
@@ -715,7 +853,7 @@ function drawKnowledgeGraph() {
     ctx.stroke();
   }
   for (const node of rt.graph.nodes) {
-    const active = !rt.hoveredId || neighbors.has(node.id);
+    const active = !focusId || neighbors.has(node.id);
     ctx.globalAlpha = active ? (node.kind === 'space' ? 0.76 : 0.68) : 0.13;
     ctx.fillStyle = knowledgeNodeColor(node);
     ctx.beginPath();
@@ -729,7 +867,7 @@ function drawKnowledgeGraph() {
     }
   }
   for (const node of rt.graph.nodes) {
-    const active = !rt.hoveredId || neighbors.has(node.id);
+    const active = !focusId || neighbors.has(node.id);
     if (active && shouldShowKnowledgeNodeLabel(rt, node)) drawKnowledgeNodeLabel(ctx, rt, node);
   }
   ctx.restore();
@@ -788,6 +926,7 @@ function renderKnowledgeChangelog() {
                 <h2>${escapeHtml(group.title || 'Knowledge change')}</h2>
                 <p>${escapeHtml(group.updatedAt || '')}</p>
               </div>
+              ${renderKnowledgeStatusBadge(group.status || 'draft')}
               <button type="button" data-action="knowledge-open-review" data-session-id="${escapeHtml(group.changeSessionId)}">Open</button>
             </header>
             ${groupEvents.map(renderKnowledgeLogEvent).join('')}
@@ -826,7 +965,7 @@ function renderKnowledgeReview() {
           ${session.status === 'draft' && knowledgeCanEdit() ? `<button type="button" data-action="knowledge-review-action" data-next="to-diff" data-session-id="${escapeHtml(session.id)}">View Diff</button>` : ''}
           ${session.status === 'diff' && knowledgeCanEdit() ? `<button type="button" data-action="knowledge-review-action" data-next="to-preview" data-session-id="${escapeHtml(session.id)}">Preview</button>` : ''}
           ${session.status === 'preview' && knowledgeCanEdit() ? `<button type="button" data-action="knowledge-review-action" data-next="to-diff" data-session-id="${escapeHtml(session.id)}">Back to Diff</button>` : ''}
-          ${session.status === 'preview' && knowledgeCanEdit() ? `<button type="button" data-action="knowledge-review-action" data-next="publish" data-session-id="${escapeHtml(session.id)}">Publish</button>` : ''}
+          ${session.status === 'preview' && knowledgeCanEdit() ? `<button type="button" data-action="knowledge-open-publish-confirm" data-next="publish" data-session-id="${escapeHtml(session.id)}">Publish</button>` : ''}
           ${isPublished ? `<button type="button" data-action="knowledge-review-action" data-next="retry-notification" data-session-id="${escapeHtml(session.id)}">Retry Feishu</button>` : ''}
         </div>
       </header>
@@ -1164,6 +1303,28 @@ function renderKnowledgeWhitelistRemoveModal() {
   `;
 }
 
+function renderKnowledgePublishModal() {
+  const sessionId = knowledgePublishState.sessionId || knowledgeRoute?.changeSessionId || '';
+  const session = knowledgeSessions().find((item) => item.id === sessionId) || null;
+  if (!session) return '';
+  return `
+    ${modalHeader('Publish Knowledge Update', 'Knowledge Space')}
+    <div class="knowledge-publish-confirm">
+      ${renderKnowledgeStatusBadge(session.status || 'preview')}
+      <h3>${escapeHtml(session.summary || 'Knowledge review')}</h3>
+      <p>This will publish the previewed Knowledge Space changes and mark this review immutable.</p>
+      <div class="knowledge-publish-confirm-meta">
+        <span>${escapeHtml(reviewImpactSummary(session))}</span>
+        <span>Actor ${escapeHtml(session.actorHumanId || 'unknown')}</span>
+      </div>
+    </div>
+    <div class="modal-actions confirm-stop-actions">
+      <button type="button" class="secondary-btn" data-action="close-modal">Cancel</button>
+      <button type="button" class="primary-btn" data-action="knowledge-confirm-publish" data-session-id="${escapeHtml(session.id)}">Publish</button>
+    </div>
+  `;
+}
+
 async function handleKnowledgeAction(action, target, event = null) {
   const knowledgeAction = String(action || '');
   if (!knowledgeAction.startsWith('knowledge-') && !knowledgeAction.startsWith('copy-knowledge-')) return false;
@@ -1201,6 +1362,17 @@ async function handleKnowledgeAction(action, target, event = null) {
     knowledgeRoute = { view: 'reviews', docId: '', changeSessionId: target.dataset.sessionId || '' };
     knowledgeSpaceState = { ...knowledgeSpaceState, tab: 'reviews' };
     syncBrowserRouteForActiveView();
+    render();
+    return true;
+  }
+  if (action === 'knowledge-graph-clear-search') {
+    knowledgeSpaceState = { ...knowledgeSpaceState, graphSearchQuery: '' };
+    if (knowledgeGraphRuntime) {
+      knowledgeGraphRuntime.searchFocusedId = '';
+      knowledgeGraphRuntime.hoveredId = '';
+      updateKnowledgeGraphTooltip();
+      queueKnowledgeGraphRender();
+    }
     render();
     return true;
   }
@@ -1260,6 +1432,21 @@ async function handleKnowledgeAction(action, target, event = null) {
     await loadKnowledgeSpace({ force: true });
     return true;
   }
+  if (action === 'knowledge-open-publish-confirm') {
+    knowledgePublishState = { sessionId: target.dataset.sessionId || '' };
+    modal = 'knowledge-publish';
+    render();
+    return true;
+  }
+  if (action === 'knowledge-confirm-publish') {
+    const sessionId = target.dataset.sessionId || knowledgePublishState.sessionId || '';
+    await api(`/api/knowledge/change-sessions/${encodeURIComponent(sessionId)}/publish`, { method: 'POST', body: JSON.stringify({}) });
+    modal = null;
+    knowledgePublishState = { sessionId: '' };
+    toast('Knowledge published');
+    await loadKnowledgeSpace({ force: true });
+    return true;
+  }
   if (action === 'knowledge-open-agent-link') {
     knowledgeAgentLinkState = { docId: target.dataset.docId || knowledgeSelectedDoc()?.id || '', copied: false };
     modal = 'knowledge-agent-link';
@@ -1273,24 +1460,9 @@ async function handleKnowledgeAction(action, target, event = null) {
     if (!copied) console.warn('Knowledge agent link copy failed.');
     return true;
   }
-  if (action === 'knowledge-create-draft') {
-    const docId = target.dataset.docId || knowledgeSelectedDoc()?.id || '';
-    const proposedMarkdown = document.querySelector('#knowledge-proposed-markdown')?.value || '';
-    const summary = document.querySelector('#knowledge-draft-summary')?.value || 'Knowledge update draft';
-    const result = await api('/api/knowledge/change-sessions', {
-      method: 'POST',
-      body: JSON.stringify({ summary, changes: [{ docId, proposedMarkdown }] }),
-    });
-    toast('Draft created');
-    knowledgeRoute = { view: 'reviews', docId: '', changeSessionId: result.session.id };
-    await loadKnowledgeSpace({ force: true });
-    syncBrowserRouteForActiveView();
-    return true;
-  }
   if (action === 'knowledge-review-action') {
     const sessionId = target.dataset.sessionId || '';
     const next = target.dataset.next || '';
-    if (next === 'publish' && !window.confirm('Publish this Knowledge Space change session?')) return true;
     const endpoint = `/api/knowledge/change-sessions/${encodeURIComponent(sessionId)}/${next}`;
     await api(endpoint, { method: 'POST', body: JSON.stringify({}) });
     toast(next === 'publish' ? 'Knowledge published' : 'Review updated');

@@ -3334,6 +3334,12 @@ function syncConsoleServerSlug(form, { force = false } = {}) {
 }
 
 document.addEventListener('input', async (event) => {
+  if (event.target?.id === 'knowledge-graph-search') {
+    knowledgeSpaceState = { ...knowledgeSpaceState, graphSearchQuery: event.target.value };
+    if (typeof focusKnowledgeGraphSearchResult === 'function') focusKnowledgeGraphSearchResult({ recenter: true });
+    return;
+  }
+
   if (event.target.matches?.('[data-action="avatar-crop-scale"]') && avatarCropState) {
     avatarCropState.scale = clampAvatarCropScale(event.target.value);
     clampAvatarCropOffset();

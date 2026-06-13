@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { handleKnowledgeApi } from '../server/api/knowledge-routes.js';
+import { assertKnowledgeDeploySafe, assertKnowledgeSecretConfigured } from '../server/deploy-guard.js';
 
 const SAMPLE_MARKDOWN = `# Team Consensus
 
@@ -120,6 +121,7 @@ test('owner imports, manages whitelist/settings, editor publishes, and Feishu fa
     sourceName: 'Team Consensus',
   });
   assert.equal(importRes.statusCode, 201);
+  assert.equal(importRes.data.mode, 'published');
   assert.equal(importRes.data.imported.documents, 2);
 
   const settingsRes = await callRoute(deps, 'PATCH', '/api/knowledge/settings', {
@@ -170,5 +172,52 @@ test('ask and align return matched anchors with MagClaw links', async () => {
   const align = await callRoute(deps, 'POST', '/api/knowledge/align', { text: 'Need memory to be retrievable.' });
   assert.equal(align.statusCode, 200);
   assert.equal(align.data.rules.length > 0, true);
-  assert.equal(align.data.alignmentGaps.length > 0, true);
+  assert.deepEqual(align.data.alignmentGaps, []);
+});
+
+test('re-import route reports draft mode for existing roots', async () => {
+  const deps = routeDeps();
+  await callRoute(deps, 'POST', '/api/knowledge/import', {
+    markdown: SAMPLE_MARKDOWN,
+    sourceName: 'Team Consensus',
+  });
+
+  const reimport = await callRoute(deps, 'POST', '/api/knowledge/import', {
+    markdown: SAMPLE_MARKDOWN.replace('Memory should be retrievable.', 'Memory should be retrievable and reviewed.'),
+    sourceName: 'Team Consensus',
+  });
+
+  assert.equal(reimport.statusCode, 201);
+  assert.equal(reimport.data.mode, 'draft');
+  assert.equal(reimport.data.session.status, 'draft');
+  assert.equal(deps.events.at(-1).type, 'knowledge_import_drafted');
+});
+
+test('knowledge deploy guard rejects open cloud deployments and warns on missing secret', () => {
+  assert.throws(() => assertKnowledgeDeploySafe({
+    isCloudDeploy: true,
+    isLoginRequired: () => false,
+    env: {},
+  }), /login.*required/i);
+  assert.doesNotThrow(() => assertKnowledgeDeploySafe({
+    isCloudDeploy: false,
+    isLoginRequired: () => false,
+    env: {},
+  }));
+
+  const warnings = [];
+  assertKnowledgeDeploySafe({
+    isCloudDeploy: true,
+    isLoginRequired: () => false,
+    env: { MAGCLAW_ALLOW_OPEN_KNOWLEDGE: '1' },
+    warn: (message) => warnings.push(message),
+  });
+  assert.match(warnings[0], /open knowledge/i);
+
+  assertKnowledgeSecretConfigured({
+    isCloudDeploy: true,
+    env: {},
+    warn: (message) => warnings.push(message),
+  });
+  assert.match(warnings.at(-1), /MAGCLAW_KNOWLEDGE_SECRET_KEY/);
 });

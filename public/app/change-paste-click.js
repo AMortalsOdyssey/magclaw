@@ -1789,6 +1789,9 @@ document.addEventListener('click', async (event) => {
         if (modal === 'knowledge-agent-link') {
           knowledgeAgentLinkState = { docId: '', copied: false };
         }
+        if (modal === 'knowledge-publish') {
+          knowledgePublishState = { sessionId: '' };
+        }
         if (modal === 'computer') {
           await discardProvisionalPairingComputer(latestPairingCommand);
           latestPairingCommand = null;

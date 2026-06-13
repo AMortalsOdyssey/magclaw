@@ -230,12 +230,20 @@ export async function handleKnowledgeApi(req, res, url, deps) {
         actor: admin,
         now: deps.now,
       });
-      await persistAndNotify(deps, 'knowledge_imported', 'Knowledge Space Markdown imported.', {
-        workspaceId,
-        documents: result.imported.documents,
-        anchors: result.imported.anchors,
-      });
-      sendKnowledgeSpace(deps, res, state, result.space, admin, 201, { session: result.session, imported: result.imported });
+      await persistAndNotify(
+        deps,
+        result.mode === 'draft' ? 'knowledge_import_drafted' : 'knowledge_imported',
+        result.mode === 'draft'
+          ? 'Knowledge Space re-import created a review draft.'
+          : 'Knowledge Space Markdown imported.',
+        {
+          workspaceId,
+          mode: result.mode,
+          documents: result.imported.documents,
+          anchors: result.imported.anchors,
+        },
+      );
+      sendKnowledgeSpace(deps, res, state, result.space, admin, 201, { session: result.session, imported: result.imported, mode: result.mode });
       return true;
     }
 
@@ -332,7 +340,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
       const member = ensureMember(deps, req, res);
       if (!member) return true;
       const body = await parseBody(deps, req);
-      deps.sendJson(res, 200, askKnowledgeConsensus(space, body.query || body.question || ''));
+      deps.sendJson(res, 200, await askKnowledgeConsensus(space, body.query || body.question || '', { env: deps.env || process.env }));
       return true;
     }
 
@@ -340,7 +348,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
       const member = ensureMember(deps, req, res);
       if (!member) return true;
       const body = await parseBody(deps, req);
-      deps.sendJson(res, 200, alignKnowledgeDiscussion(space, body.text || body.query || ''));
+      deps.sendJson(res, 200, await alignKnowledgeDiscussion(space, body.text || body.query || '', { env: deps.env || process.env }));
       return true;
     }
 

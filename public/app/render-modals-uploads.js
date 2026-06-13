@@ -13,6 +13,7 @@ function renderModal() {
     'member-reset-link': renderMemberResetLinkModal,
     'knowledge-agent-link': renderKnowledgeAgentLinkModal,
     'knowledge-whitelist-remove': renderKnowledgeWhitelistRemoveModal,
+    'knowledge-publish': renderKnowledgePublishModal,
     'join-link-revoke-confirm': renderJoinLinkRevokeConfirmModal,
     'server-create': renderServerCreateModal,
     'attachment-preview': renderAttachmentPreviewModal,
