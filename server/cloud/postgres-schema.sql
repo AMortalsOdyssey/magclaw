@@ -192,6 +192,10 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+ALTER TABLE IF EXISTS knowledge_documents
+  ADD COLUMN IF NOT EXISTS consensus_id TEXT,
+  ADD COLUMN IF NOT EXISTS consensus_root_id TEXT;
+
 CREATE INDEX IF NOT EXISTS knowledge_documents_workspace_idx
   ON knowledge_documents(workspace_id, level, updated_at DESC);
 
@@ -231,6 +235,10 @@ CREATE TABLE IF NOT EXISTS knowledge_heading_anchors (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+
+ALTER TABLE IF EXISTS knowledge_heading_anchors
+  ADD COLUMN IF NOT EXISTS consensus_id TEXT,
+  ADD COLUMN IF NOT EXISTS consensus_root_id TEXT;
 
 CREATE INDEX IF NOT EXISTS knowledge_heading_anchors_document_idx
   ON knowledge_heading_anchors(document_id, level, updated_at DESC);

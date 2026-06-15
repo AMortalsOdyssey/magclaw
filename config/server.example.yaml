@@ -47,6 +47,10 @@ storage:
   local_file_storage_fallback: false
   write_state_json: false
 
+knowledge:
+  secret_key: "replace-with-32-plus-char-random-secret"
+  allow_open: false
+
 daemon:
   # local-repo shows: MAGCLAW_REPO_DIR=...; node .../daemon/bin/magclaw-daemon.js
   # npm shows: npx @magclaw/daemon@latest

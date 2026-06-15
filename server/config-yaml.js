@@ -146,6 +146,7 @@ export function applyParsedServerYamlConfig(config = {}, options = {}) {
   const email = config.email || config.smtp || {};
   const llm = config.llm || {};
   const markdownMaintenance = config.markdown_maintenance || config.markdownMaintenance || {};
+  const knowledge = objectValue(config.knowledge || config.knowledge_space || config.knowledgeSpace);
   const auth = config.auth || {};
   const feishu = objectValue(config.feishu || config.lark);
   const feishuConnect = objectValue(pick(feishu.connect, feishu.bot, feishu.gateway));
@@ -229,6 +230,8 @@ export function applyParsedServerYamlConfig(config = {}, options = {}) {
   setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC', pick(markdownMaintenance.semantic, markdownMaintenance.semantic_enabled, markdownMaintenance.semanticEnabled));
   setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS', pick(markdownMaintenance.max_agents, markdownMaintenance.maxAgents));
   setEnv(env, 'MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT', pick(markdownMaintenance.max_files_per_agent, markdownMaintenance.maxFilesPerAgent));
+  setEnv(env, 'MAGCLAW_KNOWLEDGE_SECRET_KEY', pick(knowledge.secret_key, knowledge.secretKey, knowledge.encryption_key, knowledge.encryptionKey));
+  setEnv(env, 'MAGCLAW_ALLOW_OPEN_KNOWLEDGE', pick(knowledge.allow_open, knowledge.allowOpen));
 
   const authProviders = pick(auth.providers, auth.login_providers, auth.loginProviders, auth.methods, auth.login_methods, auth.loginMethods);
   if (Array.isArray(authProviders)) {

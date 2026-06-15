@@ -659,6 +659,8 @@ test('PostgreSQL schema declares Knowledge Space durable tables', async () => {
   assert.match(schema, /knowledge_documents[\s\S]*consensus_root_id TEXT/);
   assert.match(schema, /knowledge_heading_anchors[\s\S]*consensus_id TEXT/);
   assert.match(schema, /knowledge_heading_anchors[\s\S]*consensus_root_id TEXT/);
+  assert.match(schema, /ALTER TABLE IF EXISTS knowledge_documents[\s\S]*ADD COLUMN IF NOT EXISTS consensus_id TEXT/);
+  assert.match(schema, /ALTER TABLE IF EXISTS knowledge_heading_anchors[\s\S]*ADD COLUMN IF NOT EXISTS consensus_id TEXT/);
   assert.match(schema, /knowledge_documents_consensus_idx/);
   assert.match(schema, /knowledge_heading_anchors_consensus_idx/);
 });

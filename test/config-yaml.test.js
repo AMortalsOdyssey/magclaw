@@ -45,6 +45,9 @@ markdown_maintenance:
   semantic: false
   max_agents: 3
   max_files_per_agent: 4
+knowledge:
+  secret_key: "knowledge-secret"
+  allow_open: false
 fanout_api:
   enabled: true
   base_url: "https://models.example/v1"
@@ -77,6 +80,8 @@ fanout_api:
   assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_SEMANTIC, '0');
   assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_AGENTS, '3');
   assert.equal(env.MAGCLAW_MARKDOWN_MAINTENANCE_MAX_FILES_PER_AGENT, '4');
+  assert.equal(env.MAGCLAW_KNOWLEDGE_SECRET_KEY, 'knowledge-secret');
+  assert.equal(env.MAGCLAW_ALLOW_OPEN_KNOWLEDGE, '0');
   assert.equal(env.MAGCLAW_REQUIRE_LOGIN, undefined);
   assert.equal(env.MAGCLAW_DATA_DIR, undefined);
   assert.equal(env.MAGCLAW_FANOUT_API_ENABLED, undefined);
@@ -86,6 +91,7 @@ fanout_api:
   assert.equal(env.MAGCLAW_FANOUT_API_FALLBACK_MODEL, undefined);
   assert.equal(env.MAGCLAW_FANOUT_TIMEOUT_MS, undefined);
   assert.equal(result.redacted.llm.api_key, '[redacted]');
+  assert.equal(result.redacted.knowledge.secret_key, '[redacted]');
 });
 
 test('server yaml maps modular auth providers without exposing nested secrets in redaction', async () => {
