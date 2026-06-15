@@ -428,13 +428,18 @@ function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
   const nodes = rawNodes.map((node) => ({ ...node, x: centerX, y: centerY, vx: 0, vy: 0, homeX: centerX, homeY: centerY }));
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const spaceNode = nodes.find((node) => node.kind === 'space');
-  if (spaceNode) placeKnowledgeNode(spaceNode, centerX, centerY);
-
   const topDocuments = nodes.filter((node) => node.kind === 'document' && (!node.parentId || Number(node.level || 1) <= 1));
+  const centerNode = spaceNode || (topDocuments.length === 1 ? topDocuments[0] : null);
+  if (centerNode) {
+    centerNode.graphHomeRole = 'root';
+    placeKnowledgeNode(centerNode, centerX, centerY);
+  }
+
+  const satelliteTopDocuments = topDocuments.filter((node) => node !== centerNode);
   const childDocuments = nodes.filter((node) => node.kind === 'document' && node.parentId && Number(node.level || 1) > 1);
   const topRadius = Math.max(34, minSize * 0.07);
-  topDocuments.forEach((node, index) => {
-    const angle = topDocuments.length === 1 ? -Math.PI / 2 : (index / topDocuments.length) * Math.PI * 2 - Math.PI / 2;
+  satelliteTopDocuments.forEach((node, index) => {
+    const angle = satelliteTopDocuments.length === 1 ? -Math.PI / 2 : (index / satelliteTopDocuments.length) * Math.PI * 2 - Math.PI / 2;
     placeKnowledgeNode(node, centerX + Math.cos(angle) * topRadius, centerY + Math.sin(angle) * topRadius);
   });
 
@@ -464,7 +469,7 @@ function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
     });
   }
 
-  nodes.filter((node) => !Number.isFinite(node.x) || (node.x === centerX && node.y === centerY && node.kind !== 'space')).forEach((node, index) => {
+  nodes.filter((node) => !Number.isFinite(node.x) || (node.x === centerX && node.y === centerY && node !== centerNode)).forEach((node, index) => {
     const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
     placeKnowledgeNode(node, centerX + Math.cos(angle) * childRadius, centerY + Math.sin(angle) * childRadius);
   });
@@ -774,7 +779,7 @@ function stepKnowledgeGraph() {
   for (const node of nodes) {
     const cx = rt.width / 2;
     const cy = rt.height / 2;
-    const homeStrength = node.kind === 'space' ? 0.018 : node.kind === 'document' ? 0.0026 : 0.0012;
+    const homeStrength = node.kind === 'space' || node.graphHomeRole === 'root' ? 0.018 : node.kind === 'document' ? 0.0026 : 0.0012;
     node.vx += ((node.homeX || cx) - node.x) * homeStrength;
     node.vy += ((node.homeY || cy) - node.y) * homeStrength;
     node.vx += (cx - node.x) * 0.0002;

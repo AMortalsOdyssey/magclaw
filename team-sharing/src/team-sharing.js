@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { appendFile, chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -1344,7 +1346,12 @@ export async function unsetTeamSharingProject(flags = {}, env = process.env) {
 }
 
 function requestTimeoutMs(flags = {}, env = process.env) {
-  return Math.max(1000, Number(flags.requestTimeoutMs || env.MAGCLAW_TEAM_SHARING_REQUEST_TIMEOUT_MS || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS);
+  const explicit = flags.requestTimeoutMs
+    || flags.timeoutMs
+    || flags.timeout
+    || env.MAGCLAW_TEAM_SHARING_REQUEST_TIMEOUT_MS
+    || DEFAULT_REQUEST_TIMEOUT_MS;
+  return Math.max(1000, Number(explicit) || DEFAULT_REQUEST_TIMEOUT_MS);
 }
 
 function tokenExpiryFromFlags(flags = {}, fallbackMs = Date.now() + TEAM_SHARING_TOKEN_TTL_MS) {
@@ -1366,10 +1373,111 @@ function profileTokenIssue(profileConfig = {}, env = process.env, projectConfig 
   return profileProjectMismatch(profileConfig, projectConfig);
 }
 
-async function teamSharingRequest({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+function normalizedTeamSharingRequestTimeout(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
+  return Math.max(1000, Number(timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS);
+}
+
+async function teamSharingNodeJsonRequest({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+  const startedAtMs = Date.now();
+  const bodyText = body ? JSON.stringify(body) : '';
+  const timeout = normalizedTeamSharingRequestTimeout(timeoutMs);
+  const fingerprint = String(machineFingerprint || '').trim();
+  let endpoint;
+  try {
+    endpoint = new URL(pathname, `${normalizeServerUrl(serverUrl)}/`);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      statusText: '',
+      data: {},
+      durationMs: Date.now() - startedAtMs,
+      timeout: false,
+      error: String(error?.message || error),
+      requestBodyCharCount: auditCharCount(bodyText),
+      requestBodyByteCount: byteLength(bodyText),
+    };
+  }
+
+  return new Promise((resolve) => {
+    const transport = endpoint.protocol === 'http:' ? http : https;
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        ...payload,
+        durationMs: Date.now() - startedAtMs,
+        requestBodyCharCount: auditCharCount(bodyText),
+        requestBodyByteCount: byteLength(bodyText),
+      });
+    };
+    const request = transport.request({
+      protocol: endpoint.protocol,
+      hostname: endpoint.hostname,
+      port: endpoint.port || undefined,
+      path: `${endpoint.pathname}${endpoint.search || ''}`,
+      method,
+      headers: {
+        accept: 'application/json',
+        ...(body ? {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(bodyText, 'utf8'),
+        } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(fingerprint ? { 'x-magclaw-machine-fingerprint': fingerprint } : {}),
+      },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let data = {};
+        if (raw.trim()) {
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            data = {};
+          }
+        }
+        finish({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode || 0,
+          statusText: response.statusMessage || '',
+          data,
+          timeout: false,
+        });
+      });
+    });
+    request.setTimeout(timeout, () => {
+      const error = new Error(`Team Sharing request timed out after ${timeout}ms.`);
+      error.code = 'MAGCLAW_TEAM_SHARING_TIMEOUT';
+      request.destroy(error);
+    });
+    request.on('error', (error) => {
+      const timedOut = error?.code === 'MAGCLAW_TEAM_SHARING_TIMEOUT';
+      finish({
+        ok: false,
+        status: 0,
+        statusText: timedOut ? 'timeout' : '',
+        data: {},
+        timeout: timedOut,
+        error: timedOut ? `Team Sharing request timed out after ${timeout}ms.` : String(error?.message || error),
+      });
+    });
+    if (body) request.write(bodyText);
+    request.end();
+  });
+}
+
+async function teamSharingRequest({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, transport = 'fetch' } = {}) {
+  if (transport === 'node') {
+    return teamSharingNodeJsonRequest({ serverUrl, token, machineFingerprint, method, pathname, body, timeoutMs });
+  }
   const startedAtMs = Date.now();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs || DEFAULT_REQUEST_TIMEOUT_MS) || DEFAULT_REQUEST_TIMEOUT_MS));
+  const timeout = normalizedTeamSharingRequestTimeout(timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeout);
   const bodyText = body ? JSON.stringify(body) : '';
   const fingerprint = String(machineFingerprint || '').trim();
   try {
@@ -1395,15 +1503,15 @@ async function teamSharingRequest({ serverUrl, token = '', machineFingerprint = 
       requestBodyByteCount: byteLength(bodyText),
     };
   } catch (error) {
-    const timeout = error?.name === 'AbortError';
+    const timedOut = error?.name === 'AbortError';
     return {
       ok: false,
       status: 0,
-      statusText: timeout ? 'timeout' : '',
+      statusText: timedOut ? 'timeout' : '',
       data: {},
       durationMs: Date.now() - startedAtMs,
-      timeout,
-      error: timeout ? `Team Sharing request timed out after ${timeoutMs}ms.` : String(error?.message || error),
+      timeout: timedOut,
+      error: timedOut ? `Team Sharing request timed out after ${timeout}ms.` : String(error?.message || error),
       requestBodyCharCount: auditCharCount(bodyText),
       requestBodyByteCount: byteLength(bodyText),
     };
@@ -1412,8 +1520,8 @@ async function teamSharingRequest({ serverUrl, token = '', machineFingerprint = 
   }
 }
 
-async function teamSharingRequestJson({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
-  const request = await teamSharingRequest({ serverUrl, token, machineFingerprint, method, pathname, body, timeoutMs });
+async function teamSharingRequestJson({ serverUrl, token = '', machineFingerprint = '', method = 'GET', pathname = '/', body = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, transport = 'fetch' } = {}) {
+  const request = await teamSharingRequest({ serverUrl, token, machineFingerprint, method, pathname, body, timeoutMs, transport });
   const data = request.data || {};
   if (!request.ok) {
     const error = new Error(data.error || data.message || request.error || `${request.status} ${request.statusText}`);
@@ -3315,6 +3423,7 @@ export async function importKnowledgeConsensus(flags = {}, env = process.env) {
     method: 'POST',
     pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/import`,
     timeoutMs: requestTimeoutMs(flags, env),
+    transport: 'node',
     body: {
       workspaceId: workspace,
       markdown,
@@ -3339,6 +3448,7 @@ export async function askKnowledgeConsensusCommand(flags = {}, env = process.env
     method: 'POST',
     pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/ask`,
     timeoutMs: requestTimeoutMs(flags, env),
+    transport: 'node',
     body: { workspaceId: workspace, query },
   });
 }
@@ -3359,6 +3469,7 @@ export async function editKnowledgeConsensus(flags = {}, env = process.env) {
     method: 'POST',
     pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/edit`,
     timeoutMs: requestTimeoutMs(flags, env),
+    transport: 'node',
     body: {
       workspaceId: workspace,
       docId,
@@ -3385,6 +3496,7 @@ export async function alignKnowledgeConsensus(flags = {}, env = process.env) {
     method: 'POST',
     pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/align`,
     timeoutMs: requestTimeoutMs(flags, env),
+    transport: 'node',
     body: { workspaceId: workspace, text },
   });
 }

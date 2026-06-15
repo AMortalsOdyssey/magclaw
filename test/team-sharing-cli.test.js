@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -55,6 +56,47 @@ import {
 
 function escapeRegExp(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function listen(server) {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve(server.address());
+    });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+async function startJsonServer(handler) {
+  const server = http.createServer(async (req, res) => {
+    try {
+      await handler(req, res, await readRequestBody(req));
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: String(error?.message || error) }));
+    }
+  });
+  const address = await listen(server);
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => closeServer(server),
+  };
 }
 
 test('team sharing onboarding feedback renders structured guidance without secrets or local paths', () => {
@@ -3056,15 +3098,35 @@ test('team sharing cli knowledge consensus commands call protected routes withou
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-home-'));
   const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const calls = [];
+  const server = await startJsonServer((req, res, bodyText) => {
+    const body = JSON.parse(bodyText || '{}');
+    calls.push({ url: `${server.url}${req.url}`, headers: req.headers, body });
+    assert.equal(req.headers.authorization, 'Bearer team-sharing-token-secret');
+    assert.equal(req.headers['content-type'], 'application/json');
+    assert.equal(Number(req.headers['content-length']) > 0, true);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      pathname: req.url,
+      body,
+      session: { id: 'chg_1', status: 'draft' },
+      imported: { documents: 2, anchors: 1 },
+      answer: 'Matched 1 consensus item.',
+      matches: [{ title: 'Memory Module' }],
+      rules: [{ title: 'Memory Module' }],
+      alignmentGaps: [],
+    }));
+  });
   await loginTeamSharingProfile({
-    serverUrl: 'https://magclaw.example',
+    serverUrl: server.url,
     workspaceId: 'ws_team',
     token: 'team-sharing-token-secret',
   }, env);
   await initTeamSharingProject({
     cwd,
     channel: 'chan_team',
-    serverUrl: 'https://magclaw.example',
+    serverUrl: server.url,
     workspaceId: 'ws_team',
     projectKey: 'magclaw',
   }, env);
@@ -3073,68 +3135,86 @@ test('team sharing cli knowledge consensus commands call protected routes withou
   const editFile = path.join(cwd, 'edit.md');
   await writeFile(editFile, 'Memory should be retrievable with stable anchors.\n');
 
-  const calls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) => {
-    const body = JSON.parse(init.body || '{}');
-    calls.push({ url: String(url), init, body });
-    assert.equal(init.headers.authorization, 'Bearer team-sharing-token-secret');
-    return {
-      ok: true,
-      json: async () => ({
-        ok: true,
-        pathname: new URL(String(url)).pathname,
-        body,
-        session: { id: 'chg_1', status: 'draft' },
-        imported: { documents: 2, anchors: 1 },
-        answer: 'Matched 1 consensus item.',
-        matches: [{ title: 'Memory Module' }],
-        rules: [{ title: 'Memory Module' }],
-        alignmentGaps: [],
-      }),
-    };
-  };
   try {
     const imported = await importKnowledgeConsensus({
       cwd,
-      server: 'https://magclaw.example',
+      server: server.url,
       workspace: 'team-server',
       file: markdownFile,
       title: 'Team Consensus',
     }, env);
     const asked = await askKnowledgeConsensusCommand({
       cwd,
-      server: 'https://magclaw.example',
+      server: server.url,
       workspace: 'team-server',
       query: 'stable anchors',
     }, env);
     const edited = await editKnowledgeConsensus({
       cwd,
-      server: 'https://magclaw.example',
+      server: server.url,
       workspace: 'team-server',
       doc: 'doc_memory',
       file: editFile,
     }, env);
     const aligned = await alignKnowledgeConsensus({
       cwd,
-      server: 'https://magclaw.example',
+      server: server.url,
       workspace: 'team-server',
       text: 'We need stable anchors.',
     }, env);
 
-    assert.equal(calls[0].url, 'https://magclaw.example/api/team-sharing/knowledge/team-server/import');
+    assert.equal(calls[0].url, `${server.url}/api/team-sharing/knowledge/team-server/import`);
     assert.equal(calls[0].body.workspaceId, 'team-server');
     assert.match(calls[0].body.markdown, /Team Consensus/);
-    assert.equal(calls[1].url, 'https://magclaw.example/api/team-sharing/knowledge/team-server/ask');
+    assert.equal(calls[1].url, `${server.url}/api/team-sharing/knowledge/team-server/ask`);
     assert.equal(calls[1].body.query, 'stable anchors');
-    assert.equal(calls[2].url, 'https://magclaw.example/api/team-sharing/knowledge/team-server/edit');
+    assert.equal(calls[2].url, `${server.url}/api/team-sharing/knowledge/team-server/edit`);
     assert.equal(calls[2].body.docId, 'doc_memory');
     assert.match(calls[2].body.markdown, /stable anchors/);
-    assert.equal(calls[3].url, 'https://magclaw.example/api/team-sharing/knowledge/team-server/align');
+    assert.equal(calls[3].url, `${server.url}/api/team-sharing/knowledge/team-server/align`);
     assert.equal(calls[3].body.text, 'We need stable anchors.');
     assert.doesNotMatch(JSON.stringify({ imported, asked, edited, aligned }), /team-sharing-token-secret|Bearer/i);
   } finally {
-    globalThis.fetch = originalFetch;
+    await server.close();
+  }
+});
+
+test('team sharing knowledge consensus commands honor timeout-ms alias with bounded node transport', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-timeout-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-timeout-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const server = await startJsonServer(() => {});
+  await loginTeamSharingProfile({
+    serverUrl: server.url,
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: server.url,
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      askKnowledgeConsensusCommand({
+        cwd,
+        server: server.url,
+        workspace: 'team-server',
+        query: 'will timeout',
+        timeoutMs: '5',
+      }, env),
+      (error) => {
+        assert.equal(error.timeout, true);
+        assert.equal(error.statusText, 'timeout');
+        return true;
+      },
+    );
+    assert.equal(Date.now() - startedAt < 2500, true);
+  } finally {
+    await server.close();
   }
 });
 

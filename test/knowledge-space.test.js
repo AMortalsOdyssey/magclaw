@@ -67,12 +67,12 @@ test('Markdown import creates root and H2 documents, H3 anchors, graph data, and
   assert.ok(result.space.links.some((link) => link.kind === 'anchor'));
 
   const graph = getKnowledgeGraph(result.space, { now: '2026-06-10T11:00:00.000Z' });
-  assert.equal(graph.nodes.some((node) => node.kind === 'space' && node.level === 0), true);
+  assert.equal(graph.nodes.some((node) => node.kind === 'space'), false);
   assert.equal(graph.nodes.some((node) => node.kind === 'document' && node.level === 1), true);
   assert.equal(graph.nodes.some((node) => node.kind === 'anchor' && node.colorRole === 'recent_leaf'), true);
   assert.equal(graph.nodes.every((node) => typeof node.href === 'string' && node.href.startsWith('/s/ws_knowledge/knowledge')), true);
   assert.ok(graph.nodes.some((node) => node.kind === 'anchor' && node.href.includes('#recall-boundary')));
-  assert.equal(graph.edges.some((edge) => edge.kind === 'root'), true);
+  assert.equal(graph.edges.some((edge) => edge.kind === 'root'), false);
   assert.equal(Math.max(...graph.nodes.map((node) => node.radius)) <= 11, true);
   assert.equal(graph.edges.length >= 4, true);
   const memoryDoc = result.space.documents.find((doc) => doc.title === 'Memory Module');

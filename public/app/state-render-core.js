@@ -473,6 +473,60 @@ function syncBrowserRouteForActiveView({ replace = false } = {}) {
   }
 }
 
+function applyRouteStateFromBrowserHistory() {
+  const nextRouteState = routeStateFromLocation(window.location.pathname || '');
+  if (!nextRouteState.activeView) return false;
+  activeView = nextRouteState.activeView;
+  railTab = nextRouteState.railTab || railTab;
+  if (nextRouteState.consoleTab) consoleTab = nextRouteState.consoleTab;
+  if (nextRouteState.settingsTab) settingsTab = nextRouteState.settingsTab;
+  if (nextRouteState.space) {
+    selectedSpaceType = nextRouteState.space.type || selectedSpaceType || 'channel';
+    selectedSpaceId = nextRouteState.space.id || selectedSpaceId || 'chan_all';
+    mobileHomeOpen = false;
+  } else {
+    mobileHomeOpen = Boolean(nextRouteState.mobileHome);
+  }
+  if (nextRouteState.selectedHumanId) {
+    selectedHumanId = nextRouteState.selectedHumanId;
+    selectedAgentId = null;
+    membersLayout = normalizeMembersLayout({ mode: 'human', humanId: selectedHumanId });
+  }
+  if (nextRouteState.selectedAgentId) {
+    selectedAgentId = nextRouteState.selectedAgentId;
+    selectedHumanId = null;
+    membersLayout = normalizeMembersLayout({ mode: 'agent', agentId: selectedAgentId });
+  }
+  if (nextRouteState.selectedComputerId) selectedComputerId = nextRouteState.selectedComputerId;
+  if (nextRouteState.knowledgeRoute) {
+    const nextKnowledgeRoute = {
+      view: nextRouteState.knowledgeRoute.view || 'home',
+      docId: nextRouteState.knowledgeRoute.docId || '',
+      changeSessionId: nextRouteState.knowledgeRoute.changeSessionId || '',
+      settingsTab: nextRouteState.knowledgeRoute.settingsTab || 'overview',
+    };
+    knowledgeRoute = nextKnowledgeRoute;
+    knowledgeSpaceState = {
+      ...knowledgeSpaceState,
+      tab: nextKnowledgeRoute.view || 'home',
+      selectedDocId: nextKnowledgeRoute.docId || knowledgeSpaceState.selectedDocId || '',
+    };
+    if (nextKnowledgeRoute.view !== 'settings') {
+      knowledgeSettingsState = { ...knowledgeSettingsState, addOpen: false, selectedAddIds: [] };
+    }
+  }
+  return true;
+}
+
+if (typeof window !== 'undefined' && !window.__magclawRoutePopstateBound) {
+  window.__magclawRoutePopstateBound = true;
+  window.addEventListener('popstate', () => {
+    if (!applyRouteStateFromBrowserHistory()) return;
+    if (typeof render === 'function') render();
+    if (eventSource && typeof connectEvents === 'function') connectEvents();
+  });
+}
+
 function isImeComposing(event, textarea = null) {
   if (event?.isComposing || event?.keyCode === 229 || event?.which === 229) return true;
   if (!composerIsComposing) return false;

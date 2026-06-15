@@ -868,6 +868,8 @@ export function getKnowledgeGraph(space, options = {}) {
   const edges = [];
   const edgeKeys = new Set();
   const rootNodeId = space.id || stableId('ks', space.workspaceId || 'local');
+  const rootDocuments = space.documents.filter((doc) => !doc.parentId);
+  const includeSpaceNode = rootDocuments.length === 0;
   const pushEdge = (source, target, kind = 'link', id = '') => {
     if (!source || !target || source === target) return;
     const key = `${source}->${target}->${kind}`;
@@ -875,16 +877,18 @@ export function getKnowledgeGraph(space, options = {}) {
     edgeKeys.add(key);
     edges.push({ id: id || stableId('edge', source, target, kind), source, target, kind });
   };
-  nodes.push({
-    id: rootNodeId,
-    kind: 'space',
-    docId: '',
-    title: space.title || 'Knowledge Space',
-    summary: 'Server-level knowledge space',
-    level: 0,
-    updatedAt: space.updatedAt,
-    href: `/s/${encodeURIComponent(space.workspaceId)}/knowledge`,
-  });
+  if (includeSpaceNode) {
+    nodes.push({
+      id: rootNodeId,
+      kind: 'space',
+      docId: '',
+      title: space.title || 'Knowledge Space',
+      summary: 'Server-level knowledge space',
+      level: 0,
+      updatedAt: space.updatedAt,
+      href: `/s/${encodeURIComponent(space.workspaceId)}/knowledge`,
+    });
+  }
   for (const doc of space.documents) {
     nodes.push({
       id: doc.id,
@@ -899,7 +903,7 @@ export function getKnowledgeGraph(space, options = {}) {
     });
     if (doc.parentId) {
       pushEdge(doc.parentId, doc.id, 'hierarchy');
-    } else {
+    } else if (includeSpaceNode) {
       pushEdge(rootNodeId, doc.id, 'root');
     }
   }

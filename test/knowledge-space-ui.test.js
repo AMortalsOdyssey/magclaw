@@ -37,6 +37,10 @@ test('Knowledge Space script, route, and left rail entry are wired above Team Sh
   assert.match(routeSource, /activeView: 'knowledge'/);
   assert.match(app, /route\.view === 'graph'[\s\S]*\/knowledge\/graph/);
   assert.match(app, /route\.view === 'settings'[\s\S]*\/knowledge\/settings/);
+  assert.match(app, /function applyRouteStateFromBrowserHistory/);
+  assert.match(app, /window\.addEventListener\('popstate'/);
+  assert.match(app, /knowledgeRoute = nextKnowledgeRoute/);
+  assert.match(app, /selectedDocId: nextKnowledgeRoute\.docId/);
 });
 
 test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels, and recent-leaf colors', async () => {
@@ -75,6 +79,8 @@ test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels,
   assert.match(graphSource, /ResizeObserver/);
   assert.match(graphSource, /rgba\(53, 143, 199, 0\.64\)/);
   assert.match(graphSource, /rgba\(88, 103, 113, 0\.18\)/);
+  assert.match(graphSource, /graphHomeRole = 'root'/);
+  assert.match(graphSource, /node\.graphHomeRole === 'root'/);
 });
 
 test('Knowledge review, settings, and Change Log controls render expected state flow', async () => {
