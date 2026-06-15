@@ -21,6 +21,7 @@ import {
   alignKnowledgeConsensus,
   askKnowledgeConsensusCommand,
   editKnowledgeConsensus,
+  exportKnowledgeConsensus,
   importKnowledgeConsensus,
   installTeamSharingHooks,
   installTeamSharingSkill,
@@ -227,6 +228,7 @@ test('team sharing cli help lists Knowledge consensus commands', () => {
   assert.match(result.stdout, /ask-consensus/);
   assert.match(result.stdout, /edit-consensus/);
   assert.match(result.stdout, /align-consensus/);
+  assert.match(result.stdout, /export-consensus/);
 });
 
 test('team sharing cli setup prints onboarding guidance by default for piped npm runs', async () => {
@@ -2000,9 +2002,9 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.equal(codexSurface.type, 'codex_plugin');
   assert.equal(codexSurface.pluginName, 'magclaw-team-sharing');
   assert.equal(codexSurface.marketplaceName, 'magclaw');
-  assert.equal(codexSurface.installedSkills.length, 11);
+  assert.equal(codexSurface.installedSkills.length, 12);
   assert.equal(claudeSurface.type, 'standalone_skills');
-  assert.equal(claudeSurface.installedSkills.length, 11);
+  assert.equal(claudeSurface.installedSkills.length, 12);
   assert.ok(skill.installed.some((item) => item.type === 'codex_plugin' && item.path === path.join(home, '.magclaw', 'team-sharing', 'codex-marketplace', 'plugins', 'magclaw-team-sharing')));
   assert.ok(skill.installed.some((item) => item.type === 'standalone_skills' && item.paths.includes(path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing-search', 'SKILL.md'))));
   const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
@@ -3103,13 +3105,17 @@ test('team sharing cli knowledge consensus commands call protected routes withou
     const body = JSON.parse(bodyText || '{}');
     calls.push({ url: `${server.url}${req.url}`, headers: req.headers, body });
     assert.equal(req.headers.authorization, 'Bearer team-sharing-token-secret');
-    assert.equal(req.headers['content-type'], 'application/json');
-    assert.equal(Number(req.headers['content-length']) > 0, true);
+    if (req.method !== 'GET') {
+      assert.equal(req.headers['content-type'], 'application/json');
+      assert.equal(Number(req.headers['content-length']) > 0, true);
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
       pathname: req.url,
       body,
+      consensusId: 'cns_team',
+      markdown: '# Team Consensus\n\n## Memory Module\n\nMemory should be retrievable.\n',
       session: { id: 'chg_1', status: 'draft' },
       imported: { documents: 2, anchors: 1 },
       answer: 'Matched 1 consensus item.',
@@ -3162,6 +3168,12 @@ test('team sharing cli knowledge consensus commands call protected routes withou
       workspace: 'team-server',
       text: 'We need stable anchors.',
     }, env);
+    const exported = await exportKnowledgeConsensus({
+      cwd,
+      server: server.url,
+      workspace: 'team-server',
+      consensusId: 'cns_team',
+    }, env);
 
     assert.equal(calls[0].url, `${server.url}/api/team-sharing/knowledge/team-server/import`);
     assert.equal(calls[0].body.workspaceId, 'team-server');
@@ -3173,7 +3185,9 @@ test('team sharing cli knowledge consensus commands call protected routes withou
     assert.match(calls[2].body.markdown, /stable anchors/);
     assert.equal(calls[3].url, `${server.url}/api/team-sharing/knowledge/team-server/align`);
     assert.equal(calls[3].body.text, 'We need stable anchors.');
-    assert.doesNotMatch(JSON.stringify({ imported, asked, edited, aligned }), /team-sharing-token-secret|Bearer/i);
+    assert.equal(calls[4].url, `${server.url}/api/team-sharing/knowledge/team-server/export?consensusId=cns_team`);
+    assert.match(exported.markdown, /^# Team Consensus/m);
+    assert.doesNotMatch(JSON.stringify({ imported, asked, edited, aligned, exported }), /team-sharing-token-secret|Bearer/i);
   } finally {
     await server.close();
   }
@@ -3500,7 +3514,7 @@ test('team sharing cli infers artifact title and type from local documents', asy
 test('team sharing codex plugin source exposes valid plugin and trigger-focused skills', async () => {
   const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
   const manifest = JSON.parse(await readFile(path.resolve('team-sharing', 'codex-plugin', '.codex-plugin', 'plugin.json'), 'utf8'));
-  const expectedSkills = ['setup', 'session-reporting', 'search', 'read-link', 'share-artifact', 'edit-link', 'manage-links', 'import-consensus', 'ask-consensus', 'edit-consensus', 'align-consensus'];
+  const expectedSkills = ['setup', 'session-reporting', 'search', 'read-link', 'share-artifact', 'edit-link', 'manage-links', 'import-consensus', 'ask-consensus', 'edit-consensus', 'align-consensus', 'export-consensus'];
 
   assert.equal(manifest.name, 'magclaw-team-sharing');
   assert.equal(manifest.version, packageJson.version);
@@ -3539,6 +3553,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   const askConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'ask-consensus', 'SKILL.md'), 'utf8');
   const editConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'edit-consensus', 'SKILL.md'), 'utf8');
   const alignConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
+  const exportConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'export-consensus', 'SKILL.md'), 'utf8');
   const skill = [
     setupSkill,
     setupRef,
@@ -3555,12 +3570,13 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
     askConsensusSkill,
     editConsensusSkill,
     alignConsensusSkill,
+    exportConsensusSkill,
   ].join('\n');
 
   assert.equal(result.ok, true);
   assert.equal(result.scope, 'project');
   assert.equal(result.surfaces[0].type, 'codex_plugin');
-  assert.equal(result.surfaces[0].installedSkills.length, 11);
+  assert.equal(result.surfaces[0].installedSkills.length, 12);
   assert.equal(manifest.name, 'magclaw-team-sharing');
   assert.equal(manifest.skills, './skills/');
   assert.equal(Object.prototype.hasOwnProperty.call(manifest, 'hooks'), false);
@@ -3596,6 +3612,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.match(skill, /team-sharing ask-consensus --server <server> --workspace <workspace> --query "<question>"/);
   assert.match(skill, /team-sharing edit-consensus --server <server> --workspace <workspace> --doc <docId> --file <markdown-file>/);
   assert.match(skill, /team-sharing align-consensus --server <server> --workspace <workspace> --text "<discussion text>"/);
+  assert.match(skill, /team-sharing export-consensus --server <server> --workspace <workspace> --consensus-id <consensusId>/);
   assert.match(skill, /Web import UI/);
   assert.match(skill, /Web ask UI/);
   assert.match(skill, /Web draft editor UI/);

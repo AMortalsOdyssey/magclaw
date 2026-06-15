@@ -22,6 +22,61 @@ function knowledgeSelectedDoc() {
   return docs.find((doc) => doc.id === selectedId) || docs[0] || null;
 }
 
+function knowledgeConsensusStorageKey() {
+  const workspaceId = knowledgeSpace()?.workspaceId || knowledgeSpaceState?.data?.space?.workspaceId || 'local';
+  return `magclawKnowledgeCollapsedConsensus:${workspaceId}`;
+}
+
+function knowledgeCollapsedConsensusIds() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(knowledgeConsensusStorageKey()) || '[]');
+    return new Set(Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function setKnowledgeCollapsedConsensusIds(ids) {
+  try {
+    localStorage.setItem(knowledgeConsensusStorageKey(), JSON.stringify([...ids].filter(Boolean)));
+  } catch {}
+}
+
+function knowledgeConsensusGroups() {
+  const space = knowledgeSpace();
+  const docs = knowledgeDocs();
+  const groupRows = Array.isArray(space?.consensusGroups) && space.consensusGroups.length
+    ? space.consensusGroups
+    : docs.filter((doc) => !doc.parentId).map((doc) => ({
+      id: doc.consensusId || doc.id,
+      rootDocId: doc.id,
+      title: doc.title,
+      updatedAt: doc.updatedAt,
+    }));
+  return groupRows.map((group) => {
+    const root = docs.find((doc) => doc.id === group.rootDocId)
+      || docs.find((doc) => doc.consensusId === group.id && !doc.parentId)
+      || null;
+    const children = docs.filter((doc) => doc.id !== root?.id && doc.consensusId === group.id);
+    return {
+      ...group,
+      root,
+      children,
+      docCount: (root ? 1 : 0) + children.length,
+    };
+  }).filter((group) => group.root || group.children.length);
+}
+
+function expandKnowledgeConsensusForDoc(docId) {
+  const doc = knowledgeDocs().find((item) => item.id === docId);
+  const consensusId = doc?.consensusId || '';
+  if (!consensusId) return;
+  const collapsed = knowledgeCollapsedConsensusIds();
+  if (!collapsed.has(consensusId)) return;
+  collapsed.delete(consensusId);
+  setKnowledgeCollapsedConsensusIds(collapsed);
+}
+
 async function loadKnowledgeSpace(options = {}) {
   const force = Boolean(options.force);
   if (knowledgeSpaceState.loading && !force) return knowledgeSpaceState.data;
@@ -139,6 +194,9 @@ function renderKnowledgeTab(tab, label) {
 function renderKnowledgeHome() {
   const docs = knowledgeDocs();
   const selected = knowledgeSelectedDoc();
+  const groups = knowledgeConsensusGroups();
+  const collapsed = knowledgeCollapsedConsensusIds();
+  const selectedConsensusId = selected?.consensusId || '';
   return `
     <section class="knowledge-layout">
       <aside class="knowledge-doc-rail">
@@ -147,7 +205,7 @@ function renderKnowledgeHome() {
           <strong>${docs.length}</strong>
         </div>
         <div class="knowledge-doc-list">
-          ${docs.map((doc) => renderKnowledgeDocListItem(doc, selected?.id)).join('') || '<div class="knowledge-empty">No documents imported.</div>'}
+          ${groups.map((group) => renderKnowledgeConsensusGroup(group, selected?.id, collapsed.has(group.id) && group.id !== selectedConsensusId)).join('') || '<div class="knowledge-empty">No documents imported.</div>'}
         </div>
       </aside>
       <section class="knowledge-reader">
@@ -157,11 +215,28 @@ function renderKnowledgeHome() {
   `;
 }
 
-function renderKnowledgeDocListItem(doc, selectedId) {
+function renderKnowledgeConsensusGroup(group, selectedId, collapsed = false) {
+  const root = group.root;
+  const title = root?.title || group.title || 'Consensus';
+  const countLabel = `${group.docCount || 0}`;
   return `
-    <button class="knowledge-doc-row ${doc.id === selectedId ? 'active' : ''} level-${Number(doc.level || 1)}" type="button" data-action="knowledge-select-doc" data-doc-id="${escapeHtml(doc.id)}">
+    <section class="knowledge-consensus-group ${collapsed ? 'collapsed' : ''}" data-consensus-id="${escapeHtml(group.id)}">
+      <div class="knowledge-consensus-root">
+        <button class="knowledge-consensus-disclosure" type="button" data-action="knowledge-toggle-consensus" data-consensus-id="${escapeHtml(group.id)}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(title)}">${collapsed ? '▸' : '▾'}</button>
+        ${root ? renderKnowledgeDocListItem(root, selectedId, { root: true, countLabel }) : `<div class="knowledge-consensus-title"><span>${escapeHtml(title)}</span><small>${escapeHtml(countLabel)}</small></div>`}
+      </div>
+      ${collapsed ? '' : `<div class="knowledge-consensus-children">${group.children.map((doc) => renderKnowledgeDocListItem(doc, selectedId)).join('')}</div>`}
+    </section>
+  `;
+}
+
+function renderKnowledgeDocListItem(doc, selectedId, options = {}) {
+  const level = Number(doc.level || 1);
+  const badgeLabel = options.countLabel && level <= 1 ? `${options.countLabel} docs` : (level <= 1 ? 'Root' : `L${level}`);
+  return `
+    <button class="knowledge-doc-row ${doc.id === selectedId ? 'active' : ''} ${options.root ? 'knowledge-consensus-root-row' : ''} level-${level}" type="button" data-action="knowledge-select-doc" data-doc-id="${escapeHtml(doc.id)}">
       <span>${escapeHtml(doc.title)}</span>
-      ${renderKnowledgeStatusBadge(Number(doc.level || 1) <= 1 ? 'root' : 'section', Number(doc.level || 1) <= 1 ? 'Root' : `L${Number(doc.level || 1)}`)}
+      ${renderKnowledgeStatusBadge(level <= 1 ? 'root' : 'section', badgeLabel)}
       <small>${escapeHtml(doc.summary || '')}</small>
     </button>
   `;
@@ -336,6 +411,7 @@ function renderKnowledgeGraphPanel() {
       <div class="knowledge-graph-tooltip" hidden></div>
       <div class="knowledge-graph-legend">
         <span><i class="blue"></i> Consensus hierarchy</span>
+        <span><i class="green"></i> Strong consensus relation</span>
         <span><i class="red"></i> Leaf updated within 72h</span>
       </div>
     </section>
@@ -429,26 +505,42 @@ function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const spaceNode = nodes.find((node) => node.kind === 'space');
   const topDocuments = nodes.filter((node) => node.kind === 'document' && (!node.parentId || Number(node.level || 1) <= 1));
-  const centerNode = spaceNode || (topDocuments.length === 1 ? topDocuments[0] : null);
-  if (centerNode) {
-    centerNode.graphHomeRole = 'root';
-    placeKnowledgeNode(centerNode, centerX, centerY);
+  const placedNodeIds = new Set();
+  if (spaceNode) {
+    spaceNode.graphHomeRole = 'root';
+    placeKnowledgeNode(spaceNode, centerX, centerY);
+    placedNodeIds.add(spaceNode.id);
   }
 
-  const satelliteTopDocuments = topDocuments.filter((node) => node !== centerNode);
-  const childDocuments = nodes.filter((node) => node.kind === 'document' && node.parentId && Number(node.level || 1) > 1);
-  const topRadius = Math.max(34, minSize * 0.07);
-  satelliteTopDocuments.forEach((node, index) => {
-    const angle = satelliteTopDocuments.length === 1 ? -Math.PI / 2 : (index / satelliteTopDocuments.length) * Math.PI * 2 - Math.PI / 2;
-    placeKnowledgeNode(node, centerX + Math.cos(angle) * topRadius, centerY + Math.sin(angle) * topRadius);
-  });
+  const buckets = knowledgeGraphConsensusBuckets(nodes, topDocuments, byId);
+  const totalWeight = buckets.reduce((sum, bucket) => sum + bucket.weight, 0) || 1;
+  const rootRadius = topDocuments.length <= 1 ? 0 : Math.max(32, Math.min(minSize * 0.055, 56));
+  const childRadius = Math.max(138, Math.min(minSize * 0.27, 212));
+  const childAngleById = new Map();
+  let angleCursor = -Math.PI / 2;
 
-  const childRadius = Math.max(120, Math.min(minSize * 0.29, 230));
-  childDocuments.forEach((node, index) => {
-    const angle = (index / Math.max(1, childDocuments.length)) * Math.PI * 2 - Math.PI / 2;
-    const wobble = 1 + ((index % 3) - 1) * 0.08;
-    placeKnowledgeNode(node, centerX + Math.cos(angle) * childRadius * wobble, centerY + Math.sin(angle) * childRadius * wobble);
-  });
+  for (const bucket of buckets) {
+    const span = Math.PI * 2 * (bucket.weight / totalWeight);
+    const gap = buckets.length > 1 ? Math.min(0.14, span * 0.07) : 0;
+    const start = angleCursor + gap / 2;
+    const end = angleCursor + span - gap / 2;
+    const mid = start + (end - start) / 2;
+    const root = bucket.root;
+    if (root) {
+      root.graphHomeRole = 'root';
+      placeKnowledgeNode(root, centerX + Math.cos(mid) * rootRadius, centerY + Math.sin(mid) * rootRadius);
+      placedNodeIds.add(root.id);
+    }
+    bucket.children.forEach((node, index) => {
+      const progress = bucket.children.length <= 1 ? 0.5 : (index + 0.5) / bucket.children.length;
+      const angle = start + (end - start) * progress;
+      const ring = childRadius + ((index % 5) - 2) * 8;
+      childAngleById.set(node.id, angle);
+      placeKnowledgeNode(node, centerX + Math.cos(angle) * ring, centerY + Math.sin(angle) * ring);
+      placedNodeIds.add(node.id);
+    });
+    angleCursor += span;
+  }
 
   const anchorsByDoc = new Map();
   nodes.filter((node) => node.kind === 'anchor').forEach((node) => {
@@ -460,18 +552,20 @@ function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
     const parent = byId.get(docId);
     const parentX = parent?.x || centerX;
     const parentY = parent?.y || centerY;
-    const parentAngle = Math.atan2(parentY - centerY, parentX - centerX);
+    const parentAngle = childAngleById.get(docId) ?? Math.atan2(parentY - centerY, parentX - centerX);
     anchors.forEach((node, index) => {
       const spread = anchors.length <= 1 ? 0 : (index / (anchors.length - 1) - 0.5) * Math.PI * 0.9;
       const angle = parentAngle + spread;
       const radius = 44 + (index % 4) * 9;
       placeKnowledgeNode(node, parentX + Math.cos(angle) * radius, parentY + Math.sin(angle) * radius);
+      placedNodeIds.add(node.id);
     });
   }
 
-  nodes.filter((node) => !Number.isFinite(node.x) || (node.x === centerX && node.y === centerY && node !== centerNode)).forEach((node, index) => {
+  nodes.filter((node) => !placedNodeIds.has(node.id) || !Number.isFinite(node.x)).forEach((node, index) => {
     const angle = (index / Math.max(1, nodes.length)) * Math.PI * 2;
     placeKnowledgeNode(node, centerX + Math.cos(angle) * childRadius, centerY + Math.sin(angle) * childRadius);
+    placedNodeIds.add(node.id);
   });
 
   for (const edge of edges) {
@@ -483,6 +577,36 @@ function initialKnowledgeGraphNodes(rawNodes, edges, width, height) {
     }
   }
   return nodes;
+}
+
+function knowledgeGraphConsensusBuckets(nodes, roots, byId) {
+  const rootById = new Map(roots.map((root) => [root.id, root]));
+  const rootByConsensus = new Map();
+  for (const root of roots) rootByConsensus.set(root.consensusId || root.id, root);
+  const buckets = roots.map((root) => ({
+    id: root.consensusId || root.id,
+    root,
+    children: [],
+    weight: 1,
+  }));
+  const bucketById = new Map(buckets.map((bucket) => [bucket.id, bucket]));
+  const fallback = buckets[0] || { id: 'unassigned', root: null, children: [], weight: 1 };
+  if (!buckets.length) buckets.push(fallback);
+
+  for (const node of nodes) {
+    if (node.kind !== 'document' || !node.parentId || Number(node.level || 1) <= 1) continue;
+    const parent = byId.get(node.parentId);
+    const root = rootByConsensus.get(node.consensusId || parent?.consensusId || '') || rootById.get(parent?.id || '') || fallback.root;
+    const bucketId = root?.consensusId || root?.id || fallback.id;
+    const bucket = bucketById.get(bucketId) || fallback;
+    bucket.children.push(node);
+  }
+
+  for (const bucket of buckets) {
+    bucket.children.sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')) || String(left.title || '').localeCompare(String(right.title || '')));
+    bucket.weight = Math.max(2.6, bucket.children.length + 1.4);
+  }
+  return buckets;
 }
 
 function placeKnowledgeNode(node, x, y) {
@@ -725,9 +849,15 @@ function updateKnowledgeGraphTooltip(localX = null, localY = null, node = null) 
   tooltip.hidden = false;
   tooltip.style.left = `${Math.min(rt.width - 220, Math.max(12, x + 14))}px`;
   tooltip.style.top = `${Math.min(rt.height - 96, Math.max(12, y + 14))}px`;
+  const semanticReason = rt.graph.edges.find((edge) => (
+    edge.kind === 'semantic'
+    && (edge.source === activeNode.id || edge.target === activeNode.id)
+    && edge.metadata?.reason
+  ))?.metadata?.reason || '';
   tooltip.innerHTML = `
     <strong>${escapeHtml(activeNode.title || 'Knowledge node')}</strong>
     <span>${escapeHtml(activeNode.summary || activeNode.kind || '')}</span>
+    ${semanticReason ? `<span>${escapeHtml(semanticReason)}</span>` : ''}
   `;
 }
 
@@ -750,7 +880,7 @@ function stepKnowledgeGraph() {
     const dy = target.y - source.y;
     const distance = Math.max(1, Math.hypot(dx, dy));
     const desired = desiredKnowledgeEdgeLength(edge, source, target);
-    const force = (distance - desired) * 0.0055;
+    const force = (distance - desired) * knowledgeEdgeSpring(edge);
     const fx = dx / distance * force;
     const fy = dy / distance * force;
     source.vx += fx;
@@ -779,11 +909,11 @@ function stepKnowledgeGraph() {
   for (const node of nodes) {
     const cx = rt.width / 2;
     const cy = rt.height / 2;
-    const homeStrength = node.kind === 'space' || node.graphHomeRole === 'root' ? 0.018 : node.kind === 'document' ? 0.0026 : 0.0012;
+    const homeStrength = node.kind === 'space' || node.graphHomeRole === 'root' ? 0.021 : node.kind === 'document' ? 0.0022 : 0.001;
     node.vx += ((node.homeX || cx) - node.x) * homeStrength;
     node.vy += ((node.homeY || cy) - node.y) * homeStrength;
-    node.vx += (cx - node.x) * 0.0002;
-    node.vy += (cy - node.y) * 0.0002;
+    node.vx += (cx - node.x) * 0.00036;
+    node.vy += (cy - node.y) * 0.00036;
     applyKnowledgeGraphBounds(rt, node);
     if (node.fx != null) {
       node.x = node.fx;
@@ -801,9 +931,16 @@ function stepKnowledgeGraph() {
 
 function desiredKnowledgeEdgeLength(edge, source, target) {
   if (edge.kind === 'root') return 88;
-  if (edge.kind === 'hierarchy') return 104 + Math.max(0, Number(target.level || 2) - 2) * 12;
+  if (edge.kind === 'hierarchy') return 112 + Math.max(0, Number(target.level || 2) - 2) * 10;
   if (edge.kind === 'anchor') return 48;
+  if (edge.kind === 'semantic') return 104;
   return 126 + Math.min(24, Math.max(source.degree || 0, target.degree || 0) * 2);
+}
+
+function knowledgeEdgeSpring(edge) {
+  if (edge.kind === 'semantic') return 0.0088;
+  if (edge.kind === 'anchor') return 0.0052;
+  return 0.0058;
 }
 
 function applyKnowledgeGraphBounds(rt, node) {
@@ -851,11 +988,13 @@ function drawKnowledgeGraph() {
     if (!source || !target) continue;
     const active = !focusId || (neighbors.has(source.id) && neighbors.has(target.id));
     ctx.strokeStyle = active ? knowledgeEdgeColor(edge) : `rgba(86, 99, 110, ${0.13 * dim})`;
-    ctx.lineWidth = (active ? 0.92 : 0.48) / Math.sqrt(rt.scale);
+    ctx.lineWidth = (edge.kind === 'semantic' ? (active ? 1.28 : 0.62) : (active ? 0.92 : 0.48)) / Math.sqrt(rt.scale);
+    ctx.setLineDash(edge.kind === 'semantic' ? [7 / Math.sqrt(rt.scale), 5 / Math.sqrt(rt.scale)] : []);
     ctx.beginPath();
     ctx.moveTo(source.x, source.y);
     ctx.lineTo(target.x, target.y);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
   for (const node of rt.graph.nodes) {
     const active = !focusId || neighbors.has(node.id);
@@ -882,13 +1021,14 @@ function drawKnowledgeGraph() {
 function knowledgeEdgeColor(edge) {
   if (edge.kind === 'root' || edge.kind === 'hierarchy') return 'rgba(64, 120, 166, 0.22)';
   if (edge.kind === 'anchor') return 'rgba(88, 103, 113, 0.18)';
+  if (edge.kind === 'semantic') return 'rgba(40, 150, 125, 0.36)';
   return 'rgba(72, 135, 190, 0.28)';
 }
 
 function knowledgeNodeColor(node) {
   if (node.colorRole === 'recent_leaf') return 'rgba(232, 82, 86, 0.72)';
   if (node.kind === 'space') return 'rgba(44, 132, 190, 0.78)';
-  if (node.kind === 'document' && Number(node.level || 1) <= 1) return 'rgba(44, 132, 190, 0.72)';
+  if (node.kind === 'document' && (node.consensusRole === 'root' || Number(node.level || 1) <= 1)) return 'rgba(44, 132, 190, 0.72)';
   return 'rgba(53, 143, 199, 0.64)';
 }
 
@@ -1357,9 +1497,20 @@ async function handleKnowledgeAction(action, target, event = null) {
   if (action === 'knowledge-select-doc') {
     event?.preventDefault?.();
     const docId = target.dataset.docId || '';
+    expandKnowledgeConsensusForDoc(docId);
     knowledgeRoute = { view: 'docs', docId, changeSessionId: '' };
     knowledgeSpaceState = { ...knowledgeSpaceState, tab: 'home', selectedDocId: docId };
     syncBrowserRouteForActiveView();
+    render();
+    return true;
+  }
+  if (action === 'knowledge-toggle-consensus') {
+    event?.preventDefault?.();
+    const consensusId = target.dataset.consensusId || '';
+    const collapsed = knowledgeCollapsedConsensusIds();
+    if (collapsed.has(consensusId)) collapsed.delete(consensusId);
+    else collapsed.add(consensusId);
+    setKnowledgeCollapsedConsensusIds(collapsed);
     render();
     return true;
   }

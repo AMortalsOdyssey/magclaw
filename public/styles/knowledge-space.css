@@ -113,7 +113,44 @@
 
 .knowledge-doc-list {
   display: grid;
-  gap: 6px;
+  gap: 8px;
+}
+
+.knowledge-consensus-group {
+  display: grid;
+  gap: 4px;
+}
+
+.knowledge-consensus-root {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 3px;
+  align-items: start;
+}
+
+.knowledge-consensus-disclosure {
+  width: 24px;
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--knowledge-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.knowledge-consensus-disclosure:hover {
+  background: var(--knowledge-muted-surface);
+  color: var(--knowledge-text);
+}
+
+.knowledge-consensus-children {
+  display: grid;
+  gap: 3px;
+  margin-left: 27px;
+  padding-left: 9px;
+  border-left: 1px solid var(--knowledge-border);
 }
 
 .knowledge-doc-row {
@@ -129,8 +166,13 @@
   letter-spacing: 0;
 }
 
+.knowledge-doc-row.knowledge-consensus-root-row {
+  background: #fbfdff;
+  border-color: var(--knowledge-border);
+}
+
 .knowledge-doc-row.level-2 {
-  padding-left: 18px;
+  padding-left: 10px;
 }
 
 .knowledge-doc-row span {
@@ -581,6 +623,10 @@
 
 .knowledge-graph-legend .blue {
   background: rgba(53, 143, 199, 0.72);
+}
+
+.knowledge-graph-legend .green {
+  background: rgba(40, 150, 125, 0.72);
 }
 
 .knowledge-graph-legend .red {

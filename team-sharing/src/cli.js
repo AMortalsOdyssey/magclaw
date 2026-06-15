@@ -13,6 +13,7 @@ import {
   askKnowledgeConsensusCommand,
   editTeamSharingLink,
   editKnowledgeConsensus,
+  exportKnowledgeConsensus,
   initTeamSharingProject,
   importKnowledgeConsensus,
   installTeamSharingHooks,
@@ -184,6 +185,7 @@ function renderTeamSharingHelp() {
     '  ask-consensus Ask Knowledge Space consensus with Team Sharing login',
     '  edit-consensus Draft a Knowledge Space document edit from Markdown',
     '  align-consensus Check discussion text against Knowledge Space consensus',
+    '  export-consensus Export one Knowledge Space consensus as Markdown',
     '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
     '  session-reporting Control reporting for one local session (off|on|status)',
     '  skills   Install/remove/status the local Team Sharing skill',
@@ -380,6 +382,18 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
       break;
     case 'align-consensus':
       printJson(await alignKnowledgeConsensus(flags, env));
+      break;
+    case 'export-consensus':
+      {
+        const result = await exportKnowledgeConsensus(flags, env);
+        const format = outputFormat(flags, process.stdout, { defaultFormat: 'markdown' });
+        if (format === 'json' || flags.output || flags.out || flags.o) {
+          printJson(result);
+        } else {
+          process.stdout.write(String(result.markdown || ''));
+          if (!String(result.markdown || '').endsWith('\n')) process.stdout.write('\n');
+        }
+      }
       break;
     case 'sync':
       {

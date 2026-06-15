@@ -262,6 +262,42 @@ function stripMarkdown(markdown = '') {
     .trim();
 }
 
+function normalizeConsensusTitle(value = '') {
+  return decodeMarkdownEscapes(value)
+    .toLowerCase()
+    .replace(/[（(]\s*(?:v|version)?\s*\d+(?:\.\d+)*\s*[)）]/gi, '')
+    .replace(/\b(?:v|version)\s*\d+(?:\.\d+)*\b/gi, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .trim();
+}
+
+function consensusIdForRoot(workspaceId = 'local', title = '') {
+  const normalized = normalizeConsensusTitle(title) || slugify(title || 'consensus');
+  return stableId('cns', workspaceId || 'local', normalized);
+}
+
+function titleSimilarity(left = '', right = '') {
+  const a = [...normalizeConsensusTitle(left)];
+  const b = [...normalizeConsensusTitle(right)];
+  if (!a.length || !b.length) return 0;
+  const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  return dp[0][0] / Math.max(a.length, b.length);
+}
+
+function jaccard(leftValues = [], rightValues = []) {
+  const left = new Set(leftValues.map(normalizeConsensusTitle).filter(Boolean));
+  const right = new Set(rightValues.map(normalizeConsensusTitle).filter(Boolean));
+  if (!left.size && !right.size) return 0;
+  let intersection = 0;
+  for (const value of left) if (right.has(value)) intersection += 1;
+  return intersection / (left.size + right.size - intersection);
+}
+
 function summarizeMarkdown(markdown = '', limit = 86) {
   const clean = stripMarkdown(markdown);
   if (clean.length <= limit) return clean;
@@ -339,6 +375,9 @@ function publicKnowledgeDocumentRow(doc = {}) {
   return {
     id: doc.id,
     parentId: doc.parentId || '',
+    consensusId: doc.consensusId || '',
+    consensusRootId: doc.consensusRootId || '',
+    consensusTitle: doc.consensusTitle || '',
     title: decodeMarkdownEscapes(doc.title || ''),
     level: doc.level || 1,
     summary: displayMarkdown ? summarizeMarkdown(displayMarkdown) : decodeMarkdownEscapes(doc.summary || ''),
@@ -393,6 +432,7 @@ export function ensureKnowledgeSpace(state, workspaceId = 'local', options = {})
         },
       },
       documents: [],
+      consensusGroups: [],
       versions: [],
       anchors: [],
       links: [],
@@ -405,8 +445,100 @@ export function ensureKnowledgeSpace(state, workspaceId = 'local', options = {})
   return root.spaces[cleanWorkspaceId];
 }
 
+function orderedRootDocuments(space) {
+  return safeArray(space.documents)
+    .filter((doc) => !doc.parentId)
+    .sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')) || String(left.id || '').localeCompare(String(right.id || '')));
+}
+
+function ensureConsensusAssignments(space) {
+  const docs = safeArray(space.documents);
+  const docById = new Map(docs.map((doc) => [doc.id, doc]));
+  const inputGroups = safeArray(space.consensusGroups).filter((group) => group && group.id);
+  const groupById = new Map(inputGroups.map((group) => [group.id, { ...group }]));
+  const groupByRoot = new Map(inputGroups.filter((group) => group.rootDocId).map((group) => [group.rootDocId, { ...group }]));
+  const roots = orderedRootDocuments(space);
+  const groups = [];
+  const rootByConsensus = new Map();
+
+  for (const root of roots) {
+    const existing = groupByRoot.get(root.id) || groupById.get(root.consensusId || '');
+    const consensusId = cleanString(root.consensusId || existing?.id || consensusIdForRoot(space.workspaceId, root.title || root.id));
+    root.consensusId = consensusId;
+    root.consensusRootId = root.id;
+    root.consensusTitle = decodeMarkdownEscapes(root.title || existing?.title || 'Consensus');
+    root.metadata = root.metadata && typeof root.metadata === 'object' ? root.metadata : {};
+    root.metadata.consensusId = consensusId;
+    root.metadata.consensusRootId = root.id;
+    rootByConsensus.set(consensusId, root);
+    groups.push({
+      id: consensusId,
+      workspaceId: space.workspaceId,
+      rootDocId: root.id,
+      title: decodeMarkdownEscapes(root.title || existing?.title || 'Consensus'),
+      sourceName: existing?.sourceName || root.sourceName || '',
+      sourceUrl: existing?.sourceUrl || root.sourceUrl || '',
+      createdAt: existing?.createdAt || root.createdAt || space.createdAt || '',
+      updatedAt: root.updatedAt || existing?.updatedAt || space.updatedAt || '',
+      metadata: existing?.metadata && typeof existing.metadata === 'object' ? existing.metadata : {},
+    });
+  }
+
+  const rootForDoc = (doc) => {
+    const seen = new Set();
+    let cursor = doc;
+    while (cursor?.parentId && !seen.has(cursor.id)) {
+      seen.add(cursor.id);
+      const parent = docById.get(cursor.parentId);
+      if (!parent) break;
+      cursor = parent;
+    }
+    return cursor && !cursor.parentId ? cursor : null;
+  };
+
+  for (const doc of docs) {
+    const root = rootForDoc(doc);
+    if (!root) {
+      const consensusId = cleanString(doc.consensusId || consensusIdForRoot(space.workspaceId, doc.title || doc.id));
+      doc.consensusId = consensusId;
+      doc.consensusRootId = doc.consensusRootId || doc.id;
+      doc.consensusTitle = doc.consensusTitle || decodeMarkdownEscapes(doc.title || '');
+      continue;
+    }
+    doc.consensusId = root.consensusId;
+    doc.consensusRootId = root.id;
+    doc.consensusTitle = root.consensusTitle || decodeMarkdownEscapes(root.title || '');
+    doc.metadata = doc.metadata && typeof doc.metadata === 'object' ? doc.metadata : {};
+    doc.metadata.consensusId = doc.consensusId;
+    doc.metadata.consensusRootId = doc.consensusRootId;
+  }
+
+  for (const anchor of safeArray(space.anchors)) {
+    const doc = docById.get(anchor.docId);
+    anchor.consensusId = doc?.consensusId || anchor.consensusId || '';
+    anchor.consensusRootId = doc?.consensusRootId || anchor.consensusRootId || '';
+    anchor.metadata = anchor.metadata && typeof anchor.metadata === 'object' ? anchor.metadata : {};
+    if (anchor.consensusId) anchor.metadata.consensusId = anchor.consensusId;
+    if (anchor.consensusRootId) anchor.metadata.consensusRootId = anchor.consensusRootId;
+  }
+
+  const seenGroups = new Set();
+  space.consensusGroups = groups
+    .filter((group) => {
+      if (!group.id || seenGroups.has(group.id)) return false;
+      seenGroups.add(group.id);
+      return true;
+    })
+    .map((group) => ({
+      ...group,
+      rootDocId: rootByConsensus.get(group.id)?.id || group.rootDocId || '',
+      updatedAt: rootByConsensus.get(group.id)?.updatedAt || group.updatedAt || '',
+    }));
+}
+
 function normalizeSpace(space) {
   space.documents = safeArray(space.documents);
+  space.consensusGroups = safeArray(space.consensusGroups);
   space.versions = safeArray(space.versions);
   space.anchors = safeArray(space.anchors);
   space.links = safeArray(space.links);
@@ -417,6 +549,7 @@ function normalizeSpace(space) {
   space.settings = space.settings && typeof space.settings === 'object' ? space.settings : {};
   space.settings.whitelistHumanIds = safeArray(space.settings.whitelistHumanIds).map(cleanString).filter(Boolean);
   space.settings.feishu = space.settings.feishu && typeof space.settings.feishu === 'object' ? space.settings.feishu : {};
+  ensureConsensusAssignments(space);
   return space;
 }
 
@@ -513,10 +646,22 @@ export function publicKnowledgeSpace(space, actor = null, options = {}) {
       whitelistHumanIds: normalized.settings.whitelistHumanIds,
       feishu: maskFeishuSettings(normalized.settings.feishu, options.env || process.env),
     },
+    consensusGroups: normalized.consensusGroups.map((group) => ({
+      id: group.id,
+      workspaceId: group.workspaceId || normalized.workspaceId,
+      rootDocId: group.rootDocId || '',
+      title: decodeMarkdownEscapes(group.title || ''),
+      sourceName: group.sourceName || '',
+      sourceUrl: group.sourceUrl || '',
+      createdAt: group.createdAt || '',
+      updatedAt: group.updatedAt || '',
+    })),
     documents: normalized.documents.map(publicKnowledgeDocumentRow),
     anchors: normalized.anchors.map((anchor) => ({
       id: anchor.id,
       docId: anchor.docId,
+      consensusId: anchor.consensusId || '',
+      consensusRootId: anchor.consensusRootId || '',
       title: decodeMarkdownEscapes(anchor.title || ''),
       level: anchor.level || 3,
       anchor: anchor.anchor,
@@ -650,6 +795,9 @@ function upsertDocumentFromMarkdown(space, docInput, options) {
     id: docInput.id,
     workspaceId: space.workspaceId,
     parentId: docInput.parentId || '',
+    consensusId: docInput.consensusId || existing?.consensusId || '',
+    consensusRootId: docInput.consensusRootId || existing?.consensusRootId || (docInput.parentId ? '' : docInput.id),
+    consensusTitle: docInput.consensusTitle || existing?.consensusTitle || '',
     title: docInput.title,
     slug: docInput.slug || slugify(docInput.title),
     level: docInput.level || 1,
@@ -661,28 +809,190 @@ function upsertDocumentFromMarkdown(space, docInput, options) {
     updatedAt: now,
     createdBy: existing?.createdBy || actorHumanId(actor),
     sourceUrl: docInput.sourceUrl || existing?.sourceUrl || '',
+    metadata: {
+      ...(existing?.metadata && typeof existing.metadata === 'object' ? existing.metadata : {}),
+      ...(docInput.metadata && typeof docInput.metadata === 'object' ? docInput.metadata : {}),
+    },
   };
+  if (doc.consensusId) doc.metadata.consensusId = doc.consensusId;
+  if (doc.consensusRootId) doc.metadata.consensusRootId = doc.consensusRootId;
   if (existing) Object.assign(existing, doc);
   else space.documents.push(doc);
+  ensureConsensusAssignments(space);
   space.versions.push(version);
   return { doc, version };
 }
 
-export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown = '', sourceName = '', sourceUrl = '', actor = null, now = () => new Date().toISOString() }) {
+function consensusRootForId(space, consensusId = '') {
+  normalizeSpace(space);
+  const group = space.consensusGroups.find((item) => item.id === consensusId);
+  return group ? space.documents.find((doc) => doc.id === group.rootDocId) || null : null;
+}
+
+function childDocumentsForConsensus(space, consensusId = '') {
+  return safeArray(space.documents)
+    .filter((doc) => doc.consensusId === consensusId && doc.parentId)
+    .sort((left, right) => String(left.createdAt || '').localeCompare(String(right.createdAt || '')) || String(left.title || '').localeCompare(String(right.title || '')));
+}
+
+function resolveConsensusForImport(space, { workspaceId = 'local', rootTitle = '', sections = [], consensusId = '', identity = null } = {}) {
+  normalizeSpace(space);
+  const cleanConsensusId = cleanString(consensusId);
+  const groups = safeArray(space.consensusGroups);
+  const sectionTitles = sections.map((section) => section.title);
+  if (cleanConsensusId) {
+    const group = groups.find((item) => item.id === cleanConsensusId);
+    if (group) return { mode: 'existing', group, reason: 'explicit_consensus_id', confidence: 1 };
+  }
+  const normalizedTitle = normalizeConsensusTitle(rootTitle);
+  const exact = groups.find((group) => normalizeConsensusTitle(group.title) === normalizedTitle);
+  if (exact) return { mode: 'existing', group: exact, reason: 'root_title_exact', confidence: 1 };
+
+  let best = null;
+  for (const group of groups) {
+    const titleScore = titleSimilarity(rootTitle, group.title);
+    const childTitles = childDocumentsForConsensus(space, group.id).map((doc) => doc.title);
+    const h2Score = jaccard(sectionTitles, childTitles);
+    const score = (titleScore * 0.55) + (h2Score * 0.45);
+    if (!best || score > best.score) best = { group, titleScore, h2Score, score };
+  }
+  if (best && best.titleScore >= 0.72 && best.h2Score >= 0.55) {
+    return { mode: 'existing', group: best.group, reason: 'title_h2_similarity', confidence: Number(best.score.toFixed(3)) };
+  }
+
+  const llmConsensusId = cleanString(identity?.consensusId || identity?.consensus_id || identity?.id);
+  const llmConfidence = Number(identity?.confidence || 0);
+  if (llmConsensusId && llmConfidence >= 0.85) {
+    const group = groups.find((item) => item.id === llmConsensusId);
+    if (group) return { mode: 'existing', group, reason: 'agent_identity', confidence: llmConfidence };
+  }
+
+  const id = cleanConsensusId || consensusIdForRoot(workspaceId, rootTitle);
+  return {
+    mode: 'new',
+    group: {
+      id,
+      workspaceId,
+      rootDocId: '',
+      title: rootTitle || 'Consensus',
+      createdAt: '',
+      updatedAt: '',
+    },
+    reason: 'new_consensus',
+    confidence: 1,
+  };
+}
+
+function sectionDocIdForConsensus(space, consensusId, sectionTitle) {
+  const normalized = normalizeConsensusTitle(sectionTitle);
+  const existing = safeArray(space.documents).find((doc) => (
+    doc.consensusId === consensusId
+    && doc.parentId
+    && normalizeConsensusTitle(doc.title) === normalized
+  ));
+  return existing?.id || stableId('doc', space.workspaceId, consensusId, sectionTitle);
+}
+
+function semanticEndpointText(doc = {}) {
+  return `${doc.title || ''}\n${doc.summary || ''}\n${doc.sourceMarkdown || ''}`;
+}
+
+function semanticRelationship(left = {}, right = {}) {
+  const leftTitle = normalizeConsensusTitle(left.title);
+  const rightTitle = normalizeConsensusTitle(right.title);
+  const leftText = semanticEndpointText(left).toLowerCase();
+  const rightText = semanticEndpointText(right).toLowerCase();
+  if (leftTitle && rightTitle && leftTitle === rightTitle && Number(left.level || 1) >= 2 && Number(right.level || 1) >= 2) {
+    return { confidence: 0.9, reason: `Matching module title: ${decodeMarkdownEscapes(left.title || right.title || '')}`, source: 'deterministic_title_match' };
+  }
+  const leftMentionsRight = rightTitle && normalizeConsensusTitle(leftText).includes(rightTitle);
+  const rightMentionsLeft = leftTitle && normalizeConsensusTitle(rightText).includes(leftTitle);
+  if (leftMentionsRight || rightMentionsLeft) {
+    return { confidence: 0.88, reason: 'One consensus explicitly mentions the other endpoint title.', source: 'deterministic_explicit_mention' };
+  }
+  const leftTokens = new Set(searchTokens(leftText).filter((token) => token.length > 1 || /[\u3400-\u9fff]/.test(token)));
+  const rightTokens = new Set(searchTokens(rightText).filter((token) => token.length > 1 || /[\u3400-\u9fff]/.test(token)));
+  if (!leftTokens.size || !rightTokens.size) return null;
+  let overlap = 0;
+  for (const token of leftTokens) if (rightTokens.has(token)) overlap += 1;
+  const score = overlap / Math.min(leftTokens.size, rightTokens.size);
+  if (overlap >= 4 && score >= 0.42) {
+    return { confidence: Number(Math.min(0.86, 0.82 + score * 0.08).toFixed(3)), reason: 'High CJK/token overlap across consensus endpoints.', source: 'deterministic_token_overlap' };
+  }
+  return null;
+}
+
+function rebuildKnowledgeSemanticLinks(space) {
+  normalizeSpace(space);
+  const docs = safeArray(space.documents).filter((doc) => doc.consensusId);
+  const semanticLinks = [];
+  const pairBest = new Map();
+  for (let leftIndex = 0; leftIndex < docs.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < docs.length; rightIndex += 1) {
+      const left = docs[leftIndex];
+      const right = docs[rightIndex];
+      if (!left?.id || !right?.id || left.consensusId === right.consensusId) continue;
+      const relation = semanticRelationship(left, right);
+      if (!relation || relation.confidence < 0.82) continue;
+      const consensusPair = [left.consensusId, right.consensusId].sort().join('::');
+      const current = pairBest.get(consensusPair);
+      if (!current || relation.confidence > current.relation.confidence) {
+        pairBest.set(consensusPair, { left, right, relation });
+      }
+    }
+  }
+  for (const { left, right, relation } of pairBest.values()) {
+    semanticLinks.push({
+      id: stableId('lnk', 'semantic', left.id, right.id, relation.source),
+      workspaceId: space.workspaceId,
+      fromDocId: left.id,
+      fromAnchorId: '',
+      toDocId: right.id,
+      toAnchorId: '',
+      kind: 'semantic',
+      label: 'Strong consensus relation',
+      url: '',
+      metadata: {
+        confidence: relation.confidence,
+        reason: relation.reason,
+        source: relation.source,
+        fromConsensusId: left.consensusId,
+        toConsensusId: right.consensusId,
+      },
+    });
+  }
+  space.links = [
+    ...safeArray(space.links).filter((link) => link.kind !== 'semantic' || link.metadata?.source === 'manual'),
+    ...semanticLinks,
+  ];
+  return semanticLinks;
+}
+
+export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown = '', sourceName = '', sourceUrl = '', actor = null, now = () => new Date().toISOString(), consensusId = '', identity = null } = {}) {
   const space = ensureKnowledgeSpace(state, workspaceId, { now });
   normalizeSpace(space);
   const timestamp = isoNow(now);
   const parsed = splitMarkdownByHeadings(markdown);
-  const rootTitle = sourceName || parsed.rootTitle;
-  const rootId = stableId('doc', workspaceId, rootTitle, 'root');
+  const rootTitle = parsed.rootTitle || sourceName || 'Knowledge Space';
   const rootBody = stripLeadingMarkdownHeading(parsed.rootMarkdown, 1);
+  const resolved = resolveConsensusForImport(space, {
+    workspaceId,
+    rootTitle,
+    sections: parsed.sections,
+    consensusId,
+    identity,
+  });
+  const rootId = resolved.mode === 'existing'
+    ? resolved.group.rootDocId
+    : stableId('doc', workspaceId, resolved.group.id, 'root');
+  const effectiveConsensusId = resolved.group.id;
 
-  const rootExists = safeArray(space.documents).some((doc) => doc.id === rootId);
+  const rootExists = resolved.mode === 'existing' && safeArray(space.documents).some((doc) => doc.id === rootId);
   if (rootExists) {
     const changes = [{ docId: rootId, proposedMarkdown: rootBody }];
     for (const section of parsed.sections) {
       const sectionMarkdown = stripLeadingMarkdownHeading(section.markdown, 2);
-      const docId = stableId('doc', workspaceId, rootTitle, section.title);
+      const docId = sectionDocIdForConsensus(space, effectiveConsensusId, section.title);
       const exists = safeArray(space.documents).some((doc) => doc.id === docId);
       changes.push(exists
         ? { docId, proposedMarkdown: sectionMarkdown }
@@ -692,6 +1002,8 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
           title: section.title,
           level: 2,
           parentId: rootId,
+          consensusId: effectiveConsensusId,
+          consensusRootId: rootId,
           sourceUrl,
           proposedMarkdown: sectionMarkdown,
         });
@@ -708,6 +1020,12 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
       space,
       session: result.session,
       mode: 'draft',
+      consensus: {
+        id: effectiveConsensusId,
+        rootDocId: rootId,
+        reason: resolved.reason,
+        confidence: resolved.confidence,
+      },
       imported: { documents: changes.length, anchors: 0 },
     };
   }
@@ -720,6 +1038,10 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
     title: rootTitle,
     markdown: rootBody,
     level: 1,
+    consensusId: effectiveConsensusId,
+    consensusRootId: rootId,
+    consensusTitle: rootTitle,
+    metadata: { consensusId: effectiveConsensusId, consensusRootId: rootId },
     sourceUrl,
   }, { now: timestamp, actor });
   importedDocIds.add(root.doc.id);
@@ -727,13 +1049,17 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
   for (let index = 0; index < parsed.sections.length; index += 1) {
     const section = parsed.sections[index];
     const sectionMarkdown = stripLeadingMarkdownHeading(section.markdown, 2);
-    const docId = stableId('doc', workspaceId, rootTitle, section.title);
+    const docId = sectionDocIdForConsensus(space, effectiveConsensusId, section.title);
     const { doc } = upsertDocumentFromMarkdown(space, {
       id: docId,
       title: section.title,
       markdown: sectionMarkdown,
       parentId: rootId,
       level: 2,
+      consensusId: effectiveConsensusId,
+      consensusRootId: rootId,
+      consensusTitle: rootTitle,
+      metadata: { consensusId: effectiveConsensusId, consensusRootId: rootId },
       sourceUrl,
     }, { now: timestamp, actor });
     importedDocIds.add(doc.id);
@@ -757,6 +1083,8 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
         id: anchorId,
         workspaceId: space.workspaceId,
         docId: doc.id,
+        consensusId: effectiveConsensusId,
+        consensusRootId: rootId,
         title: block.title,
         level: 3,
         slug: slugify(block.title),
@@ -786,6 +1114,8 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
     ...safeArray(space.links).filter((link) => !importedLinks.some((next) => next.id === link.id)),
     ...importedLinks,
   ];
+  ensureConsensusAssignments(space);
+  rebuildKnowledgeSemanticLinks(space);
   space.updatedAt = timestamp;
 
   const session = {
@@ -813,7 +1143,76 @@ export function importKnowledgeMarkdown({ state, workspaceId = 'local', markdown
     detail: `${importedDocIds.size} documents and ${importedAnchorIds.size} anchors imported.`,
     createdAt: timestamp,
   });
-  return { space, session, mode: 'published', imported: { documents: importedDocIds.size, anchors: importedAnchorIds.size } };
+  return {
+    space,
+    session,
+    mode: 'published',
+    consensus: {
+      id: effectiveConsensusId,
+      rootDocId: rootId,
+      reason: resolved.reason,
+      confidence: resolved.confidence,
+    },
+    imported: { documents: importedDocIds.size, anchors: importedAnchorIds.size },
+  };
+}
+
+function orderedConsensusChildren(space, rootDocId = '', consensusId = '') {
+  const hierarchyOrder = new Map(safeArray(space.links)
+    .filter((link) => link.kind === 'hierarchy' && link.fromDocId === rootDocId && link.toDocId)
+    .map((link, index) => [link.toDocId, index]));
+  return safeArray(space.documents)
+    .filter((doc) => doc.consensusId === consensusId && doc.parentId === rootDocId)
+    .map((doc, index) => ({ doc, index }))
+    .sort((left, right) => (
+      (hierarchyOrder.get(left.doc.id) ?? left.index) - (hierarchyOrder.get(right.doc.id) ?? right.index)
+    ))
+    .map((item) => item.doc);
+}
+
+function resolveConsensusGroup(space, selector = {}) {
+  normalizeSpace(space);
+  const cleanConsensusId = cleanString(selector.consensusId || selector.consensus_id || selector.id);
+  const cleanRootDocId = cleanString(selector.rootDocId || selector.docId || selector.documentId || selector.root_doc_id);
+  const cleanTitle = normalizeConsensusTitle(selector.title || selector.rootTitle || '');
+  if (cleanConsensusId) {
+    const group = space.consensusGroups.find((item) => item.id === cleanConsensusId);
+    if (group) return group;
+  }
+  if (cleanRootDocId) {
+    const doc = space.documents.find((item) => item.id === cleanRootDocId);
+    if (doc?.consensusId) return space.consensusGroups.find((item) => item.id === doc.consensusId) || null;
+  }
+  if (cleanTitle) {
+    return space.consensusGroups.find((group) => normalizeConsensusTitle(group.title) === cleanTitle)
+      || space.consensusGroups.find((group) => titleSimilarity(group.title, selector.title || selector.rootTitle || '') >= 0.92)
+      || null;
+  }
+  return null;
+}
+
+export function exportKnowledgeConsensusMarkdown(space, selector = {}) {
+  normalizeSpace(space);
+  const group = resolveConsensusGroup(space, selector);
+  if (!group) throw new Error('Knowledge consensus not found.');
+  const root = consensusRootForId(space, group.id);
+  if (!root) throw new Error('Knowledge consensus root document not found.');
+  const chunks = [`# ${decodeMarkdownEscapes(root.title || group.title || 'Consensus')}`];
+  const rootBody = stripGeneratedRootDocumentLinks(stripLeadingMarkdownHeading(root.sourceMarkdown || '', 1));
+  if (rootBody) chunks.push(rootBody);
+  for (const child of orderedConsensusChildren(space, root.id, group.id)) {
+    const body = stripLeadingMarkdownHeading(child.sourceMarkdown || '', 2);
+    chunks.push(`## ${decodeMarkdownEscapes(child.title || 'Section')}`);
+    if (body) chunks.push(body);
+  }
+  const markdown = `${chunks.map((chunk) => String(chunk || '').trim()).filter(Boolean).join('\n\n')}\n`;
+  return {
+    consensusId: group.id,
+    rootDocId: root.id,
+    title: decodeMarkdownEscapes(root.title || group.title || ''),
+    markdown,
+    documents: [publicKnowledgeDocumentRow(root), ...orderedConsensusChildren(space, root.id, group.id).map(publicKnowledgeDocumentRow)],
+  };
 }
 
 export function getKnowledgeDocument(space, docId) {
@@ -870,12 +1269,12 @@ export function getKnowledgeGraph(space, options = {}) {
   const rootNodeId = space.id || stableId('ks', space.workspaceId || 'local');
   const rootDocuments = space.documents.filter((doc) => !doc.parentId);
   const includeSpaceNode = rootDocuments.length === 0;
-  const pushEdge = (source, target, kind = 'link', id = '') => {
+  const pushEdge = (source, target, kind = 'link', id = '', metadata = {}) => {
     if (!source || !target || source === target) return;
     const key = `${source}->${target}->${kind}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
-    edges.push({ id: id || stableId('edge', source, target, kind), source, target, kind });
+    edges.push({ id: id || stableId('edge', source, target, kind), source, target, kind, metadata });
   };
   if (includeSpaceNode) {
     nodes.push({
@@ -895,6 +1294,10 @@ export function getKnowledgeGraph(space, options = {}) {
       kind: 'document',
       docId: doc.id,
       parentId: doc.parentId || '',
+      consensusId: doc.consensusId || '',
+      consensusRootId: doc.consensusRootId || '',
+      consensusTitle: doc.consensusTitle || '',
+      consensusRole: doc.parentId ? 'member' : 'root',
       title: doc.title,
       summary: doc.summary || '',
       level: doc.level || 1,
@@ -913,6 +1316,9 @@ export function getKnowledgeGraph(space, options = {}) {
       kind: 'anchor',
       docId: anchor.docId,
       anchorId: anchor.id,
+      consensusId: anchor.consensusId || '',
+      consensusRootId: anchor.consensusRootId || '',
+      consensusRole: 'anchor',
       title: anchor.title,
       summary: anchor.summary || '',
       level: anchor.level || 3,
@@ -925,7 +1331,7 @@ export function getKnowledgeGraph(space, options = {}) {
     if (!link.toDocId && !link.toAnchorId) continue;
     const source = link.fromAnchorId || link.fromDocId;
     const target = link.toAnchorId || link.toDocId;
-    pushEdge(source, target, link.kind || 'link', link.id);
+    pushEdge(source, target, link.kind || 'link', link.id, link.metadata || {});
   }
   const degreeById = new Map(nodes.map((node) => [node.id, nodeDegree(edges, node.id)]));
   const outgoing = new Set(edges.map((edge) => edge.source));
@@ -950,8 +1356,8 @@ function knowledgeGraphRadius(node, degree) {
   const level = Number(node.level || 3);
   const base = node.kind === 'space'
     ? 8.5
-    : level <= 1
-      ? 7
+    : node.consensusRole === 'root' || level <= 1
+      ? 8.9
       : level === 2
         ? 4.8
         : 2.8;
@@ -1118,6 +1524,8 @@ function normalizeChangeInput(space, change = {}) {
         title: cleanString(change.title || change.newDocMeta?.title || docId),
         level: Number(change.level || change.newDocMeta?.level || 1),
         parentId: cleanString(change.parentId || change.newDocMeta?.parentId),
+        consensusId: cleanString(change.consensusId || change.newDocMeta?.consensusId),
+        consensusRootId: cleanString(change.consensusRootId || change.newDocMeta?.consensusRootId),
         sourceUrl: cleanString(change.sourceUrl || change.newDocMeta?.sourceUrl),
       }
       : null,
@@ -1273,6 +1681,7 @@ function upsertKnowledgeLink(space, link) {
 }
 
 function rebuildNewDocumentAnchorsAndLinks(space, doc, markdown, timestamp, sourceUrl = '') {
+  normalizeSpace(space);
   if (doc.parentId) {
     upsertKnowledgeLink(space, {
       id: stableId('lnk', doc.parentId, doc.id, 'child', doc.title),
@@ -1295,6 +1704,8 @@ function rebuildNewDocumentAnchorsAndLinks(space, doc, markdown, timestamp, sour
       id: anchorId,
       workspaceId: space.workspaceId,
       docId: doc.id,
+      consensusId: doc.consensusId || '',
+      consensusRootId: doc.consensusRootId || '',
       title: block.title,
       level: 3,
       slug: slugify(block.title),
@@ -1320,6 +1731,7 @@ function rebuildNewDocumentAnchorsAndLinks(space, doc, markdown, timestamp, sour
     links.push(...linksFromMarkdown(block.markdown, doc.id, anchorId));
   }
   for (const link of links) upsertKnowledgeLink(space, link);
+  ensureConsensusAssignments(space);
 }
 
 function publishChanges(space, session, now, actor) {
@@ -1331,6 +1743,9 @@ function publishChanges(space, session, now, actor) {
         markdown: change.proposedMarkdown,
         parentId: change.newDocMeta.parentId,
         level: change.newDocMeta.level,
+        consensusId: change.newDocMeta.consensusId,
+        consensusRootId: change.newDocMeta.consensusRootId,
+        consensusTitle: space.documents.find((item) => item.id === change.newDocMeta.consensusRootId)?.title || '',
         sourceUrl: change.newDocMeta.sourceUrl,
       }, { now, actor });
       const version = space.versions.find((item) => item.id === doc.currentVersionId);
@@ -1361,6 +1776,8 @@ function publishChanges(space, session, now, actor) {
     doc.currentVersionId = versionId;
     doc.updatedAt = now;
   }
+  ensureConsensusAssignments(space);
+  rebuildKnowledgeSemanticLinks(space);
 }
 
 function explicitKnowledgeSecretRequired(env = process.env) {

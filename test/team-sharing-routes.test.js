@@ -3314,9 +3314,12 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(importRes.statusCode, 201);
   assert.equal(importRes.data.ok, true);
   assert.equal(importRes.data.imported.documents, 2);
+  assert.equal(importRes.data.space.consensusGroups.length, 1);
 
   const doc = deps.state.knowledgeSpace.spaces.ws_route.documents.find((item) => item.title === 'Memory Module');
   assert.ok(doc?.id);
+  const group = deps.state.knowledgeSpace.spaces.ws_route.consensusGroups[0];
+  assert.ok(group?.id);
 
   const readRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -3384,6 +3387,19 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(alignRes.statusCode, 200);
   assert.equal(alignRes.data.ok, true);
   assert.equal(alignRes.data.rules.length > 0, true);
+
+  const exportRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: owner.headers },
+    exportRes,
+    new URL(`https://magclaw.example/api/team-sharing/knowledge/server-route/export?consensusId=${encodeURIComponent(group.id)}`),
+    { ...deps, currentActor: () => null },
+  ), true);
+  assert.equal(exportRes.statusCode, 200);
+  assert.equal(exportRes.data.ok, true);
+  assert.equal(exportRes.data.consensusId, group.id);
+  assert.match(exportRes.data.markdown, /^# Team Consensus/m);
+  assert.match(exportRes.data.markdown, /^## Memory Module/m);
 
   const other = await issueTeamSharingRouteToken(deps, {
     actor: { member: { workspaceId: 'ws_other', humanId: 'hum_other', role: 'owner', email: 'other@example.test' }, user: { id: 'user_other', email: 'other@example.test', name: 'Other' } },

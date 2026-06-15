@@ -9,6 +9,7 @@ import {
   createKnowledgeChangeSession,
   decryptKnowledgeSecret,
   encryptKnowledgeSecret,
+  exportKnowledgeConsensusMarkdown,
   getKnowledgeDocument,
   getKnowledgeGraph,
   importKnowledgeMarkdown,
@@ -39,6 +40,19 @@ Publishing requires review.
 ### Diff Preview
 
 Users review diff before publish.
+`;
+
+const SECOND_CONSENSUS_MARKDOWN = `# Team Roles
+
+Role ownership references the Team Consensus memory module before changing operating rules.
+
+## Memory Module
+
+Role owners must keep the memory module aligned with the Team Consensus source of truth.
+
+## Delivery Owners
+
+Delivery owners publish review notes and route unresolved gaps back to the consensus owner.
 `;
 
 function state() {
@@ -126,6 +140,112 @@ test('re-importing an existing root creates a draft instead of silently overwrit
   const memoryDoc = appState.knowledgeSpace.spaces.ws_knowledge.documents.find((doc) => doc.title === 'Memory Module');
   assert.match(memoryDoc.sourceMarkdown, /Memory rules should be explicit and retrievable\./);
   assert.doesNotMatch(memoryDoc.sourceMarkdown, /MUST be explicit/);
+});
+
+test('multiple root consensus documents keep separate consensus ids and strong semantic links', () => {
+  const appState = state();
+  const first = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_multi',
+    markdown: SAMPLE_MARKDOWN,
+    sourceName: 'Team Consensus',
+    actor: actor(),
+    now: () => '2026-06-13T10:00:00.000Z',
+  });
+  const second = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_multi',
+    markdown: SECOND_CONSENSUS_MARKDOWN,
+    sourceName: 'Team Roles',
+    actor: actor(),
+    now: () => '2026-06-13T10:02:00.000Z',
+  });
+
+  assert.equal(first.mode, 'published');
+  assert.equal(second.mode, 'published');
+  const space = appState.knowledgeSpace.spaces.ws_multi;
+  assert.equal(space.consensusGroups.length, 2);
+  assert.equal(new Set(space.consensusGroups.map((group) => group.id)).size, 2);
+  assert.ok(space.documents.every((doc) => doc.consensusId));
+  assert.ok(space.anchors.every((anchor) => anchor.consensusId));
+  const roots = space.documents.filter((doc) => !doc.parentId);
+  assert.deepEqual(roots.map((doc) => doc.title).sort(), ['Team Consensus', 'Team Roles']);
+  assert.equal(new Set(roots.map((doc) => doc.consensusId)).size, 2);
+
+  const semantic = space.links.filter((link) => link.kind === 'semantic');
+  assert.ok(semantic.length >= 1);
+  assert.ok(semantic.every((link) => link.metadata?.confidence >= 0.82));
+  assert.ok(semantic.every((link) => link.metadata?.fromConsensusId !== link.metadata?.toConsensusId));
+  const graph = getKnowledgeGraph(space, { now: '2026-06-13T11:00:00.000Z' });
+  const rootNodes = graph.nodes.filter((node) => node.kind === 'document' && node.level === 1);
+  const childNodes = graph.nodes.filter((node) => node.kind === 'document' && node.level === 2);
+  assert.equal(rootNodes.length, 2);
+  assert.ok(Math.min(...rootNodes.map((node) => node.radius)) > Math.max(...childNodes.map((node) => node.radius)));
+  assert.ok(graph.edges.some((edge) => edge.kind === 'semantic' && edge.metadata?.confidence >= 0.82));
+});
+
+test('re-import resolves a lightly renamed consensus to the same consensus id and draft flow', () => {
+  const appState = state();
+  const first = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_resolve',
+    markdown: SAMPLE_MARKDOWN,
+    actor: actor(),
+    now: () => '2026-06-13T10:00:00.000Z',
+  });
+  const root = first.space.documents.find((doc) => doc.level === 1);
+  const renamed = SAMPLE_MARKDOWN
+    .replace('# Team Consensus', '# Team Consensus v1.1')
+    .replace('Publishing requires review.', 'Publishing requires review and owner signoff.');
+  const second = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_resolve',
+    markdown: renamed,
+    actor: actor(),
+    now: () => '2026-06-13T10:05:00.000Z',
+  });
+
+  assert.equal(second.mode, 'draft');
+  assert.equal(second.session.status, 'draft');
+  assert.equal(first.space.consensusGroups.length, 1);
+  assert.equal(second.session.changes[0].docId, root.id);
+  assert.equal(second.session.changes.every((change) => change.newDocMeta?.consensusId ? change.newDocMeta.consensusId === root.consensusId : true), true);
+});
+
+test('low-similarity Markdown imports as a new consensus instead of linking to an existing one', () => {
+  const appState = state();
+  importKnowledgeMarkdown({ state: appState, workspaceId: 'ws_new', markdown: SAMPLE_MARKDOWN, actor: actor() });
+  const result = importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_new',
+    markdown: '# Voice Runtime\n\n## Latency Budget\n\nVoice should respond within the budget.\n\n## Audio Stack\n\nUse streaming audio.',
+    actor: actor(),
+  });
+  const roots = result.space.documents.filter((doc) => !doc.parentId);
+  assert.equal(result.mode, 'published');
+  assert.equal(roots.length, 2);
+  assert.equal(new Set(roots.map((doc) => doc.consensusId)).size, 2);
+});
+
+test('exports one consensus as complete Markdown by consensus id, root id, or title', () => {
+  const appState = state();
+  importKnowledgeMarkdown({ state: appState, workspaceId: 'ws_export', markdown: SAMPLE_MARKDOWN, actor: actor() });
+  importKnowledgeMarkdown({ state: appState, workspaceId: 'ws_export', markdown: SECOND_CONSENSUS_MARKDOWN, actor: actor() });
+  const space = appState.knowledgeSpace.spaces.ws_export;
+  const group = space.consensusGroups.find((item) => item.title === 'Team Consensus');
+
+  const byId = exportKnowledgeConsensusMarkdown(space, { consensusId: group.id });
+  const byRoot = exportKnowledgeConsensusMarkdown(space, { rootDocId: group.rootDocId });
+  const byTitle = exportKnowledgeConsensusMarkdown(space, { title: 'Team Consensus' });
+
+  assert.equal(byId.consensusId, group.id);
+  assert.equal(byRoot.markdown, byId.markdown);
+  assert.equal(byTitle.markdown, byId.markdown);
+  assert.match(byId.markdown, /^# Team Consensus/m);
+  assert.match(byId.markdown, /^## Memory Module/m);
+  assert.match(byId.markdown, /^## Publishing Flow/m);
+  assert.doesNotMatch(byId.markdown, /^# Team Roles/m);
+  assert.throws(() => exportKnowledgeConsensusMarkdown(space, { consensusId: 'missing' }), /not found/i);
 });
 
 test('renderKnowledgeMarkdown supports blockquote, table, and horizontal rule blocks', () => {
@@ -535,4 +655,10 @@ test('PostgreSQL schema declares Knowledge Space durable tables', async () => {
   ]) {
     assert.match(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
+  assert.match(schema, /knowledge_documents[\s\S]*consensus_id TEXT/);
+  assert.match(schema, /knowledge_documents[\s\S]*consensus_root_id TEXT/);
+  assert.match(schema, /knowledge_heading_anchors[\s\S]*consensus_id TEXT/);
+  assert.match(schema, /knowledge_heading_anchors[\s\S]*consensus_root_id TEXT/);
+  assert.match(schema, /knowledge_documents_consensus_idx/);
+  assert.match(schema, /knowledge_heading_anchors_consensus_idx/);
 });

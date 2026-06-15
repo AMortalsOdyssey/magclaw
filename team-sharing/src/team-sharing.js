@@ -45,6 +45,7 @@ const TEAM_SHARING_AGENT_SKILL_IDS = Object.freeze([
   'ask-consensus',
   'edit-consensus',
   'align-consensus',
+  'export-consensus',
 ]);
 
 function now() {
@@ -3499,6 +3500,40 @@ export async function alignKnowledgeConsensus(flags = {}, env = process.env) {
     transport: 'node',
     body: { workspaceId: workspace, text },
   });
+}
+
+export async function exportKnowledgeConsensus(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const consensusId = stringFlagValue(flags.consensusId || flags.consensusID || flags.consensus || flags.id || flags._?.[1]);
+  const rootDocId = stringFlagValue(flags.rootDocId || flags.docId || flags.doc || flags.document);
+  const title = stringFlagValue(flags.title || flags.rootTitle);
+  if (!consensusId && !rootDocId && !title) {
+    const error = new Error('Usage: team-sharing export-consensus --server <server> --workspace <workspace> --consensus-id <consensusId>');
+    error.status = 400;
+    throw error;
+  }
+  const params = new URLSearchParams();
+  if (consensusId) params.set('consensusId', consensusId);
+  if (rootDocId) params.set('docId', rootDocId);
+  if (title) params.set('title', title);
+  const exported = await teamSharingRequestJson({
+    serverUrl,
+    token,
+    machineFingerprint,
+    method: 'GET',
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/export?${params.toString()}`,
+    timeoutMs: requestTimeoutMs(flags, env),
+    transport: 'node',
+  });
+  const output = stringFlagValue(flags.output || flags.out || flags.o);
+  if (output) {
+    const cwd = path.resolve(flags.cwd || process.cwd());
+    const outputPath = path.resolve(cwd, output);
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, String(exported.markdown || ''), 'utf8');
+    return { ...exported, outputPath, markdown: flags.includeMarkdown ? exported.markdown : undefined };
+  }
+  return exported;
 }
 
 export async function shareTeamSharingArtifact(flags = {}, env = process.env) {

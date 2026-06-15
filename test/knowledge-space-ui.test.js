@@ -83,6 +83,40 @@ test('Knowledge graph implements wheel zoom, pan, drag, hover highlight, labels,
   assert.match(graphSource, /node\.graphHomeRole === 'root'/);
 });
 
+test('Knowledge documents group by consensus and graph renders semantic cross-consensus links', async () => {
+  const app = await readAppSource();
+  const styles = await readStylesSource();
+  const homeSource = app.slice(app.indexOf('function renderKnowledgeHome'), app.indexOf('function renderKnowledgeDocument'));
+  const graphSource = app.slice(app.indexOf('function renderKnowledgeGraphPanel'), app.indexOf('function renderKnowledgeChangelog'));
+
+  assert.match(app, /function knowledgeConsensusGroups/);
+  assert.match(homeSource, /knowledgeConsensusGroups\(\)/);
+  assert.match(homeSource, /knowledge-consensus-group/);
+  assert.match(homeSource, /knowledge-consensus-root/);
+  assert.match(homeSource, /knowledge-consensus-disclosure/);
+  assert.match(homeSource, /data-action="knowledge-toggle-consensus"/);
+  assert.match(homeSource, /knowledgeCollapsedConsensusIds/);
+  assert.match(app, /localStorage/);
+  assert.match(homeSource, /selectedConsensusId/);
+  assert.match(app, /knowledgeSpaceState\.selectedDocId/);
+
+  assert.match(graphSource, /Strong consensus relation/);
+  assert.match(graphSource, /edge\.kind === 'semantic'/);
+  assert.match(graphSource, /ctx\.setLineDash/);
+  assert.match(graphSource, /edge\.metadata\?\.reason/);
+  assert.match(graphSource, /graphHomeRole = 'root'/);
+  assert.match(graphSource, /node\.consensusRole === 'root'/);
+  assert.match(graphSource, /knowledgeGraphConsensusBuckets/);
+  assert.match(graphSource, /childAngleById/);
+  assert.match(graphSource, /edge\.kind === 'semantic'\) return 104/);
+  assert.match(graphSource, /knowledgeEdgeSpring/);
+
+  assert.match(styles, /\.knowledge-consensus-group/);
+  assert.match(styles, /\.knowledge-consensus-root/);
+  assert.match(styles, /\.knowledge-consensus-disclosure/);
+  assert.match(styles, /\.knowledge-consensus-children/);
+});
+
 test('Knowledge review, settings, and Change Log controls render expected state flow', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

@@ -5,6 +5,7 @@ import {
   askKnowledgeConsensus,
   createKnowledgeChangeSession,
   ensureKnowledgeSpace,
+  exportKnowledgeConsensusMarkdown,
   getKnowledgeDocument,
   importKnowledgeMarkdown,
   isKnowledgeAdmin,
@@ -5405,6 +5406,35 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       space: publicKnowledgeSpace(space, access.actor),
       url: `${publicUrlFromRequest(req)}/s/${encodeURIComponent(serverSlug)}/knowledge/docs/${encodeURIComponent(docId)}`,
     });
+    return true;
+  }
+
+  const knowledgeExportMatch = url.pathname.match(/^\/api\/team-sharing\/knowledge\/([^/]+)\/export\/?$/);
+  if (req.method === 'GET' && knowledgeExportMatch) {
+    const serverSlug = decodeURIComponent(knowledgeExportMatch[1] || '');
+    const effectiveWorkspaceId = workspaceIdForKnowledgeTarget(state, url.searchParams.get('workspaceId') || url.searchParams.get('workspace') || serverSlug, workspaceId);
+    const access = teamSharingKnowledgeAccess({ req, actor, currentUser: browserUser, teamSharingState, state, workspaceId: effectiveWorkspaceId });
+    if (!access.ok) {
+      sendTeamSharingKnowledgeAccessError(sendJson, res, access, 'Join this server before exporting Knowledge Space.');
+      return true;
+    }
+    const space = ensureKnowledgeSpace(state, effectiveWorkspaceId, { now });
+    try {
+      const exported = exportKnowledgeConsensusMarkdown(space, {
+        consensusId: url.searchParams.get('consensusId') || url.searchParams.get('consensus_id') || '',
+        rootDocId: url.searchParams.get('rootDocId') || url.searchParams.get('docId') || url.searchParams.get('doc') || '',
+        title: url.searchParams.get('title') || url.searchParams.get('rootTitle') || '',
+      });
+      addSystemEvent('team_sharing_knowledge_exported', `Team Sharing exported Knowledge consensus: ${compactText(exported.title || exported.consensusId, 90)}`, {
+        workspaceId: effectiveWorkspaceId,
+        consensusId: exported.consensusId,
+        rootDocId: exported.rootDocId,
+        actorId: access.actorId || '',
+      });
+      sendJson(res, 200, { ok: true, kind: 'knowledge_consensus_export', serverSlug, ...exported });
+    } catch (error) {
+      sendJson(res, 404, { ok: false, kind: 'knowledge_consensus_export', reason: 'not_found', error: error?.message || 'Knowledge consensus not found.' });
+    }
     return true;
   }
 

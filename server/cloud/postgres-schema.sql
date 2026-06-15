@@ -178,6 +178,8 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   knowledge_space_id TEXT NOT NULL REFERENCES knowledge_spaces(id) ON DELETE CASCADE,
   parent_id TEXT,
+  consensus_id TEXT,
+  consensus_root_id TEXT,
   title TEXT NOT NULL,
   slug TEXT NOT NULL,
   level INTEGER NOT NULL DEFAULT 1,
@@ -192,6 +194,9 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
 
 CREATE INDEX IF NOT EXISTS knowledge_documents_workspace_idx
   ON knowledge_documents(workspace_id, level, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS knowledge_documents_consensus_idx
+  ON knowledge_documents(workspace_id, consensus_id, consensus_root_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_document_versions (
   id TEXT PRIMARY KEY,
@@ -215,6 +220,8 @@ CREATE TABLE IF NOT EXISTS knowledge_heading_anchors (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
   document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  consensus_id TEXT,
+  consensus_root_id TEXT,
   title TEXT NOT NULL,
   slug TEXT NOT NULL,
   anchor TEXT NOT NULL,
@@ -227,6 +234,9 @@ CREATE TABLE IF NOT EXISTS knowledge_heading_anchors (
 
 CREATE INDEX IF NOT EXISTS knowledge_heading_anchors_document_idx
   ON knowledge_heading_anchors(document_id, level, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS knowledge_heading_anchors_consensus_idx
+  ON knowledge_heading_anchors(workspace_id, consensus_id, document_id);
 
 CREATE TABLE IF NOT EXISTS knowledge_links (
   id TEXT PRIMARY KEY,
