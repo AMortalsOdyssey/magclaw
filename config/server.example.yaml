@@ -74,7 +74,6 @@ embedding:
   base_url: "https://embedding.example.com/v1"
   api_key: "replace-with-embedding-api-key"
   model: "embedding-model"
-  preferred_dimension: 1536
 
 zilliz:
   endpoint: "https://zilliz.example.com"

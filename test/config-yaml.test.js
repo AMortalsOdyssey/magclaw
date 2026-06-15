@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { applyParsedServerYamlConfig, parseSimpleYaml, SERVER_CONFIG_PATH } from '../server/config-yaml.js';
 
 function applyConfig(yaml, env = {}) {
@@ -201,4 +202,12 @@ rerank:
   assert.equal(result.redacted.zilliz.endpoint, '[redacted]');
   assert.equal(result.redacted.zilliz.token, '[redacted]');
   assert.equal(result.redacted.rerank.api_key, '[redacted]');
+});
+
+test('server yaml examples omit embedding preferred dimension by default', async () => {
+  const serverExample = await readFile(new URL('../config/server.example.yaml', import.meta.url), 'utf8');
+  const k8sExample = await readFile(new URL('../web/k8s/magclaw-web.yaml', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(serverExample, /preferred_dimension/);
+  assert.doesNotMatch(k8sExample, /preferred_dimension/);
 });
