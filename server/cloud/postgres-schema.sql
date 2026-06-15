@@ -148,6 +148,14 @@ CREATE INDEX IF NOT EXISTS cloud_sessions_user_active_idx
 CREATE INDEX IF NOT EXISTS cloud_sessions_expires_at_idx
   ON cloud_sessions(expires_at);
 
+CREATE TABLE IF NOT EXISTS cloud_server_secrets (
+  id TEXT PRIMARY KEY,
+  secret_value TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
 CREATE TABLE IF NOT EXISTS knowledge_spaces (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,

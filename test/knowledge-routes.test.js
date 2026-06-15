@@ -219,5 +219,5 @@ test('knowledge deploy guard rejects open cloud deployments and warns on missing
     env: {},
     warn: (message) => warnings.push(message),
   });
-  assert.match(warnings.at(-1), /MAGCLAW_KNOWLEDGE_SECRET_KEY/);
+  assert.match(warnings.at(-1), /database-managed secret/);
 });

@@ -28,5 +28,5 @@ export function assertKnowledgeSecretConfigured({
 } = {}) {
   if (!isCloudDeploy) return;
   if (cleanString(env.MAGCLAW_KNOWLEDGE_SECRET_KEY)) return;
-  warn?.('[knowledge-space] MAGCLAW_KNOWLEDGE_SECRET_KEY is not configured. Feishu app secret encryption will fail closed.');
+  warn?.('[knowledge-space] Knowledge Space encryption secret is not available. PostgreSQL startup should provision it automatically; Feishu app secret encryption will fail closed if no database-managed secret exists.');
 }

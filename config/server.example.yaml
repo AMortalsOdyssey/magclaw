@@ -48,7 +48,6 @@ storage:
   write_state_json: false
 
 knowledge:
-  secret_key: "replace-with-32-plus-char-random-secret"
   allow_open: false
 
 daemon:

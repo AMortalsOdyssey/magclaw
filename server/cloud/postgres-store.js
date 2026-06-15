@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   DEFAULT_DATABASE,
@@ -34,6 +35,7 @@ const MESSAGE_PAGE_MAX_LIMIT = 200;
 const THREAD_REPLY_PAGE_MAX_LIMIT = 300;
 const RECENT_MESSAGE_HYDRATION_LIMIT = 500;
 const RECENT_REPLY_HYDRATION_LIMIT = 500;
+const KNOWLEDGE_SECRET_RECORD_ID = 'knowledge-space-secret-key';
 
 function safeArray(value) {
   return Array.isArray(value) ? value : [];
@@ -1132,6 +1134,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
     2000,
   );
   const attachmentBaseDir = String(options.attachmentBaseDir || process.env.MAGCLAW_UPLOAD_DIR || '').trim();
+  const knowledgeSecretLogger = typeof options.knowledgeSecretLogger === 'function'
+    ? options.knowledgeSecretLogger
+    : console.info;
   let pool = options.pool || null;
   let realtimeClient = null;
   let realtimeStopper = null;
@@ -1242,6 +1247,70 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function table(name) {
     return tableName(schema, name);
+  }
+
+  function setKnowledgeSecretEnv(env, secret) {
+    if (!env || typeof env !== 'object') return;
+    env.MAGCLAW_KNOWLEDGE_SECRET_KEY = String(secret || '');
+  }
+
+  function logKnowledgeSecret(message) {
+    try {
+      knowledgeSecretLogger(message);
+    } catch {
+      // Logging must never block database-backed startup secret provisioning.
+    }
+  }
+
+  async function ensureKnowledgeSecretWithClient(client, env = process.env) {
+    const secretsTable = table('cloud_server_secrets');
+    const existing = firstRow(await client.query(
+      `SELECT secret_value FROM ${secretsTable} WHERE id = $1`,
+      [KNOWLEDGE_SECRET_RECORD_ID],
+    ));
+    if (existing?.secret_value) {
+      setKnowledgeSecretEnv(env, existing.secret_value);
+      logKnowledgeSecret('[knowledge-space] Loaded database-managed encryption secret.');
+      return { ok: true, configured: true, source: 'database' };
+    }
+
+    const explicit = String(env?.MAGCLAW_KNOWLEDGE_SECRET_KEY || '').trim();
+    const secret = explicit || crypto.randomBytes(32).toString('base64url');
+    const inserted = firstRow(await client.query(`
+      INSERT INTO ${secretsTable} (id, secret_value, metadata)
+      VALUES ($1, $2, $3::jsonb)
+      ON CONFLICT (id) DO NOTHING
+      RETURNING secret_value
+    `, [
+      KNOWLEDGE_SECRET_RECORD_ID,
+      secret,
+      JSON.stringify({
+        purpose: 'knowledge_space_secret_encryption',
+        source: explicit ? 'env' : 'generated',
+      }),
+    ]));
+    if (inserted?.secret_value) {
+      setKnowledgeSecretEnv(env, inserted.secret_value);
+      logKnowledgeSecret(explicit
+        ? '[knowledge-space] Seeded database-managed encryption secret from existing env.'
+        : '[knowledge-space] Generated database-managed encryption secret.');
+      return { ok: true, configured: true, source: explicit ? 'env' : 'generated' };
+    }
+
+    const raced = firstRow(await client.query(
+      `SELECT secret_value FROM ${secretsTable} WHERE id = $1`,
+      [KNOWLEDGE_SECRET_RECORD_ID],
+    ));
+    if (!raced?.secret_value) {
+      throw new Error('Knowledge Space database secret could not be created.');
+    }
+    setKnowledgeSecretEnv(env, raced.secret_value);
+    logKnowledgeSecret('[knowledge-space] Loaded database-managed encryption secret.');
+    return { ok: true, configured: true, source: 'database' };
+  }
+
+  async function ensureKnowledgeSecret(env = process.env) {
+    return withClient((client) => ensureKnowledgeSecretWithClient(client, env));
   }
 
   function messageRuntimeConflictSuffix() {
@@ -4436,6 +4505,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       createDatabase,
       runtimeOptions,
     });
+    const knowledgeSecret = await ensureKnowledgeSecret(process.env);
     await withClient(async (client) => {
       await persistReleaseNotesFromState(client, state);
       await pruneEphemeralActivityRows(client);
@@ -4443,7 +4513,17 @@ export function createCloudPostgresStore(optionsInput = {}) {
     await loadIntoState(state, { resetTransientRuntimeState: true });
     initialized = true;
     console.info(`[cloud-postgres] connected database=${database} schema=${schema}`);
-    return { ok: true, enabled: true, migration, database, schema };
+    return {
+      ok: true,
+      enabled: true,
+      migration,
+      database,
+      schema,
+      knowledgeSecret: {
+        configured: Boolean(knowledgeSecret?.configured),
+        source: knowledgeSecret?.source || '',
+      },
+    };
   }
 
   async function close() {
@@ -4461,6 +4541,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     loadIntoState,
     loadAuthIntoState,
     loadWorkspaceIntoState,
+    ensureKnowledgeSecret,
     loadConversationWindowIntoState,
     listSpaceMessagesPage,
     searchConversationRecords,

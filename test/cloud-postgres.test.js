@@ -2635,3 +2635,93 @@ test('postgres store persists password reset completion without reviving consume
   assert.match(resetUpsert?.sql || '', /consumed_at = COALESCE\("magclaw"\."cloud_password_resets"\.consumed_at, EXCLUDED\.consumed_at\)/);
   assert.match(resetUpsert?.sql || '', /revoked_at = COALESCE\("magclaw"\."cloud_password_resets"\.revoked_at, EXCLUDED\.revoked_at\)/);
 });
+
+test('postgres store manages the Knowledge encryption secret in the database', async () => {
+  const queries = [];
+  const logs = [];
+  let storedSecret = '';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          queries.push({ sql, params });
+          if (sql.includes('SELECT secret_value') && sql.includes('cloud_server_secrets')) {
+            return { rows: storedSecret ? [{ secret_value: storedSecret }] : [] };
+          }
+          if (sql.includes('INSERT INTO "magclaw"."cloud_server_secrets"')) {
+            if (!storedSecret) {
+              storedSecret = params[1];
+              return { rows: [{ secret_value: storedSecret }] };
+            }
+            return { rows: [] };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    knowledgeSecretLogger: (message) => logs.push(String(message)),
+  });
+
+  const env = {};
+  const generated = await store.ensureKnowledgeSecret(env);
+  assert.equal(generated.source, 'generated');
+  assert.equal(generated.configured, true);
+  assert.match(env.MAGCLAW_KNOWLEDGE_SECRET_KEY, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(env.MAGCLAW_KNOWLEDGE_SECRET_KEY, storedSecret);
+  assert.match(logs.at(-1), /generated.*database-managed/i);
+  assert.doesNotMatch(logs.at(-1), new RegExp(storedSecret));
+
+  const secondEnv = {};
+  const reused = await store.ensureKnowledgeSecret(secondEnv);
+  assert.equal(reused.source, 'database');
+  assert.equal(reused.configured, true);
+  assert.equal(secondEnv.MAGCLAW_KNOWLEDGE_SECRET_KEY, env.MAGCLAW_KNOWLEDGE_SECRET_KEY);
+  assert.equal(queries.filter((query) => query.sql.includes('INSERT INTO "magclaw"."cloud_server_secrets"')).length, 1);
+  assert.match(logs.at(-1), /loaded.*database-managed/i);
+  assert.doesNotMatch(logs.at(-1), new RegExp(storedSecret));
+});
+
+test('postgres store seeds the Knowledge encryption secret from existing env on first migration', async () => {
+  const logs = [];
+  let storedSecret = '';
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) {
+          if (sql.includes('SELECT secret_value') && sql.includes('cloud_server_secrets')) {
+            return { rows: storedSecret ? [{ secret_value: storedSecret }] : [] };
+          }
+          if (sql.includes('INSERT INTO "magclaw"."cloud_server_secrets"')) {
+            storedSecret = params[1];
+            return { rows: [{ secret_value: storedSecret }] };
+          }
+          return { rows: [] };
+        },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud',
+    schema: 'magclaw',
+    pool,
+    knowledgeSecretLogger: (message) => logs.push(String(message)),
+  });
+  const env = { MAGCLAW_KNOWLEDGE_SECRET_KEY: 'existing-production-knowledge-secret' };
+
+  const result = await store.ensureKnowledgeSecret(env);
+
+  assert.equal(result.source, 'env');
+  assert.equal(storedSecret, 'existing-production-knowledge-secret');
+  assert.equal(env.MAGCLAW_KNOWLEDGE_SECRET_KEY, 'existing-production-knowledge-secret');
+  assert.match(logs.at(-1), /seeded.*existing env/i);
+  assert.doesNotMatch(logs.at(-1), /existing-production-knowledge-secret/);
+});

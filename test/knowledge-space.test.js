@@ -641,6 +641,7 @@ test('real Kizuna Markdown import produces expected V1 document structure', { sk
 test('PostgreSQL schema declares Knowledge Space durable tables', async () => {
   const schema = await readFile(new URL('../server/cloud/postgres-schema.sql', import.meta.url), 'utf8');
   for (const table of [
+    'cloud_server_secrets',
     'knowledge_spaces',
     'knowledge_whitelist_members',
     'knowledge_documents',
@@ -655,6 +656,7 @@ test('PostgreSQL schema declares Knowledge Space durable tables', async () => {
   ]) {
     assert.match(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   }
+  assert.match(schema, /cloud_server_secrets[\s\S]*secret_value TEXT NOT NULL/);
   assert.match(schema, /knowledge_documents[\s\S]*consensus_id TEXT/);
   assert.match(schema, /knowledge_documents[\s\S]*consensus_root_id TEXT/);
   assert.match(schema, /knowledge_heading_anchors[\s\S]*consensus_id TEXT/);
