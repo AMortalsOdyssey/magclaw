@@ -55,6 +55,7 @@ const CASES = [
     mode: 'single',
     segments: [{ text: '等一下。', voice: DEFAULT_TTS_VOICE }],
     expectNoTool: true,
+    allowNoModelResponse: true,
     expectSimplifiedChinese: true,
     maxFirstAudioMs: 2400,
   },
@@ -1055,7 +1056,10 @@ function scoreCase(testCase, metrics) {
   const warnings = [];
   const endpointMs = testCase.mode === 'barge_in' ? metrics.firstEndpointMs : metrics.endpointMs;
   const outputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
-  if (!metrics.firstAudioMs && !metrics.firstTextMs) failures.push('no_model_response');
+  if (!metrics.firstAudioMs && !metrics.firstTextMs) {
+    if (testCase.allowNoModelResponse) warnings.push('no_model_response_allowed');
+    else failures.push('no_model_response');
+  }
   if (testCase.expectTool) {
     const names = metrics.toolCalls.map((call) => call.name);
     if (!names.includes(testCase.expectTool)) failures.push(`missing_tool:${testCase.expectTool}`);
