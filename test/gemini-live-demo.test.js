@@ -79,6 +79,11 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.equal(res.statusCode, 200);
       assert.match(res.body, /id="voiceSelect"/);
       assert.match(res.body, /id="promptInput"/);
+      assert.match(res.body, /id="turnProfileButtons"/);
+      assert.match(res.body, /data-profile="responsive"/);
+      assert.match(res.body, /data-profile="patient"/);
+      assert.match(res.body, /audio_stream_end/);
+      assert.match(res.body, /TODO\(phase-2\): add multi-speaker diarization/);
       assert.match(res.body, /calculate_expression/);
       assert.match(res.body, /音频检测/);
       assert.equal(res.headers['permissions-policy'], 'microphone=(self)');

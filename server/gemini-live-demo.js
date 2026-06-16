@@ -240,6 +240,58 @@ function numberFromEnv(name, fallback, options = {}) {
   return value;
 }
 
+function clampNumber(value, fallback, options = {}) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(options.max ?? number, Math.max(options.min ?? number, number));
+}
+
+function enumValue(value, allowed, fallback) {
+  const raw = String(value || '').trim();
+  return allowed.includes(raw) ? raw : fallback;
+}
+
+function normalizeRealtimeTuning(value = {}) {
+  const envSilenceDurationMs = numberFromEnv('GEMINI_LIVE_DEMO_SILENCE_DURATION_MS', 700, {
+    min: 100,
+    max: 3000,
+  });
+  const envPrefixPaddingMs = numberFromEnv('GEMINI_LIVE_DEMO_PREFIX_PADDING_MS', 180, {
+    min: 0,
+    max: 1000,
+  });
+  return {
+    startSensitivity: enumValue(
+      value.startSensitivity || process.env.GEMINI_LIVE_DEMO_START_SENSITIVITY,
+      ['START_SENSITIVITY_HIGH', 'START_SENSITIVITY_LOW'],
+      'START_SENSITIVITY_LOW',
+    ),
+    endSensitivity: enumValue(
+      value.endSensitivity || process.env.GEMINI_LIVE_DEMO_END_SENSITIVITY,
+      ['END_SENSITIVITY_HIGH', 'END_SENSITIVITY_LOW'],
+      'END_SENSITIVITY_LOW',
+    ),
+    prefixPaddingMs: clampNumber(value.prefixPaddingMs, envPrefixPaddingMs, {
+      min: 0,
+      max: 1000,
+    }),
+    silenceDurationMs: clampNumber(value.silenceDurationMs, envSilenceDurationMs, {
+      min: 100,
+      max: 3000,
+    }),
+    activityHandling: enumValue(
+      value.activityHandling,
+      ['START_OF_ACTIVITY_INTERRUPTS', 'NO_INTERRUPTION'],
+      'START_OF_ACTIVITY_INTERRUPTS',
+    ),
+    turnCoverage: enumValue(
+      value.turnCoverage,
+      ['TURN_INCLUDES_ONLY_ACTIVITY', 'TURN_INCLUDES_ALL_INPUT'],
+      'TURN_INCLUDES_ONLY_ACTIVITY',
+    ),
+  };
+}
+
 function voiceNames() {
   return new Set(GEMINI_LIVE_VOICES.map((voice) => voice.name));
 }
@@ -531,6 +583,7 @@ function getToolDeclarations() {
 function makeLiveConfig(sessionOptions = {}) {
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
   const systemInstruction = normalizeSystemInstruction(sessionOptions.systemInstruction);
+  const realtimeTuning = normalizeRealtimeTuning(sessionOptions.realtimeTuning);
   return {
     responseModalities: [Modality.AUDIO],
     systemInstruction: {
@@ -549,20 +602,13 @@ function makeLiveConfig(sessionOptions = {}) {
     realtimeInputConfig: {
       automaticActivityDetection: {
         disabled: false,
-        startOfSpeechSensitivity:
-          process.env.GEMINI_LIVE_DEMO_START_SENSITIVITY || 'START_SENSITIVITY_LOW',
-        endOfSpeechSensitivity:
-          process.env.GEMINI_LIVE_DEMO_END_SENSITIVITY || 'END_SENSITIVITY_LOW',
-        prefixPaddingMs: numberFromEnv('GEMINI_LIVE_DEMO_PREFIX_PADDING_MS', 180, {
-          min: 0,
-          max: 1000,
-        }),
-        silenceDurationMs: numberFromEnv('GEMINI_LIVE_DEMO_SILENCE_DURATION_MS', 700, {
-          min: 100,
-          max: 3000,
-        }),
+        startOfSpeechSensitivity: realtimeTuning.startSensitivity,
+        endOfSpeechSensitivity: realtimeTuning.endSensitivity,
+        prefixPaddingMs: realtimeTuning.prefixPaddingMs,
+        silenceDurationMs: realtimeTuning.silenceDurationMs,
       },
-      activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+      activityHandling: realtimeTuning.activityHandling,
+      turnCoverage: realtimeTuning.turnCoverage,
     },
     tools: [{ functionDeclarations: getToolDeclarations() }],
   };
@@ -1016,7 +1062,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           sendWsJson(ws, { type: 'setup_complete', sessionId: message.setupComplete.sessionId || null });
         }
         if (message.serverContent?.inputTranscription?.text) {
-          sendWsJson(ws, { type: 'input_transcript', text: message.serverContent.inputTranscription.text });
+          sendWsJson(ws, {
+            type: 'input_transcript',
+            text: message.serverContent.inputTranscription.text,
+            finished: Boolean(message.serverContent.inputTranscription.finished),
+          });
         }
         if (message.serverContent?.outputTranscription?.text) {
           sendWsJson(ws, { type: 'output_transcript', text: message.serverContent.outputTranscription.text });
@@ -1111,6 +1161,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       if (closed || !session) return;
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
+    flushAudioStream() {
+      if (closed || !session) return;
+      session.sendRealtimeInput({ audioStreamEnd: true });
+    },
     close,
   };
 }
@@ -1181,6 +1235,7 @@ function makeIndexHtml(config) {
     inputSampleRate: INPUT_SAMPLE_RATE,
     outputSampleRate: OUTPUT_SAMPLE_RATE,
     micGate: makeMicGateConfig(),
+    realtimeTuning: normalizeRealtimeTuning(),
     voices: GEMINI_LIVE_VOICES,
     defaultVoiceName: normalizeVoiceName(),
     defaultSystemInstruction: process.env.GEMINI_LIVE_DEMO_SYSTEM_INSTRUCTION || SYSTEM_INSTRUCTION,
@@ -1344,6 +1399,108 @@ function makeIndexHtml(config) {
       line-height: 1.45;
       font-size: 13px;
     }
+    .tuning {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      display: grid;
+      gap: 12px;
+    }
+    .tuning-title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .tuning-title strong {
+      font-size: 13px;
+      font-weight: 760;
+    }
+    .tuning-title span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .segment {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      color: var(--text);
+      cursor: pointer;
+      min-height: 42px;
+      display: grid;
+      place-items: center;
+      font-size: 13px;
+      font-weight: 680;
+    }
+    .segment.active {
+      border-color: var(--accent);
+      background: #f3f7ff;
+      color: var(--accent-strong);
+    }
+    .tuning-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .mini-field {
+      display: grid;
+      gap: 6px;
+    }
+    .mini-field label {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+    }
+    .mini-field input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--text);
+      padding: 8px 9px;
+      outline: none;
+    }
+    .mini-field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(23, 105, 224, 0.12);
+    }
+    .tuning-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .metric-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fbfcfe;
+      min-width: 0;
+    }
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.25;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 13px;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .field select:focus,
     .field textarea:focus {
       border-color: var(--accent);
@@ -1496,6 +1653,7 @@ function makeIndexHtml(config) {
       main { grid-template-columns: 1fr; }
       .chat { min-height: 560px; }
       .voice-list { grid-template-columns: 1fr; max-height: 220px; }
+      .tuning-grid { grid-template-columns: 1fr; }
       .field textarea { min-height: 140px; }
     }
   </style>
@@ -1532,6 +1690,43 @@ function makeIndexHtml(config) {
             <label for="promptInput">系统提示词</label>
             <textarea id="promptInput" spellcheck="false"></textarea>
           </div>
+          <div class="tuning" aria-label="实时对话调节">
+            <div class="tuning-title">
+              <strong>对话节奏</strong>
+              <span id="profileSummary">均衡</span>
+            </div>
+            <div class="segmented" id="turnProfileButtons" role="group" aria-label="对话节奏">
+              <button class="segment" type="button" data-profile="responsive">灵敏</button>
+              <button class="segment" type="button" data-profile="balanced">均衡</button>
+              <button class="segment" type="button" data-profile="patient">耐心</button>
+            </div>
+            <div class="tuning-grid">
+              <div class="mini-field">
+                <label for="shortPauseMs">短句结束等待 ms</label>
+                <input id="shortPauseMs" type="number" min="200" max="900" step="20">
+              </div>
+              <div class="mini-field">
+                <label for="thinkingPauseMs">思考停顿等待 ms</label>
+                <input id="thinkingPauseMs" type="number" min="700" max="2200" step="50">
+              </div>
+              <div class="mini-field">
+                <label for="bargeInMs">打断需连续说话 ms</label>
+                <input id="bargeInMs" type="number" min="220" max="900" step="20">
+              </div>
+              <div class="mini-field">
+                <label for="bargeInRms">打断音量阈值 RMS</label>
+                <input id="bargeInRms" type="number" min="0.015" max="0.09" step="0.001">
+              </div>
+            </div>
+            <div class="metric-row">
+              <div class="metric"><span>语音状态</span><strong id="speechStateText">空闲</strong></div>
+              <div class="metric"><span>端点等待</span><strong id="endpointWaitText">--</strong></div>
+              <div class="metric"><span>最近延迟</span><strong id="latencyText">--</strong></div>
+            </div>
+            <div class="tuning-note">
+              自适应端点会根据 ASR 片段判断短句、长句和思考停顿；分级打断会过滤环境声，只有连续人声或明确打断词才停止当前回复。
+            </div>
+          </div>
           <div class="privacy">
             当前 demo 只开放安全演示函数，不读取电脑名称、进程、文件、浏览器标签页或任何本机私密信息。
           </div>
@@ -1566,6 +1761,15 @@ function makeIndexHtml(config) {
     const voiceSelect = document.getElementById('voiceSelect');
     const voiceList = document.getElementById('voiceList');
     const promptInput = document.getElementById('promptInput');
+    const turnProfileButtons = document.getElementById('turnProfileButtons');
+    const profileSummary = document.getElementById('profileSummary');
+    const shortPauseMsInput = document.getElementById('shortPauseMs');
+    const thinkingPauseMsInput = document.getElementById('thinkingPauseMs');
+    const bargeInMsInput = document.getElementById('bargeInMs');
+    const bargeInRmsInput = document.getElementById('bargeInRms');
+    const speechStateText = document.getElementById('speechStateText');
+    const endpointWaitText = document.getElementById('endpointWaitText');
+    const latencyText = document.getElementById('latencyText');
 
     let ws = null;
     let micStream = null;
@@ -1583,6 +1787,67 @@ function makeIndexHtml(config) {
     let micHoldFrames = 0;
     let pendingReadyResolve = null;
     let pendingReadyReject = null;
+    let activeProfile = localStorage.getItem('gemini-live-demo-turn-profile') || 'balanced';
+    let userSpeaking = false;
+    let acceptedBargeIn = false;
+    let utteranceStartedAt = 0;
+    let lastVoiceAt = 0;
+    let lastEndpointAt = 0;
+    let latestInputTranscript = '';
+    let latestInputTranscriptAt = 0;
+    let firstAudioRequestedAt = 0;
+    let assistantSpeakingAt = 0;
+    let lastBargeInNoticeAt = 0;
+
+    // TODO(phase-2): add multi-speaker diarization or voice verification before
+    // supporting "only follow the primary speaker" in mixed-room conversations.
+    const TURN_PROFILES = {
+      responsive: {
+        label: '灵敏',
+        summary: '短句优先，适合命令和快问快答',
+        shortPauseMs: 320,
+        thinkingPauseMs: 900,
+        bargeInMs: 320,
+        idleRms: 0.01,
+        idlePeak: 0.045,
+        bargeInRms: 0.038,
+        bargeInPeak: 0.145,
+        serverSilenceMs: 450,
+        prefixPaddingMs: 140,
+        startSensitivity: 'START_SENSITIVITY_LOW',
+        endSensitivity: 'END_SENSITIVITY_HIGH',
+      },
+      balanced: {
+        label: '均衡',
+        summary: '兼顾思考停顿和响应速度',
+        shortPauseMs: 460,
+        thinkingPauseMs: 1250,
+        bargeInMs: 420,
+        idleRms: 0.01,
+        idlePeak: 0.045,
+        bargeInRms: 0.042,
+        bargeInPeak: 0.16,
+        serverSilenceMs: 650,
+        prefixPaddingMs: 180,
+        startSensitivity: 'START_SENSITIVITY_LOW',
+        endSensitivity: 'END_SENSITIVITY_LOW',
+      },
+      patient: {
+        label: '耐心',
+        summary: '更愿意等待长句和犹豫停顿',
+        shortPauseMs: 620,
+        thinkingPauseMs: 1650,
+        bargeInMs: 540,
+        idleRms: 0.011,
+        idlePeak: 0.05,
+        bargeInRms: 0.048,
+        bargeInPeak: 0.18,
+        serverSilenceMs: 950,
+        prefixPaddingMs: 220,
+        startSensitivity: 'START_SENSITIVITY_LOW',
+        endSensitivity: 'END_SENSITIVITY_LOW',
+      },
+    };
 
     function renderTools() {
       toolsEl.innerHTML = CONFIG.tools.map((tool) => [
@@ -1619,10 +1884,86 @@ function makeIndexHtml(config) {
       }).join('');
     }
 
+    function clamp(value, min, max, fallback) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return fallback;
+      return Math.min(max, Math.max(min, number));
+    }
+
+    function profileDefaults() {
+      return TURN_PROFILES[activeProfile] || TURN_PROFILES.balanced;
+    }
+
+    function storageKey(name) {
+      return 'gemini-live-demo-' + activeProfile + '-' + name;
+    }
+
+    function readTuning() {
+      const defaults = profileDefaults();
+      return {
+        profile: activeProfile,
+        label: defaults.label,
+        summary: defaults.summary,
+        shortPauseMs: clamp(shortPauseMsInput.value, 200, 900, defaults.shortPauseMs),
+        thinkingPauseMs: clamp(thinkingPauseMsInput.value, 700, 2200, defaults.thinkingPauseMs),
+        bargeInMs: clamp(bargeInMsInput.value, 220, 900, defaults.bargeInMs),
+        idleRms: defaults.idleRms ?? MIC_GATE.idleRms ?? 0.01,
+        idlePeak: defaults.idlePeak ?? MIC_GATE.idlePeak ?? 0.045,
+        bargeInRms: clamp(bargeInRmsInput.value, 0.015, 0.09, defaults.bargeInRms),
+        bargeInPeak: defaults.bargeInPeak ?? MIC_GATE.bargeInPeak ?? 0.16,
+        startFrames: MIC_GATE.startFrames || 3,
+        holdFrames: MIC_GATE.holdFrames || 16,
+        preRollFrames: MIC_GATE.preRollFrames || 4,
+        serverSilenceMs: defaults.serverSilenceMs,
+        prefixPaddingMs: defaults.prefixPaddingMs,
+        startSensitivity: defaults.startSensitivity,
+        endSensitivity: defaults.endSensitivity,
+      };
+    }
+
+    function renderTuning() {
+      if (!TURN_PROFILES[activeProfile]) activeProfile = 'balanced';
+      const defaults = profileDefaults();
+      const fields = [
+        ['shortPauseMs', shortPauseMsInput],
+        ['thinkingPauseMs', thinkingPauseMsInput],
+        ['bargeInMs', bargeInMsInput],
+        ['bargeInRms', bargeInRmsInput],
+      ];
+      for (const [name, input] of fields) {
+        input.value = localStorage.getItem(storageKey(name)) || defaults[name];
+      }
+      for (const button of turnProfileButtons.querySelectorAll('[data-profile]')) {
+        button.classList.toggle('active', button.dataset.profile === activeProfile);
+      }
+      profileSummary.textContent = defaults.label + ' · ' + defaults.summary;
+      updateSpeechMetrics('空闲', '--');
+    }
+
+    function saveTuningField(event) {
+      const input = event.target;
+      if (!input?.id) return;
+      localStorage.setItem(storageKey(input.id), input.value);
+      profileSummary.textContent = readTuning().label + ' · ' + readTuning().summary;
+    }
+
+    function makeRealtimeTuning() {
+      const tuning = readTuning();
+      return {
+        silenceDurationMs: tuning.serverSilenceMs,
+        prefixPaddingMs: tuning.prefixPaddingMs,
+        startSensitivity: tuning.startSensitivity,
+        endSensitivity: tuning.endSensitivity,
+        activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+        turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+      };
+    }
+
     function selectedSessionOptions() {
       return {
         voiceName: voiceSelect.value || CONFIG.defaultVoiceName,
         systemInstruction: promptInput.value || CONFIG.defaultSystemInstruction,
+        realtimeTuning: makeRealtimeTuning(),
       };
     }
 
@@ -1642,6 +1983,19 @@ function makeIndexHtml(config) {
       localStorage.setItem('gemini-live-demo-prompt', promptInput.value);
     });
 
+    turnProfileButtons.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-profile]');
+      if (!button) return;
+      activeProfile = button.dataset.profile;
+      localStorage.setItem('gemini-live-demo-turn-profile', activeProfile);
+      renderTuning();
+    });
+
+    for (const input of [shortPauseMsInput, thinkingPauseMsInput, bargeInMsInput, bargeInRmsInput]) {
+      input.addEventListener('change', saveTuningField);
+      input.addEventListener('input', saveTuningField);
+    }
+
     function escapeHtml(value) {
       return String(value)
         .replaceAll('&', '&amp;')
@@ -1654,6 +2008,47 @@ function makeIndexHtml(config) {
     function setStatus(text, live = false) {
       statusText.textContent = text;
       statusDot.classList.toggle('live', live);
+    }
+
+    function updateSpeechMetrics(state, endpointWait) {
+      speechStateText.textContent = state;
+      endpointWaitText.textContent = endpointWait;
+    }
+
+    function markLatency(text) {
+      latencyText.textContent = text;
+    }
+
+    function containsInterruptionPhrase(text) {
+      return /(等一下|停一下|先停|打住|别说了|暂停|stop|wait|hold on|不是|不对|等等)/i.test(String(text || ''));
+    }
+
+    function looksLikeThinkingPause(text) {
+      const normalized = String(text || '')
+        .replace(/\s+/g, '')
+        .replace(/[。！？?!]+$/g, '');
+      if (!normalized) return true;
+      if (/[，、,;；:：]$/.test(String(text || '').trim())) return true;
+      return /(然后|就是|比如|我想|我觉得|那个|呃|嗯|额|还有|接着|因为|如果|但是|以及|或者|先|帮我|你能不能|我希望|怎么说)$/.test(normalized);
+    }
+
+    function endpointWaitForTranscript(text, speechDurationMs) {
+      const tuning = readTuning();
+      if (looksLikeThinkingPause(text)) return tuning.thinkingPauseMs;
+      if (speechDurationMs > 6500 && !/[。！？?!]$/.test(String(text || '').trim())) {
+        return Math.max(tuning.shortPauseMs, Math.round(tuning.thinkingPauseMs * 0.75));
+      }
+      return tuning.shortPauseMs;
+    }
+
+    function sendEndpoint(reason) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = performance.now();
+      if (now - lastEndpointAt < 600) return;
+      lastEndpointAt = now;
+      firstAudioRequestedAt = now;
+      ws.send(JSON.stringify({ type: 'audio_stream_end', reason }));
+      updateSpeechMetrics('等待模型', reason);
     }
 
     function addEntry(kind, label, text) {
@@ -1748,6 +2143,16 @@ function makeIndexHtml(config) {
       micPreRoll = [];
       micSpeechFrames = 0;
       micHoldFrames = 0;
+      userSpeaking = false;
+      acceptedBargeIn = false;
+      utteranceStartedAt = 0;
+      lastVoiceAt = 0;
+      lastEndpointAt = 0;
+      latestInputTranscript = '';
+      latestInputTranscriptAt = 0;
+      firstAudioRequestedAt = 0;
+      assistantSpeakingAt = 0;
+      updateSpeechMetrics('空闲', '--');
     }
 
     async function ensureAudioContext() {
@@ -1783,17 +2188,20 @@ function makeIndexHtml(config) {
       silentGain.gain.value = 0;
       processor.onaudioprocess = (event) => {
         if (!running || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const now = performance.now();
+        const tuning = readTuning();
         const input = event.inputBuffer.getChannelData(0);
         const stats = measureAudio(input);
         meterFill.style.width = Math.min(100, Math.round(stats.peak * 140)) + '%';
         const downsampled = downsampleBuffer(input, context.sampleRate, CONFIG.inputSampleRate);
         const pcm = float32ToInt16Pcm(downsampled);
         const assistantAudioPlaying = isAssistantAudioPlaying(context);
-        const rmsThreshold = assistantAudioPlaying ? MIC_GATE.bargeInRms : MIC_GATE.idleRms;
-        const peakThreshold = assistantAudioPlaying ? MIC_GATE.bargeInPeak : MIC_GATE.idlePeak;
-        const requiredStartFrames = assistantAudioPlaying
-          ? MIC_GATE.bargeInStartFrames
-          : MIC_GATE.startFrames;
+        const frameMs = (event.inputBuffer.length / context.sampleRate) * 1000;
+        const rmsThreshold = assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInRms : tuning.idleRms;
+        const peakThreshold = assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInPeak : tuning.idlePeak;
+        const requiredStartFrames = assistantAudioPlaying && !acceptedBargeIn
+          ? Math.max(1, Math.ceil(tuning.bargeInMs / frameMs))
+          : tuning.startFrames;
         const active = stats.rms >= rmsThreshold || stats.peak >= peakThreshold;
         const sendPcm = (buffer) => {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(buffer);
@@ -1805,14 +2213,67 @@ function makeIndexHtml(config) {
           micSpeechFrames = 0;
         }
 
+        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames > 0) {
+          const heardMs = Math.round(micSpeechFrames * frameMs);
+          updateSpeechMetrics('候选打断', heardMs + '/' + tuning.bargeInMs + 'ms');
+        }
+
+        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames < requiredStartFrames) {
+          micPreRoll.push(pcm);
+          while (micPreRoll.length > tuning.preRollFrames) micPreRoll.shift();
+          return;
+        }
+
+        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames >= requiredStartFrames) {
+          acceptedBargeIn = true;
+          userSpeaking = true;
+          utteranceStartedAt = now - (requiredStartFrames * frameMs);
+          lastVoiceAt = now;
+          clearPlayback();
+          if (now - lastBargeInNoticeAt > 1200) {
+            addEntry('system', '分级打断', '检测到连续人声，已停止当前回复并开始听你说。');
+            lastBargeInNoticeAt = now;
+          }
+        }
+
+        if (!userSpeaking && micSpeechFrames >= requiredStartFrames) {
+          userSpeaking = true;
+          utteranceStartedAt = now;
+          lastEndpointAt = 0;
+          latestInputTranscript = '';
+          updateSpeechMetrics('正在听你说', '--');
+        }
+
+        if (active && userSpeaking) {
+          lastVoiceAt = now;
+          updateSpeechMetrics(acceptedBargeIn ? '打断中' : '正在听你说', '--');
+        }
+
         let shouldSend = micHoldFrames > 0;
         if (micSpeechFrames >= requiredStartFrames) {
           if (micHoldFrames === 0 && micPreRoll.length > 0) {
             for (const frame of micPreRoll) sendPcm(frame);
           }
           shouldSend = true;
-          micHoldFrames = MIC_GATE.holdFrames;
+          micHoldFrames = tuning.holdFrames;
           micPreRoll = [];
+        }
+
+        if (userSpeaking && !active && lastVoiceAt > 0) {
+          const speechDurationMs = Math.max(0, lastVoiceAt - utteranceStartedAt);
+          const waitMs = endpointWaitForTranscript(latestInputTranscript, speechDurationMs);
+          const silenceMs = now - lastVoiceAt;
+          endpointWaitText.textContent = Math.max(0, Math.round(waitMs - silenceMs)) + 'ms';
+          if (silenceMs >= waitMs) {
+            const reason = waitMs > tuning.shortPauseMs ? 'thinking_pause' : 'short_pause';
+            sendEndpoint(reason + ':' + Math.round(waitMs) + 'ms');
+            userSpeaking = false;
+            acceptedBargeIn = false;
+            micSpeechFrames = 0;
+            micHoldFrames = 0;
+            micPreRoll = [];
+            return;
+          }
         }
 
         if (shouldSend) {
@@ -1820,7 +2281,7 @@ function makeIndexHtml(config) {
           if (!active && micHoldFrames > 0) micHoldFrames -= 1;
         } else {
           micPreRoll.push(pcm);
-          while (micPreRoll.length > MIC_GATE.preRollFrames) micPreRoll.shift();
+          while (micPreRoll.length > tuning.preRollFrames) micPreRoll.shift();
         }
       };
       micSource.connect(processor);
@@ -1889,7 +2350,7 @@ function makeIndexHtml(config) {
       }
       if (message.type === 'ready') {
         setStatus('已连接，正在听', true);
-        addEntry('system', '系统', '连接成功。音色：' + (message.voiceName || voiceSelect.value) + '。现在可以直接说话。');
+        addEntry('system', '系统', '连接成功。音色：' + (message.voiceName || voiceSelect.value) + '，节奏：' + readTuning().label + '。现在可以直接说话。');
         pendingReadyResolve?.(message);
         pendingReadyResolve = null;
         pendingReadyReject = null;
@@ -1898,10 +2359,21 @@ function makeIndexHtml(config) {
       } else if (message.type === 'starting') {
         setStatus('连接 Gemini Live', false);
       } else if (message.type === 'input_transcript') {
+        latestInputTranscript = message.text || latestInputTranscript;
+        latestInputTranscriptAt = performance.now();
         addEntry('user', '你', message.text);
+        if (containsInterruptionPhrase(message.text) && isAssistantAudioPlaying(audioContext || { currentTime: 0 })) {
+          clearPlayback();
+          addEntry('system', '明确打断词', '识别到“等一下/停一下”这类打断意图，已立即停止当前播放。');
+        }
       } else if (message.type === 'output_transcript' || message.type === 'text') {
         addEntry('assistant', 'Gemini', message.text);
       } else if (message.type === 'audio') {
+        if (firstAudioRequestedAt > 0) {
+          markLatency(Math.round(performance.now() - firstAudioRequestedAt) + 'ms');
+          firstAudioRequestedAt = 0;
+        }
+        assistantSpeakingAt = performance.now();
         void playPcm(message.audio, message.sampleRate);
       } else if (message.type === 'tool_call') {
         addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')');
@@ -1909,9 +2381,12 @@ function makeIndexHtml(config) {
         addEntry('tool', 'Tool Result', message.name + ' → ' + JSON.stringify(message.result));
       } else if (message.type === 'interrupted') {
         clearPlayback();
+        acceptedBargeIn = false;
         addEntry('system', '打断', '已停止当前回复音频，继续听你说。');
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
+      } else if (message.type === 'endpoint') {
+        addEntry('system', '端点刷新', '已按' + message.reason + '刷新输入流，等待模型响应。');
       } else if (message.type === 'error') {
         addEntry('error', '错误', message.message);
         pendingReadyReject?.(new Error(message.message));
@@ -1943,6 +2418,8 @@ function makeIndexHtml(config) {
       ws.onerror = () => addEntry('error', '错误', 'WebSocket 连接失败。');
       localStorage.setItem('gemini-live-demo-voice', voiceSelect.value);
       localStorage.setItem('gemini-live-demo-prompt', promptInput.value);
+      const tuning = readTuning();
+      addEntry('system', '调节', '本轮使用“' + tuning.label + '”节奏：短句 ' + tuning.shortPauseMs + 'ms，思考 ' + tuning.thinkingPauseMs + 'ms，打断 ' + tuning.bargeInMs + 'ms。');
       const readyPromise = new Promise((resolve, reject) => {
         pendingReadyResolve = resolve;
         pendingReadyReject = reject;
@@ -1980,6 +2457,7 @@ function makeIndexHtml(config) {
     });
 
     renderVoices();
+    renderTuning();
     renderTools();
     addEntry('system', '提示', '先选音色、确认提示词，再点击开始。可以试试天气、计算、单位换算、Mock 任务和节假日。');
   </script>
@@ -2058,6 +2536,7 @@ function createServer(config) {
             live = await createGeminiSession(ws, config, {
               voiceName: message.voiceName,
               systemInstruction: message.systemInstruction,
+              realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
             console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
@@ -2070,6 +2549,13 @@ function createServer(config) {
       if (message.type === 'stop') {
         live?.sendEnd();
         live?.close();
+      }
+      if (message.type === 'audio_stream_end') {
+        live?.flushAudioStream();
+        sendWsJson(ws, {
+          type: 'endpoint',
+          reason: String(message.reason || 'client_silence').slice(0, 80),
+        });
       }
     });
 
@@ -2256,6 +2742,7 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
             live = await createGeminiSession(ws, config, {
               voiceName: message.voiceName,
               systemInstruction: message.systemInstruction,
+              realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
             console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
@@ -2268,6 +2755,13 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
       if (message.type === 'stop') {
         live?.sendEnd();
         live?.close();
+      }
+      if (message.type === 'audio_stream_end') {
+        live?.flushAudioStream();
+        sendWsJson(ws, {
+          type: 'endpoint',
+          reason: String(message.reason || 'client_silence').slice(0, 80),
+        });
       }
     });
 
