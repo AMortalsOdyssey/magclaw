@@ -11,6 +11,7 @@ import {
   disableTeamSharingSkill,
   alignKnowledgeConsensus,
   askKnowledgeConsensusCommand,
+  searchKnowledgeConsensusCommand,
   editTeamSharingLink,
   editKnowledgeConsensus,
   exportKnowledgeConsensus,
@@ -183,6 +184,8 @@ function renderTeamSharingHelp() {
     '  share-artifact Create a public MagClaw share link from a local file',
     '  import-consensus Import Markdown into Knowledge Space with Team Sharing login',
     '  ask-consensus Ask Knowledge Space consensus with Team Sharing login',
+    '  consensus search Search Knowledge Space documents without LLM ask',
+    '  search-consensus Compatibility alias for consensus search',
     '  edit-consensus Draft a Knowledge Space document edit from Markdown',
     '  align-consensus Check discussion text against Knowledge Space consensus',
     '  export-consensus Export one Knowledge Space consensus as Markdown',
@@ -377,6 +380,18 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
     case 'ask-consensus':
       printJson(await askKnowledgeConsensusCommand(flags, env));
       break;
+    case 'search-consensus':
+      printJson(await searchKnowledgeConsensusCommand(flags, env));
+      break;
+    case 'consensus':
+      {
+        const action = String(flags._?.[1] || 'help').trim();
+        if (action === 'search') {
+          printJson(await searchKnowledgeConsensusCommand({ ...flags, _: ['search-consensus', ...(flags._?.slice(2) || [])] }, env));
+          break;
+        }
+        throw new Error(`Unknown consensus command: ${action}`);
+      }
     case 'edit-consensus':
       printJson(await editKnowledgeConsensus(flags, env));
       break;

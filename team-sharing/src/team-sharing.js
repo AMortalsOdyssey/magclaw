@@ -43,6 +43,7 @@ const TEAM_SHARING_AGENT_SKILL_IDS = Object.freeze([
   'manage-links',
   'import-consensus',
   'ask-consensus',
+  'search-consensus',
   'edit-consensus',
   'align-consensus',
   'export-consensus',
@@ -3430,6 +3431,7 @@ export async function importKnowledgeConsensus(flags = {}, env = process.env) {
       markdown,
       sourceName: flags.sourceName || flags.title || '',
       sourceUrl: flags.sourceUrl || '',
+      includeSpace: booleanFlag(flags.includeSpace),
     },
   });
 }
@@ -3442,15 +3444,74 @@ export async function askKnowledgeConsensusCommand(flags = {}, env = process.env
     error.status = 400;
     throw error;
   }
+  try {
+    return await teamSharingRequestJson({
+      serverUrl,
+      token,
+      machineFingerprint,
+      method: 'POST',
+      pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/ask`,
+      timeoutMs: requestTimeoutMs(flags, env),
+      transport: 'node',
+      body: {
+        workspaceId: workspace,
+        query,
+        compact: true,
+        includeContent: false,
+      },
+    });
+  } catch (error) {
+    if (![502, 503, 504].includes(Number(error.status || 0))) throw error;
+    let partialMatches = [];
+    try {
+      const fallback = await searchKnowledgeConsensusCommand({ ...flags, query, workspace, serverUrl, compact: true }, env);
+      partialMatches = Array.isArray(fallback.results) ? fallback.results : [];
+    } catch {}
+    const phase = Number(error.status || 0) === 504 ? 'gateway' : 'retrieval';
+    return {
+      ok: false,
+      kind: 'knowledge_consensus_ask_error',
+      reason: 'knowledge_ask_failed',
+      phase,
+      traceId: `ts_ask_${stableHash(`${workspace}:${query}:${error.status || error.statusText || 'error'}`)}`,
+      retryable: true,
+      status: Number(error.status || 0),
+      statusText: String(error.statusText || ''),
+      error: String(error.message || 'Knowledge ask failed.'),
+      query,
+      partialMatches,
+      fallback: {
+        command: 'team-sharing consensus search',
+        used: true,
+      },
+    };
+  }
+}
+
+export async function searchKnowledgeConsensusCommand(flags = {}, env = process.env) {
+  const { serverUrl, workspace, token, machineFingerprint } = await resolveTeamSharingConsensusClient(flags, env);
+  const query = stringFlagValue(flags.query || flags.question || flags.text || flags._?.[1] || flags._?.[2]);
+  if (!query) {
+    const error = new Error('Usage: team-sharing consensus search --server <server> --workspace <workspace> --query <query>');
+    error.status = 400;
+    throw error;
+  }
+  const limit = Math.max(1, Math.min(20, Number(flags.limit || flags.n || 5) || 5));
   return teamSharingRequestJson({
     serverUrl,
     token,
     machineFingerprint,
     method: 'POST',
-    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/ask`,
+    pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/search`,
     timeoutMs: requestTimeoutMs(flags, env),
     transport: 'node',
-    body: { workspaceId: workspace, query },
+    body: {
+      workspaceId: workspace,
+      query,
+      limit,
+      compact: true,
+      includeContent: booleanFlag(flags.includeContent),
+    },
   });
 }
 
@@ -3498,7 +3559,12 @@ export async function alignKnowledgeConsensus(flags = {}, env = process.env) {
     pathname: `/api/team-sharing/knowledge/${encodeURIComponent(workspace)}/align`,
     timeoutMs: requestTimeoutMs(flags, env),
     transport: 'node',
-    body: { workspaceId: workspace, text },
+    body: {
+      workspaceId: workspace,
+      text,
+      compact: flags.compact === undefined ? true : booleanFlag(flags.compact),
+      includeContent: booleanFlag(flags.includeContent),
+    },
   });
 }
 

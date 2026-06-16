@@ -19,6 +19,7 @@ import {
   publishKnowledgeSession,
   renderKnowledgeDiff,
   renderKnowledgeMarkdown,
+  searchKnowledgeConsensus,
   updateKnowledgeSettings,
 } from '../server/knowledge-space.js';
 
@@ -321,6 +322,32 @@ test('askKnowledgeConsensus matches Chinese queries without whitespace tokenizat
   const result = await askKnowledgeConsensus(appState.knowledgeSpace.spaces.ws_cn, '记忆规则可检索吗', { env: {} });
   assert.ok(result.matches.length > 0);
   assert.match(result.matches[0].title, /记忆模块/);
+});
+
+test('searchKnowledgeConsensus returns compact Knowledge-only metadata without full document text', () => {
+  const appState = state();
+  importKnowledgeMarkdown({
+    state: appState,
+    workspaceId: 'ws_search',
+    markdown: '# 叽伴共识\n\n## 四、创建我的 AI 伙伴（字段）\n\n伙伴本体字段包括核心性格、价值观底线、软处和说话方式。创建体验是非填表的铸造过程。\n\n### Schema 底线\n\n核心性格、价值底线和软处必须齐全。',
+    actor: actor(),
+    now: () => '2026-06-12T00:00:00.000Z',
+  });
+
+  const out = searchKnowledgeConsensus(appState.knowledgeSpace.spaces.ws_search, '创建我的 AI 伙伴', { limit: 5 });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.kind, 'knowledge_consensus_search');
+  assert.equal(out.query, '创建我的 AI 伙伴');
+  assert.equal(out.matches.length > 0, true);
+  assert.equal(out.matches[0].docId.startsWith('doc_'), true);
+  assert.match(out.matches[0].title, /创建我的 AI 伙伴/);
+  assert.match(out.matches[0].href, /\/knowledge\/docs\//);
+  assert.match(out.matches[0].snippet, /伙伴本体字段|核心性格|价值观底线/);
+  assert.equal(typeof out.matches[0].score, 'number');
+  assert.equal(out.matches[0].text, undefined);
+  const serialized = JSON.stringify(out);
+  assert.doesNotMatch(serialized, /sourceMarkdown|renderedHtml|documents|versions|changeSessions/);
 });
 
 test('alignKnowledgeDiscussion suppresses template-noise gaps when LLM is unavailable', async () => {

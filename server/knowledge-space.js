@@ -1438,8 +1438,58 @@ function knowledgeSearch(space, query, limit = 5) {
     .slice(0, limit);
 }
 
+function knowledgeSearchSnippet(row = {}, query = '') {
+  const summary = cleanString(row.summary);
+  if (summary) return summary.slice(0, 220);
+  const text = cleanString(row.text);
+  if (!text) return '';
+  const tokens = searchTokens(query).filter((token) => [...token].length > 1);
+  const lower = text.toLowerCase();
+  const matchIndex = tokens
+    .map((token) => lower.indexOf(token.toLowerCase()))
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right)[0] ?? 0;
+  const start = Math.max(0, matchIndex - 60);
+  const snippet = text.slice(start, start + 220).replace(/\s+/g, ' ').trim();
+  return `${start > 0 ? '...' : ''}${snippet}${start + 220 < text.length ? '...' : ''}`;
+}
+
+function compactKnowledgeMatch(row = {}, query = '', options = {}) {
+  const compact = {
+    type: row.type || '',
+    id: row.id || '',
+    docId: row.docId || '',
+    anchorId: row.anchorId || '',
+    title: row.title || '',
+    summary: row.summary || '',
+    snippet: knowledgeSearchSnippet(row, query),
+    href: row.href || '',
+    sourceUrl: row.sourceUrl || '',
+    score: Number(row.score || 0),
+  };
+  if (options.includeContent) compact.text = row.text || '';
+  return compact;
+}
+
+export function searchKnowledgeConsensus(space, query, options = {}) {
+  const limit = Math.max(1, Math.min(20, Number(options.limit || 5) || 5));
+  const cleanQuery = cleanString(query);
+  const matches = knowledgeSearch(space, cleanQuery, limit)
+    .map((match) => compactKnowledgeMatch(match, cleanQuery, { includeContent: Boolean(options.includeContent) }));
+  return {
+    ok: true,
+    kind: 'knowledge_consensus_search',
+    query: cleanQuery,
+    count: matches.length,
+    matches,
+  };
+}
+
 export async function askKnowledgeConsensus(space, query, options = {}) {
-  const matches = knowledgeSearch(space, query, 5);
+  const rawMatches = knowledgeSearch(space, query, 5);
+  const matches = options.compact
+    ? rawMatches.map((match) => compactKnowledgeMatch(match, query, { includeContent: Boolean(options.includeContent) }))
+    : rawMatches;
   const fallbackAnswer = matches.length
     ? `Matched ${matches.length} consensus item${matches.length === 1 ? '' : 's'}. Start with: ${matches[0].summary || matches[0].title}`
     : 'No matching consensus item was found in this Knowledge Space.';
@@ -1451,7 +1501,7 @@ export async function askKnowledgeConsensus(space, query, options = {}) {
         system: 'You answer questions using only the provided MagClaw Knowledge Space consensus items. Return JSON with an "answer" string.',
         user: JSON.stringify({
           question: cleanString(query),
-          matches: matches.map((match) => ({
+          matches: rawMatches.map((match) => ({
             title: match.title,
             summary: match.summary,
             href: match.href,
@@ -1473,9 +1523,12 @@ export async function askKnowledgeConsensus(space, query, options = {}) {
 }
 
 export async function alignKnowledgeDiscussion(space, text, options = {}) {
-  const matches = knowledgeSearch(space, text, 6);
+  const rawMatches = knowledgeSearch(space, text, 6);
+  const matches = options.compact
+    ? rawMatches.map((match) => compactKnowledgeMatch(match, text, { includeContent: Boolean(options.includeContent) }))
+    : rawMatches;
   const config = llmConfigFromEnv(options.env || process.env);
-  if (!matches.length || !llmConfigReady(config) || options.env?.MAGCLAW_LLM_DISABLED === '1') {
+  if (!rawMatches.length || !llmConfigReady(config) || options.env?.MAGCLAW_LLM_DISABLED === '1') {
     return { rules: matches, alignmentGaps: [], llm: { used: false } };
   }
   try {
@@ -1488,7 +1541,7 @@ export async function alignKnowledgeDiscussion(space, text, options = {}) {
       ].join('\n'),
       user: JSON.stringify({
         discussion: cleanString(text),
-        consensus: matches.map((match) => ({
+        consensus: rawMatches.map((match) => ({
           docId: match.docId,
           anchorId: match.anchorId || '',
           title: match.title,

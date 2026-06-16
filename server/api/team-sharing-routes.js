@@ -10,6 +10,7 @@ import {
   getKnowledgeDocument,
   importKnowledgeMarkdown,
   publicKnowledgeSpace,
+  searchKnowledgeConsensus,
 } from '../knowledge-space.js';
 import {
   applyTeamSharingFeedback,
@@ -5437,7 +5438,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     return true;
   }
 
-  const knowledgeActionMatch = url.pathname.match(/^\/api\/team-sharing\/knowledge\/([^/]+)\/(import|ask|edit|align)\/?$/);
+  const knowledgeActionMatch = url.pathname.match(/^\/api\/team-sharing\/knowledge\/([^/]+)\/(import|ask|search|edit|align)\/?$/);
   if (req.method === 'POST' && knowledgeActionMatch) {
     const serverSlug = decodeURIComponent(knowledgeActionMatch[1] || '');
     const action = String(knowledgeActionMatch[2] || '').trim();
@@ -5476,18 +5477,48 @@ export async function handleTeamSharingApi(req, res, url, deps) {
           ok: true,
           mode: result.mode || 'published',
           session: result.session,
+          consensus: result.consensus,
+          consensusId: result.consensus?.id || '',
+          rootDocId: result.consensus?.rootDocId || '',
           imported: result.imported,
-          space: publicKnowledgeSpace(result.space, access.actor),
+          space: body.includeSpace ? publicKnowledgeSpace(result.space, access.actor) : undefined,
         });
         return true;
       }
       if (action === 'ask') {
-        const answer = await askKnowledgeConsensus(space, body.query || body.question || '', { env: deps.env || process.env });
+        const answer = await askKnowledgeConsensus(space, body.query || body.question || '', {
+          env: deps.env || process.env,
+          compact: body.compact !== false,
+          includeContent: Boolean(body.includeContent),
+        });
         sendJson(res, 200, { ok: true, matches: [], ...(answer && typeof answer === 'object' ? answer : { answer: String(answer || '') }) });
         return true;
       }
+      if (action === 'search') {
+        const result = searchKnowledgeConsensus(space, body.query || body.question || body.text || '', {
+          limit: body.limit,
+          includeContent: Boolean(body.includeContent),
+        });
+        addSystemEvent('team_sharing_knowledge_searched', 'Team Sharing searched Knowledge Space consensus.', {
+          workspaceId: effectiveWorkspaceId,
+          actorId: access.actorId || '',
+          resultCount: result.count,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          kind: result.kind,
+          query: result.query,
+          count: result.count,
+          results: result.matches,
+        });
+        return true;
+      }
       if (action === 'align') {
-        const aligned = await alignKnowledgeDiscussion(space, body.text || body.query || '', { env: deps.env || process.env });
+        const aligned = await alignKnowledgeDiscussion(space, body.text || body.query || '', {
+          env: deps.env || process.env,
+          compact: body.includeContent !== true && body.compact !== false,
+          includeContent: Boolean(body.includeContent),
+        });
         sendJson(res, 200, { ok: true, rules: [], alignmentGaps: [], ...(aligned && typeof aligned === 'object' ? aligned : { summary: String(aligned || '') }) });
         return true;
       }

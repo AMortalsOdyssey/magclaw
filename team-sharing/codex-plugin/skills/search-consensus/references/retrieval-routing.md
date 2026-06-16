@@ -1,0 +1,168 @@
+# Retrieval Routing
+
+Team Sharing has two different retrieval surfaces:
+
+- Knowledge search: `team-sharing consensus search` for Knowledge Space, 共识库, 知识空间, 知识库, 知识管理, standards, specs, policies, source-of-truth documents, and consensus articles.
+- Session search: `team-sharing search` for Team Sharing discussions, historical sessions, chat records, who said something, meeting notes, and teammate activity.
+
+If both meanings are plausible and the user does not give enough context, ask the user to choose Knowledge search or session search.
+
+## Knowledge Search Cases
+
+- `查一下共识库里创建我的 AI 伙伴`
+- `找 Knowledge Space 里关于创建我的 AI 伙伴的文档`
+- `搜索知识空间里的伙伴字段共识`
+- `知识库里有没有创建伙伴的标准`
+- `共识文档里查一下 AI 伙伴字段`
+- `找团队共识中关于关系设定的部分`
+- `查共识体系里的记忆模块`
+- `在共识库中搜索 owner whitelist`
+- `查知识管理里的权限规则`
+- `找知识文档里的部署前必做项`
+- `知识图谱里有没有 npm 发布规范`
+- `查知识沉淀里的 Agent-only 工作流`
+- `找标准文档里的导入流程`
+- `规范里关于 Web 导入怎么说`
+- `准则里有没有禁止自动 hook`
+- `原则里对关系不可撤回的定义`
+- `口径里关于 TeamShare 怎么写`
+- `规则里查一下发布确认`
+- `事实源里找创建体验`
+- `source of truth for partner creation`
+- `Knowledge Space search for memory rules`
+- `knowledge base document about owner whitelist`
+- `find consensus on CLI import`
+- `search consensus for Markdown import`
+- `look up policy for npm publish`
+- `find spec for Knowledge graph`
+- `standard for AI partner fields`
+- `查共识 ID cns_123`
+- `找根共识下面的二级模块`
+- `搜索共识库标题：团队分工方案`
+- `查知识空间文档标题`
+- `找知识库里的完整实现指引`
+- `共识里有没有基础文档`
+- `搜索标准：推广前必做`
+- `查规范：不做 Web 导入`
+- `找准则：不做飞书一键导入`
+- `查原则：低置信不关联`
+- `查约定：Agent 只支持 Markdown`
+- `查口径：共识与知识空间同义`
+- `查规则：owner 或 whitelist`
+- `查红线：绕过审批`
+- `查底线：缺 role fail closed`
+- `查 SOP：导入 Markdown`
+- `查事实源：字段已定`
+- `Knowledge Space title search owner whitelist`
+- `knowledge management rule for permissions`
+- `knowledge doc for deployment guard`
+- `canonical knowledge doc on Kizuna`
+- `source-of-truth mismatch document`
+- `policy for read-link whitelist`
+- `spec for consensus export`
+- `standard for graph semantic links`
+- `principle for compact responses`
+- `team rule about session fallback`
+- `consensus article about ask fallback`
+- `搜索共识库中的 traceId`
+- `查知识空间里的 partial matches`
+- `找知识库中 ask-consensus 失败处理`
+- `共识文档搜索 Gateway Timeout`
+- `知识管理文档里有没有 fallback`
+- `标准里关于 compact 输出`
+- `规范里关于 include-content`
+- `准则里关于 read-link`
+- `原则里关于不吐全文`
+- `口径里如何区分共识检索`
+- `规则里如何区分会话检索`
+- `事实源查 Team Sharing CLI`
+- `Knowledge Space source for skill intent`
+- `knowledge base source for semantic routing`
+- `find consensus standard for short query`
+- `search policy document for low confidence`
+- `find spec document for rerank fallback`
+- `查共识库有没有创建世界前置步骤`
+- `查知识库伙伴本体字段`
+- `查知识空间关系大类`
+- `找共识里的相处基调`
+- `搜索标准里的表达强度边界`
+- `查规范里的情感 beat 偏好`
+- `找原则里的价值观底线`
+- `查规则里的软处必填`
+- `查事实源里的字段结构`
+- `search Knowledge Space for relationship subtype`
+- `find knowledge base standard for boundaries`
+- `look up consensus spec for persona core`
+- `find policy on not faking history`
+- `search source-of-truth for established relationship`
+- `查共识库中的 changelog`
+- `查知识空间里的正式发布弹窗`
+- `找知识管理中的状态徽章`
+- `查标准中的设计 token`
+- `查规范中的触屏图谱`
+
+## Session Search Cases
+
+- `查一下昨天团队讨论了什么`
+- `搜索今天会话里关于共识导入的讨论`
+- `谁说过 ask-consensus 504`
+- `找刚才聊天里提到的 Gateway Timeout`
+- `查历史对话里关于创建我的 AI 伙伴`
+- `搜 Team Sharing 会话中 npm 发布`
+- `查昨天 session 里的权限问题`
+- `找上周讨论过的 graph 优化`
+- `搜索同事消息里关于 read-link`
+- `查会议记录里谁提过 whitelist`
+- `找团队讨论中的 bug 复盘`
+- `查聊天记录里的路径绕路`
+- `搜索历史会话中的 OpenCLI 部署`
+- `谁在讨论里提到飞书导入`
+- `今天的 Team Sharing search 结果`
+- `昨天关于 Skill 版本的会话`
+- `上周 session 里有没有 BM25`
+- `查 teammate discussion about rerank`
+- `search conversations for Zilliz`
+- `find chat messages about Knowledge graph`
+- `who said sourceCommit mismatch`
+- `search historical sessions for npm`
+- `find meeting notes about permissions`
+- `show discussion around owner whitelist`
+- `search teammate messages for ask timeout`
+- `查一下这个会话里的内容`
+- `搜索当前聊天里我刚才说的话`
+- `找历史对话中提到的 0.2.5`
+- `查会话总结里有没有部署问题`
+- `搜索 session report 里的 blockers`
+- `谁说 align-consensus 返回太大`
+- `找讨论里提到的短 query`
+- `查聊天记录中的 fallback 路径`
+- `搜索会议记录里的解决方案`
+- `找团队讨论里关于当前 session 降权`
+- `search chat history for low confidence`
+- `find discussion about session noise`
+- `who mentioned team-sharing search fallback`
+- `search conversations about current thread`
+- `find teammate note from yesterday`
+- `查历史会话里谁用了 Skill`
+- `搜索讨论内容是否符合标准这句话`
+- `查今天消息里的 Knowledge Space`
+- `找上周聊天里的 TeamShare`
+- `search session transcripts for consensus search`
+
+## Ask Clarification Cases
+
+- `查一下创建我的 AI 伙伴`
+- `找一下 owner whitelist`
+- `搜索一下 0.2.5`
+- `看看 Gateway Timeout`
+- `查一下 npm 发布`
+- `找一下 Knowledge Space`
+- `帮我搜一下共识相关内容`
+- `查一下之前那个问题`
+- `找一下刚才说的标准`
+- `搜索 AI 伙伴`
+- `看看导入怎么做`
+- `查一下权限`
+- `找一下 fallback`
+- `search partner creation`
+- `find the import issue`

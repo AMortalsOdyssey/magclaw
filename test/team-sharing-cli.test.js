@@ -23,6 +23,7 @@ import {
   editKnowledgeConsensus,
   exportKnowledgeConsensus,
   importKnowledgeConsensus,
+  searchKnowledgeConsensusCommand,
   installTeamSharingHooks,
   installTeamSharingSkill,
   initTeamSharingProject,
@@ -226,9 +227,28 @@ test('team sharing cli help lists Knowledge consensus commands', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /import-consensus/);
   assert.match(result.stdout, /ask-consensus/);
+  assert.match(result.stdout, /consensus search/);
   assert.match(result.stdout, /edit-consensus/);
   assert.match(result.stdout, /align-consensus/);
   assert.match(result.stdout, /export-consensus/);
+});
+
+test('team sharing cli parses nested consensus search command as Knowledge-only search intent', () => {
+  const parsed = parseCli([
+    'node',
+    'team-sharing',
+    'consensus',
+    'search',
+    '--query',
+    '创建我的 AI 伙伴',
+    '--limit',
+    '5',
+  ]);
+
+  assert.equal(parsed.flags._[0], 'consensus');
+  assert.equal(parsed.flags._[1], 'search');
+  assert.equal(parsed.flags.query, '创建我的 AI 伙伴');
+  assert.equal(parsed.flags.limit, '5');
 });
 
 test('team sharing cli setup prints onboarding guidance by default for piped npm runs', async () => {
@@ -2002,9 +2022,9 @@ test('team sharing setup installs selected runtimes and hook removal only remove
   assert.equal(codexSurface.type, 'codex_plugin');
   assert.equal(codexSurface.pluginName, 'magclaw-team-sharing');
   assert.equal(codexSurface.marketplaceName, 'magclaw');
-  assert.equal(codexSurface.installedSkills.length, 12);
+  assert.equal(codexSurface.installedSkills.length, 13);
   assert.equal(claudeSurface.type, 'standalone_skills');
-  assert.equal(claudeSurface.installedSkills.length, 12);
+  assert.equal(claudeSurface.installedSkills.length, 13);
   assert.ok(skill.installed.some((item) => item.type === 'codex_plugin' && item.path === path.join(home, '.magclaw', 'team-sharing', 'codex-marketplace', 'plugins', 'magclaw-team-sharing')));
   assert.ok(skill.installed.some((item) => item.type === 'standalone_skills' && item.paths.includes(path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing-search', 'SKILL.md'))));
   const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
@@ -3120,6 +3140,9 @@ test('team sharing cli knowledge consensus commands call protected routes withou
       imported: { documents: 2, anchors: 1 },
       answer: 'Matched 1 consensus item.',
       matches: [{ title: 'Memory Module' }],
+      kind: 'knowledge_consensus_search',
+      query: body.query || '',
+      results: [{ docId: 'doc_memory', title: 'Memory Module', href: '/s/team-server/knowledge/docs/doc_memory', summary: 'Memory should be retrievable.', snippet: 'Memory should be retrievable.', score: 5 }],
       rules: [{ title: 'Memory Module' }],
       alignmentGaps: [],
     }));
@@ -3155,6 +3178,13 @@ test('team sharing cli knowledge consensus commands call protected routes withou
       workspace: 'team-server',
       query: 'stable anchors',
     }, env);
+    const searched = await searchKnowledgeConsensusCommand({
+      cwd,
+      server: server.url,
+      workspace: 'team-server',
+      query: 'stable anchors',
+      limit: '3',
+    }, env);
     const edited = await editKnowledgeConsensus({
       cwd,
       server: server.url,
@@ -3178,16 +3208,74 @@ test('team sharing cli knowledge consensus commands call protected routes withou
     assert.equal(calls[0].url, `${server.url}/api/team-sharing/knowledge/team-server/import`);
     assert.equal(calls[0].body.workspaceId, 'team-server');
     assert.match(calls[0].body.markdown, /Team Consensus/);
+    assert.equal(calls[0].body.includeSpace, false);
     assert.equal(calls[1].url, `${server.url}/api/team-sharing/knowledge/team-server/ask`);
     assert.equal(calls[1].body.query, 'stable anchors');
-    assert.equal(calls[2].url, `${server.url}/api/team-sharing/knowledge/team-server/edit`);
-    assert.equal(calls[2].body.docId, 'doc_memory');
-    assert.match(calls[2].body.markdown, /stable anchors/);
-    assert.equal(calls[3].url, `${server.url}/api/team-sharing/knowledge/team-server/align`);
-    assert.equal(calls[3].body.text, 'We need stable anchors.');
-    assert.equal(calls[4].url, `${server.url}/api/team-sharing/knowledge/team-server/export?consensusId=cns_team`);
+    assert.equal(calls[2].url, `${server.url}/api/team-sharing/knowledge/team-server/search`);
+    assert.equal(calls[2].body.query, 'stable anchors');
+    assert.equal(calls[2].body.limit, 3);
+    assert.equal(calls[3].url, `${server.url}/api/team-sharing/knowledge/team-server/edit`);
+    assert.equal(calls[3].body.docId, 'doc_memory');
+    assert.match(calls[3].body.markdown, /stable anchors/);
+    assert.equal(calls[4].url, `${server.url}/api/team-sharing/knowledge/team-server/align`);
+    assert.equal(calls[4].body.text, 'We need stable anchors.');
+    assert.equal(calls[4].body.compact, true);
+    assert.equal(calls[4].body.includeContent, false);
+    assert.equal(calls[5].url, `${server.url}/api/team-sharing/knowledge/team-server/export?consensusId=cns_team`);
+    assert.equal(searched.results[0].docId, 'doc_memory');
     assert.match(exported.markdown, /^# Team Consensus/m);
-    assert.doesNotMatch(JSON.stringify({ imported, asked, edited, aligned, exported }), /team-sharing-token-secret|Bearer/i);
+    assert.doesNotMatch(JSON.stringify({ imported, asked, searched, edited, aligned, exported }), /team-sharing-token-secret|Bearer/i);
+  } finally {
+    await server.close();
+  }
+});
+
+test('team sharing ask-consensus returns structured gateway fallback with compact partial matches', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-gateway-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-gateway-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const calls = [];
+  const server = await startJsonServer(async (req, res, bodyText) => {
+    const body = bodyText ? JSON.parse(bodyText) : {};
+    calls.push({ url: `${server.url}${req.url}`, body });
+    res.setHeader('content-type', 'application/json');
+    if (req.url.endsWith('/ask')) {
+      res.writeHead(504);
+      res.end(JSON.stringify({ ok: false, error: 'Gateway Timeout' }));
+      return;
+    }
+    assert.equal(req.url, '/api/team-sharing/knowledge/team-server/search');
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      ok: true,
+      kind: 'knowledge_consensus_search',
+      query: body.query,
+      results: [{ docId: 'doc_partner', title: '四、创建我的 AI 伙伴（字段）', href: '/s/team-server/knowledge/docs/doc_partner', summary: '伙伴字段', snippet: '核心性格、价值底线、软处', score: 9.5 }],
+    }));
+  });
+  await loginTeamSharingProfile({ serverUrl: server.url, workspaceId: 'ws_team', token: 'team-sharing-token-secret' }, env);
+  await initTeamSharingProject({ cwd, channel: 'chan_team', serverUrl: server.url, workspaceId: 'ws_team', projectKey: 'magclaw' }, env);
+
+  try {
+    const result = await askKnowledgeConsensusCommand({
+      cwd,
+      server: server.url,
+      workspace: 'team-server',
+      query: '创建我的 AI 伙伴',
+    }, env);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'knowledge_ask_failed');
+    assert.equal(result.phase, 'gateway');
+    assert.equal(result.retryable, true);
+    assert.match(result.traceId, /^ts_ask_/);
+    assert.equal(result.partialMatches.length, 1);
+    assert.equal(result.partialMatches[0].docId, 'doc_partner');
+    assert.equal(result.partialMatches[0].text, undefined);
+    assert.deepEqual(calls.map((call) => call.url), [
+      `${server.url}/api/team-sharing/knowledge/team-server/ask`,
+      `${server.url}/api/team-sharing/knowledge/team-server/search`,
+    ]);
   } finally {
     await server.close();
   }
@@ -3514,7 +3602,7 @@ test('team sharing cli infers artifact title and type from local documents', asy
 test('team sharing codex plugin source exposes valid plugin and trigger-focused skills', async () => {
   const packageJson = JSON.parse(await readFile(path.resolve('team-sharing', 'package.json'), 'utf8'));
   const manifest = JSON.parse(await readFile(path.resolve('team-sharing', 'codex-plugin', '.codex-plugin', 'plugin.json'), 'utf8'));
-  const expectedSkills = ['setup', 'session-reporting', 'search', 'read-link', 'share-artifact', 'edit-link', 'manage-links', 'import-consensus', 'ask-consensus', 'edit-consensus', 'align-consensus', 'export-consensus'];
+  const expectedSkills = ['setup', 'session-reporting', 'search', 'read-link', 'share-artifact', 'edit-link', 'manage-links', 'import-consensus', 'ask-consensus', 'search-consensus', 'edit-consensus', 'align-consensus', 'export-consensus'];
 
   assert.equal(manifest.name, 'magclaw-team-sharing');
   assert.equal(manifest.version, packageJson.version);
@@ -3554,6 +3642,31 @@ test('align-consensus skill covers broad Chinese and English Knowledge Space int
   }
 });
 
+test('search-consensus skill documents Knowledge-vs-session retrieval routing with broad cases', async () => {
+  const skill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search-consensus', 'SKILL.md'), 'utf8');
+  const sessionSearchSkill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search', 'SKILL.md'), 'utf8');
+  const routing = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search-consensus', 'references', 'retrieval-routing.md'), 'utf8');
+  const knowledgeSection = routing.split('## Knowledge Search Cases')[1].split('## Session Search Cases')[0];
+  const sessionSection = routing.split('## Session Search Cases')[1].split('## Ask Clarification Cases')[0];
+  const clarifySection = routing.split('## Ask Clarification Cases')[1];
+  const knowledgeCases = [...knowledgeSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const sessionCases = [...sessionSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const clarifyCases = [...clarifySection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const knowledgeTarget = /(共识库|共识文档|团队共识|共识体系|共识|历史决策|之前说的|基础文档|指引|必做项|推广前必做|落地计划|Agent-only 工作流|agent-only workflow|agreed workflow|工作流|知识空间|知识库|知识管理|知识文档|知识图谱|知识沉淀|标准|规范|准则|原则|约定|口径|规则|红线|底线|SOP|事实源|TeamShare|Team Sharing|source[- ]of[- ]truth|Knowledge Space|knowledge management|knowledge base|knowledge doc|canonical knowledge|policy|spec|standard|principle|team rule|rule|agreed wording|wording|consensus)/i;
+  const sessionTarget = /(讨论|会话|聊天|消息|会议记录|团队讨论|历史对话|历史会话|谁说|谁提过|什么时候|今天|昨天|上周|刚才|当前|session|conversation|chat|discussion|meeting|teammate|message|transcript|who said|who mentioned|who)/i;
+
+  assert.match(skill, /retrieval-routing\.md/);
+  assert.match(skill, /Knowledge search.*team-sharing search/s);
+  assert.match(skill, /ask the user to choose/i);
+  assert.match(sessionSearchSkill, /Do not use this skill for Knowledge Space/);
+  assert.match(sessionSearchSkill, /Use `search-consensus`, `ask-consensus`, or `align-consensus`/);
+  assert.ok(knowledgeCases.length >= 80, `expected at least 80 Knowledge cases, got ${knowledgeCases.length}`);
+  assert.ok(sessionCases.length >= 40, `expected at least 40 session cases, got ${sessionCases.length}`);
+  assert.ok(clarifyCases.length >= 15, `expected at least 15 clarification cases, got ${clarifyCases.length}`);
+  for (const phrase of knowledgeCases) assert.match(phrase, knowledgeTarget, `Knowledge case should mention a Knowledge target: ${phrase}`);
+  for (const phrase of sessionCases) assert.match(phrase, sessionTarget, `Session case should mention a session target: ${phrase}`);
+});
+
 test('team sharing cli installs a Codex plugin bundle without writing token into skill files', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-home-'));
@@ -3575,6 +3688,8 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   const manageRef = await readFile(path.join(pluginRoot, 'skills', 'manage-links', 'references', 'manage-links.md'), 'utf8');
   const importConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'import-consensus', 'SKILL.md'), 'utf8');
   const askConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'ask-consensus', 'SKILL.md'), 'utf8');
+  const searchConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'search-consensus', 'SKILL.md'), 'utf8');
+  const searchConsensusRouting = await readFile(path.join(pluginRoot, 'skills', 'search-consensus', 'references', 'retrieval-routing.md'), 'utf8');
   const editConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'edit-consensus', 'SKILL.md'), 'utf8');
   const alignConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
   const alignConsensusIntent = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'references', 'knowledge-intent.md'), 'utf8');
@@ -3593,6 +3708,8 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
     manageRef,
     importConsensusSkill,
     askConsensusSkill,
+    searchConsensusSkill,
+    searchConsensusRouting,
     editConsensusSkill,
     alignConsensusSkill,
     alignConsensusIntent,
@@ -3602,7 +3719,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.equal(result.ok, true);
   assert.equal(result.scope, 'project');
   assert.equal(result.surfaces[0].type, 'codex_plugin');
-  assert.equal(result.surfaces[0].installedSkills.length, 12);
+  assert.equal(result.surfaces[0].installedSkills.length, 13);
   assert.equal(manifest.name, 'magclaw-team-sharing');
   assert.equal(manifest.skills, './skills/');
   assert.equal(Object.prototype.hasOwnProperty.call(manifest, 'hooks'), false);
@@ -3636,6 +3753,9 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.match(skill, /--include-revoked/);
   assert.match(skill, /team-sharing import-consensus --server <server> --workspace <workspace> --file <markdown-file>/);
   assert.match(skill, /team-sharing ask-consensus --server <server> --workspace <workspace> --query "<question>"/);
+  assert.match(skill, /team-sharing consensus search --server <server> --workspace <workspace> --query "<query>"/);
+  assert.match(skill, /ask-consensus.*consensus search.*read-link/s);
+  assert.match(skill, /Do not fall back to `team-sharing search`/);
   assert.match(skill, /team-sharing edit-consensus --server <server> --workspace <workspace> --doc <docId> --file <markdown-file>/);
   assert.match(skill, /team-sharing align-consensus --server <server> --workspace <workspace> --text "<discussion text>"/);
   assert.match(skill, /team-sharing export-consensus --server <server> --workspace <workspace> --consensus-id <consensusId>/);

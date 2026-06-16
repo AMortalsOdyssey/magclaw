@@ -18,7 +18,9 @@ Read [references/knowledge-intent.md](references/knowledge-intent.md) before dec
 
 ## Workflow
 
-Run the CLI, read `rules` and `alignmentGaps`, and summarize where the discussion aligns or diverges from Knowledge Space. If the response is empty, report that no matching consensus item was found.
+Run the CLI, read compact `rules` and `alignmentGaps`, and summarize where the discussion aligns or diverges from Knowledge Space. If you need the full source document, use `team-sharing read-link` on the returned Knowledge `href`; only request `--include-content` when the user explicitly needs raw content in the align response.
+
+Do not fall back to `team-sharing search` for Knowledge Space alignment failures. Use `team-sharing consensus search` first; ordinary `team-sharing search` is for team discussions, historical sessions, or who said something.
 
 ## Privacy
 

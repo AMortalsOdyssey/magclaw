@@ -11,6 +11,8 @@ Use this skill for Team Sharing retrieval, teammate discussion lookup, original 
 
 Read [references/search.md](references/search.md) before running retrieval commands. Read [references/answer-style.md](references/answer-style.md) before presenting results.
 
+Do not use this skill for Knowledge Space, 共识库, 知识空间, 知识库, standards, specs, policies, or source-of-truth documents. Use `search-consensus`, `ask-consensus`, or `align-consensus` for those.
+
 ## Quick Commands
 
 - Search: `team-sharing search --query "<question>" --limit 5`

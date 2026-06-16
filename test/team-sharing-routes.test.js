@@ -3330,12 +3330,15 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
       readJson: async () => ({
         markdown: '# Team Consensus\n\n## Memory Module\n\nMemory should be retrievable.\n\n### Recall Boundary\n\nReturn stable anchors.',
         sourceName: 'Team Consensus',
+        includeSpace: true,
       }),
     },
   ), true);
   assert.equal(importRes.statusCode, 201);
   assert.equal(importRes.data.ok, true);
   assert.equal(importRes.data.imported.documents, 2);
+  assert.equal(importRes.data.consensusId, importRes.data.consensus.id);
+  assert.equal(importRes.data.rootDocId, importRes.data.consensus.rootDocId);
   assert.equal(importRes.data.space.consensusGroups.length, 1);
 
   const doc = deps.state.knowledgeSpace.spaces.ws_route.documents.find((item) => item.title === 'Memory Module');
@@ -3388,6 +3391,23 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(inspectRes.data.kind, 'knowledge_doc');
   assert.equal(inspectRes.data.target.docId, doc.id);
   assert.equal(inspectRes.data.auth.via, 'token');
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: owner.headers },
+    searchRes,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/search'),
+    { ...deps, currentActor: () => null, readJson: async () => ({ query: 'stable anchors', limit: 5 }) },
+  ), true);
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.ok, true);
+  assert.equal(searchRes.data.kind, 'knowledge_consensus_search');
+  assert.equal(searchRes.data.results.length > 0, true);
+  assert.equal(searchRes.data.results[0].docId, doc.id);
+  assert.match(searchRes.data.results[0].href, /\/s\/ws_route\/knowledge\/docs\//);
+  assert.equal(searchRes.data.results[0].text, undefined);
+  assert.equal(searchRes.data.space, undefined);
+  assert.doesNotMatch(JSON.stringify(searchRes.data), /sourceMarkdown|changeSessions|versions/);
 
   const askRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -3449,6 +3469,8 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(alignRes.statusCode, 200);
   assert.equal(alignRes.data.ok, true);
   assert.equal(alignRes.data.rules.length > 0, true);
+  assert.equal(alignRes.data.rules[0].text, undefined);
+  assert.equal(alignRes.data.rules[0].docId, doc.id);
 
   const exportRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
