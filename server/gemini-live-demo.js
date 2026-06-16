@@ -28,6 +28,22 @@ const CREDENTIAL_FILE_CANDIDATES = [
   'key.json',
   'gemini-live-service-account.local.json',
 ];
+const MISSING_CREDENTIALS_CODE = 'missing_vertex_credentials';
+const MISSING_CREDENTIALS_MESSAGE =
+  `Gemini Live credentials are not configured. Mount a Vertex secret at ${DEFAULT_VERTEX_SECRET_PATH} or set GOOGLE_APPLICATION_CREDENTIALS.`;
+
+class GeminiLiveConfigWarning extends Error {
+  constructor(message, code = 'gemini_live_config_warning') {
+    super(message);
+    this.name = 'GeminiLiveConfigWarning';
+    this.code = code;
+    this.severity = 'warning';
+  }
+}
+
+function isGeminiLiveConfigWarning(error) {
+  return error?.name === 'GeminiLiveConfigWarning' || error?.severity === 'warning';
+}
 
 const SYSTEM_INSTRUCTION = `
 You are a realtime bilingual voice demo host for MagClaw's Gemini Live demo page.
@@ -347,11 +363,6 @@ function isNativeAudioModel(model) {
 function getConfig(args) {
   process.env.GOOGLE_GENAI_USE_VERTEXAI ||= 'true';
   const credentialsPath = resolveCredentialsPath();
-  if (!existsSync(credentialsPath)) {
-    throw new Error(
-      `Gemini Live credentials were not found. Set GOOGLE_APPLICATION_CREDENTIALS or mount a Vertex secret at ${DEFAULT_VERTEX_SECRET_PATH}.`,
-    );
-  }
   if (isReadableFile(credentialsPath)) {
     process.env.GOOGLE_APPLICATION_CREDENTIALS ||= credentialsPath;
   }
@@ -367,6 +378,7 @@ function getConfig(args) {
 
   return {
     credentialsPath,
+    credentialsConfigured: isReadableFile(credentialsPath),
     project: process.env.GOOGLE_CLOUD_PROJECT || credentialProjectId(credentialsPath),
     location:
       process.env.GOOGLE_CLOUD_LOCATION || (isNativeAudioModel(model) ? 'us-central1' : 'global'),
@@ -410,10 +422,24 @@ export function resolveGeminiLiveDemoConfig(options = {}) {
     httpsKey: options.httpsKey || '',
     httpsCert: options.httpsCert || '',
   });
+  if (!config.credentialsConfigured) {
+    throw new GeminiLiveConfigWarning(MISSING_CREDENTIALS_MESSAGE, MISSING_CREDENTIALS_CODE);
+  }
   if (!config.project) {
-    throw new Error('Missing GOOGLE_CLOUD_PROJECT and no project_id was found in the Vertex credentials JSON.');
+    throw new GeminiLiveConfigWarning(
+      'Gemini Live project is not configured. Set GOOGLE_CLOUD_PROJECT or include project_id in the Vertex credentials JSON.',
+      'missing_vertex_project',
+    );
   }
   return config;
+}
+
+function geminiLiveConfigWarningPayload(error) {
+  return {
+    type: 'warning',
+    code: error?.code || 'gemini_live_config_warning',
+    message: error?.message || String(error),
+  };
 }
 
 function getToolDeclarations() {
@@ -1024,6 +1050,15 @@ function extractTextParts(message) {
 }
 
 async function createGeminiSession(ws, config, sessionOptions = {}) {
+  if (!config.credentialsConfigured || !isReadableFile(config.credentialsPath)) {
+    throw new GeminiLiveConfigWarning(MISSING_CREDENTIALS_MESSAGE, MISSING_CREDENTIALS_CODE);
+  }
+  if (!config.project) {
+    throw new GeminiLiveConfigWarning(
+      'Gemini Live project is not configured. Set GOOGLE_CLOUD_PROJECT or include project_id in the Vertex credentials JSON.',
+      'missing_vertex_project',
+    );
+  }
   let session = null;
   let closed = false;
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
@@ -1232,6 +1267,9 @@ function makeIndexHtml(config) {
   const cards = publicToolCards();
   const escapedConfig = JSON.stringify({
     model: config.model,
+    credentialsConfigured: Boolean(config.credentialsConfigured),
+    projectConfigured: Boolean(config.project),
+    warning: config.credentialsConfigured ? null : MISSING_CREDENTIALS_CODE,
     inputSampleRate: INPUT_SAMPLE_RATE,
     outputSampleRate: OUTPUT_SAMPLE_RATE,
     micGate: makeMicGateConfig(),
@@ -1615,6 +1653,7 @@ function makeIndexHtml(config) {
     .entry.assistant { border-left: 4px solid #18a05e; }
     .entry.tool { border-left: 4px solid #9b6ee9; background: #fcfaff; }
     .entry.system { color: var(--muted); background: #f8fafc; }
+    .entry.warning { border-left: 4px solid var(--warn); color: #7a3d00; background: #fff8ed; }
     .entry.error { border-left: 4px solid var(--danger); color: var(--danger); background: #fff7f5; }
     .entry .label {
       display: block;
@@ -2392,6 +2431,14 @@ function makeIndexHtml(config) {
         pendingReadyReject?.(new Error(message.message));
         pendingReadyResolve = null;
         pendingReadyReject = null;
+      } else if (message.type === 'warning') {
+        addEntry('warning', 'Warning', message.message);
+        setStatus('缺少 Gemini 凭证', false);
+        const warning = new Error(message.message);
+        warning.isWarning = true;
+        pendingReadyReject?.(warning);
+        pendingReadyResolve = null;
+        pendingReadyReject = null;
       } else if (message.type === 'closed') {
         addEntry('system', '系统', '连接已关闭。');
         void stopConversation();
@@ -2451,7 +2498,7 @@ function makeIndexHtml(config) {
         if (running) await stopConversation();
         else await startConversation();
       } catch (error) {
-        addEntry('error', '错误', error.message || String(error));
+        if (!error?.isWarning) addEntry('error', '错误', error.message || String(error));
         await stopConversation();
       }
     });
@@ -2459,6 +2506,10 @@ function makeIndexHtml(config) {
     renderVoices();
     renderTuning();
     renderTools();
+    if (!CONFIG.credentialsConfigured) {
+      addEntry('warning', 'Warning', 'Gemini Live 凭证未配置。页面可以正常打开，但开始实时对话会失败；请在环境中挂载 Vertex secret 或配置 GOOGLE_APPLICATION_CREDENTIALS。');
+      setStatus('缺少 Gemini 凭证', false);
+    }
     addEntry('system', '提示', '先选音色、确认提示词，再点击开始。可以试试天气、计算、单位换算、Mock 任务和节假日。');
   </script>
 </body>
@@ -2539,9 +2590,15 @@ function createServer(config) {
               realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
-            console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
-            sendWsJson(ws, { type: 'error', message: error?.message || String(error) });
-            ws.close(1011, 'Gemini Live connect failed');
+            if (isGeminiLiveConfigWarning(error)) {
+              console.warn(`[GeminiLiveDemo] ${error.code || 'config_warning'}: ${error.message || error}`);
+              sendWsJson(ws, geminiLiveConfigWarningPayload(error));
+              ws.close(1000, 'Gemini Live configuration warning');
+            } else {
+              console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
+              sendWsJson(ws, { type: 'error', message: error?.message || String(error) });
+              ws.close(1011, 'Gemini Live connect failed');
+            }
           }
         })();
         return;
@@ -2624,6 +2681,7 @@ function geminiLivePublicStatus(options = {}) {
     location: config.location,
     credentialsConfigured: config.credentialsConfigured,
     projectConfigured: Boolean(config.project),
+    warning: config.credentialsConfigured ? null : MISSING_CREDENTIALS_CODE,
     voices: GEMINI_LIVE_VOICES.length,
     tools: publicToolCards().length,
   };
@@ -2745,9 +2803,15 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
               realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
-            console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
-            sendWsJson(ws, { type: 'error', message: error?.message || String(error) });
-            ws.close(1011, 'Gemini Live connect failed');
+            if (isGeminiLiveConfigWarning(error)) {
+              console.warn(`[GeminiLiveDemo] ${error.code || 'config_warning'}: ${error.message || error}`);
+              sendWsJson(ws, geminiLiveConfigWarningPayload(error));
+              ws.close(1000, 'Gemini Live configuration warning');
+            } else {
+              console.error('[GeminiLiveDemo] connect failed:', error?.stack || error?.message || error);
+              sendWsJson(ws, { type: 'error', message: error?.message || String(error) });
+              ws.close(1011, 'Gemini Live connect failed');
+            }
           }
         })();
         return;

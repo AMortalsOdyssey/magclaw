@@ -5,7 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  createGeminiSession,
   handleGeminiLiveDemoHttp,
+  resolveGeminiLiveDemoConfig,
   resolveCredentialsPath,
 } from '../server/gemini-live-demo.js';
 
@@ -106,6 +108,77 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.equal(payload.projectConfigured, true);
       assert.equal(payload.voices, 30);
       assert.equal(payload.tools, 9);
+    });
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Gemini Live demo degrades to warning when Vertex secret is missing', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-gemini-live-missing-'));
+  try {
+    const missingSecretDir = path.join(tmp, 'missing-vertex');
+    const emptyEnv = path.join(tmp, 'empty.env');
+    await writeFile(emptyEnv, '');
+
+    await withEnv({
+      GEMINI_LIVE_ENV_FILE: emptyEnv,
+      GOOGLE_APPLICATION_CREDENTIALS: undefined,
+      GEMINI_LIVE_GOOGLE_APPLICATION_CREDENTIALS: undefined,
+      MAGCLAW_VERTEX_CREDENTIALS: undefined,
+      MAGCLAW_VERTEX_CREDENTIALS_PATH: undefined,
+      GOOGLE_CLOUD_PROJECT: undefined,
+      MAGCLAW_VERTEX_SECRET_PATH: missingSecretDir,
+    }, async () => {
+      const res = makeResponse();
+      assert.equal(await handleGeminiLiveDemoHttp(
+        { method: 'GET', headers: { host: 'magclaw.example' } },
+        res,
+        new URL('https://magclaw.example/gemini-live'),
+        {
+          cloudAuth: { isLoginRequired: () => false },
+          host: '127.0.0.1',
+          port: 6543,
+        },
+      ), true);
+      assert.equal(res.statusCode, 200);
+      assert.match(res.body, /Gemini Live 凭证未配置/);
+      assert.match(res.body, /credentialsConfigured":false/);
+
+      const status = makeResponse();
+      assert.equal(await handleGeminiLiveDemoHttp(
+        { method: 'GET', headers: { host: 'magclaw.example' } },
+        status,
+        new URL('https://magclaw.example/api/gemini-live/status'),
+        {
+          cloudAuth: { isLoginRequired: () => false },
+          host: '127.0.0.1',
+          port: 6543,
+        },
+      ), true);
+      assert.equal(status.statusCode, 200);
+      const payload = JSON.parse(status.body);
+      assert.equal(payload.credentialsConfigured, false);
+      assert.equal(payload.projectConfigured, false);
+      assert.equal(payload.warning, 'missing_vertex_credentials');
+
+      assert.throws(
+        () => resolveGeminiLiveDemoConfig({ host: '127.0.0.1', port: 6543 }),
+        (error) => error.name === 'GeminiLiveConfigWarning'
+          && error.code === 'missing_vertex_credentials',
+      );
+
+      await assert.rejects(
+        createGeminiSession({ readyState: 0 }, {
+          credentialsPath: missingSecretDir,
+          credentialsConfigured: false,
+          project: '',
+          location: 'us-central1',
+          model: 'gemini-live-2.5-flash-native-audio',
+        }),
+        (error) => error.name === 'GeminiLiveConfigWarning'
+          && error.code === 'missing_vertex_credentials',
+      );
     });
   } finally {
     await rm(tmp, { recursive: true, force: true });
