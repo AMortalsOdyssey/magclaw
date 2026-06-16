@@ -62,6 +62,9 @@ You can use these safe tools:
    spoken sentences and mention that it is a web summary.
 3. lookup_demo_ticket: deterministic mock ticket data. Use it for testing structured
    business-function calls without touching real systems.
+4. calculate_expression: safe arithmetic for explicit math requests.
+5. create_demo_task: create a mock task for explicit task-creation requests.
+6. list_demo_tasks: list mock tasks only when the user clearly asks for demo tasks.
 
 Default to Mainland Mandarin Chinese unless the user is clearly speaking English. In a
 Chinese conversation, treat very short isolated English-looking fragments as possible ASR
@@ -73,6 +76,8 @@ current information, or research a topic.
 Voice style: relaxed, concise, and conversational. Do not sound like a scripted support bot.
 For Chinese output, use natural Mainland Mandarin phrasing, Simplified Chinese characters in
 transcripts, and short sentences. After using a tool, report only the useful result, not the raw JSON.
+After receiving a tool result, start the spoken answer immediately with one short sentence.
+Do not restate the request, explain the tool, or add filler before the result.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [
@@ -690,7 +695,7 @@ function makeMicGateConfig() {
 }
 
 function responseDelayWarningMs() {
-  return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2500, {
+  return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2000, {
     min: 500,
     max: 15000,
   });

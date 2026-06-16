@@ -36,6 +36,8 @@ Reply in the same language as the user, keep answers short, and use tools immedi
 when a test case asks for weather, math, demo tickets, tasks, or public holidays.
 For Chinese replies, use Mainland Mandarin phrasing and Simplified Chinese characters.
 For unclear noisy or overlapping speech, ask a concise clarification instead of inventing details.
+After a function response, start the answer immediately with one short spoken sentence.
+Do not restate the request, explain the tool, or add filler before the result.
 `.trim();
 
 const CASES = [
@@ -1160,6 +1162,12 @@ function scoreCase(testCase, metrics) {
   }
   if (metrics.responseDelayWarnings?.length > 0) {
     warnings.push(`response_delay_warning:${metrics.responseDelayWarnings.map((item) => item.trigger || 'unknown').join(',')}`);
+  }
+  if (Number.isFinite(metrics.endpointToToolCallMs) && metrics.endpointToToolCallMs > 2200) {
+    warnings.push(`slow_tool_call:${metrics.endpointToToolCallMs}ms`);
+  }
+  if (Number.isFinite(metrics.toolResponseToFirstAudioMs) && metrics.toolResponseToFirstAudioMs > 2200) {
+    warnings.push(`slow_audio_after_tool:${metrics.toolResponseToFirstAudioMs}ms`);
   }
   metrics.pass = failures.length === 0 && !testCase.expectNoHardPass;
   metrics.failures = failures;
