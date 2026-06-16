@@ -242,8 +242,11 @@ function run(command, args, label) {
   return result;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms, options = {}) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (options.ref === false) timer.unref?.();
+  });
 }
 
 function clampSample(value) {
@@ -770,7 +773,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
     },
   });
 
-  await Promise.race([setupReady, sleep(5000)]);
+  await Promise.race([setupReady, sleep(5000, { ref: false })]);
   if (!metrics.events.some((event) => event.name === 'setup_complete')) {
     metrics.setupWarning = 'setup_complete_not_seen_before_upload';
   }
@@ -798,7 +801,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
     metrics.endpointMs = nowMs(startedAt);
   }
 
-  const timeout = sleep(args.timeoutMs).then(() => 'timeout');
+  const timeout = sleep(args.timeoutMs, { ref: false }).then(() => 'timeout');
   const reason = await Promise.race([done, timeout]);
   metrics.finishReason = reason;
   metrics.finishedAtMs = nowMs(startedAt);
@@ -990,7 +993,7 @@ async function runWebSocketCase(testCase, audio, args) {
     }
   });
 
-  await Promise.race([ready, sleep(12_000)]);
+  await Promise.race([ready, sleep(12_000, { ref: false })]);
   if (!metrics.events.some((event) => event.name === 'ready')) {
     metrics.setupWarning = 'ready_not_seen_before_upload';
   }
@@ -1035,7 +1038,7 @@ async function runWebSocketCase(testCase, audio, args) {
     metrics.endpointMs = nowMs(startedAt);
   }
 
-  const reason = await Promise.race([done, sleep(args.timeoutMs).then(() => 'timeout')]);
+  const reason = await Promise.race([done, sleep(args.timeoutMs, { ref: false }).then(() => 'timeout')]);
   metrics.finishReason = reason;
   metrics.finishedAtMs = nowMs(startedAt);
   try {
