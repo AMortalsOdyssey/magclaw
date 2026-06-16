@@ -196,7 +196,6 @@ function renderKnowledgeHome() {
   const selected = knowledgeSelectedDoc();
   const groups = knowledgeConsensusGroups();
   const collapsed = knowledgeCollapsedConsensusIds();
-  const selectedConsensusId = selected?.consensusId || '';
   return `
     <section class="knowledge-layout">
       <aside class="knowledge-doc-rail">
@@ -205,7 +204,7 @@ function renderKnowledgeHome() {
           <strong>${docs.length}</strong>
         </div>
         <div class="knowledge-doc-list">
-          ${groups.map((group) => renderKnowledgeConsensusGroup(group, selected?.id, collapsed.has(group.id) && group.id !== selectedConsensusId)).join('') || '<div class="knowledge-empty">No documents imported.</div>'}
+          ${groups.map((group) => renderKnowledgeConsensusGroup(group, selected?.id, knowledgeConsensusGroupCollapsed(group, selected, collapsed))).join('') || '<div class="knowledge-empty">No documents imported.</div>'}
         </div>
       </aside>
       <section class="knowledge-reader">
@@ -213,6 +212,13 @@ function renderKnowledgeHome() {
       </section>
     </section>
   `;
+}
+
+function knowledgeConsensusGroupCollapsed(group, selected, collapsedIds) {
+  if (!collapsedIds?.has?.(group.id)) return false;
+  const selectedConsensusId = selected?.consensusId || '';
+  if (selectedConsensusId !== group.id) return true;
+  return Boolean(selected?.id && selected.id === group.root?.id);
 }
 
 function renderKnowledgeConsensusGroup(group, selectedId, collapsed = false) {

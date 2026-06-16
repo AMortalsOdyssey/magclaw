@@ -97,7 +97,8 @@ test('Knowledge documents group by consensus and graph renders semantic cross-co
   assert.match(homeSource, /data-action="knowledge-toggle-consensus"/);
   assert.match(homeSource, /knowledgeCollapsedConsensusIds/);
   assert.match(app, /localStorage/);
-  assert.match(homeSource, /selectedConsensusId/);
+  assert.match(app, /function knowledgeConsensusGroupCollapsed/);
+  assert.match(app, /selected\.id === group\.root\?\.id/);
   assert.match(app, /knowledgeSpaceState\.selectedDocId/);
 
   assert.match(graphSource, /Strong consensus relation/);
