@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  calculateGeminiLiveMicGateFrame,
   createGeminiSession,
   handleGeminiLiveDemoHttp,
   normalizeChineseDisplayText,
@@ -237,6 +238,72 @@ test('Gemini Live demo blocks control-only utterances from calling tools', () =>
     shouldBlockDemoToolCall('create_demo_task', { title: '检查实时语音延迟' }, '帮我创建一个任务，标题是检查实时语音延迟').blocked,
     false,
   );
+});
+
+test('Gemini Live mic gate ignores short background noise but accepts sustained barge-in speech', () => {
+  const tuning = {
+    idleRms: 0.01,
+    idlePeak: 0.045,
+    bargeInRms: 0.042,
+    bargeInPeak: 0.16,
+    bargeInMs: 420,
+    startFrames: 3,
+  };
+  const frameMs = 42;
+  let micSpeechFrames = 0;
+
+  for (let index = 0; index < 4; index += 1) {
+    const gate = calculateGeminiLiveMicGateFrame({
+      stats: { rms: 0.05, peak: 0.18 },
+      tuning,
+      frameMs,
+      micSpeechFrames,
+      assistantAudioPlaying: true,
+      acceptedBargeIn: false,
+    });
+    micSpeechFrames = gate.nextSpeechFrames;
+    assert.equal(gate.candidateBargeIn, true);
+    assert.equal(gate.shouldDeferForBargeIn, true);
+    assert.equal(gate.shouldAcceptBargeIn, false);
+  }
+
+  const resetAfterNoise = calculateGeminiLiveMicGateFrame({
+    stats: { rms: 0.004, peak: 0.02 },
+    tuning,
+    frameMs,
+    micSpeechFrames,
+    assistantAudioPlaying: true,
+    acceptedBargeIn: false,
+  });
+  assert.equal(resetAfterNoise.nextSpeechFrames, 0);
+  assert.equal(resetAfterNoise.shouldAcceptBargeIn, false);
+
+  micSpeechFrames = 0;
+  let accepted = false;
+  for (let index = 0; index < 10; index += 1) {
+    const gate = calculateGeminiLiveMicGateFrame({
+      stats: { rms: 0.05, peak: 0.18 },
+      tuning,
+      frameMs,
+      micSpeechFrames,
+      assistantAudioPlaying: true,
+      acceptedBargeIn: false,
+    });
+    micSpeechFrames = gate.nextSpeechFrames;
+    accepted = gate.shouldAcceptBargeIn;
+  }
+  assert.equal(accepted, true);
+
+  const idleStart = calculateGeminiLiveMicGateFrame({
+    stats: { rms: 0.02, peak: 0.06 },
+    tuning,
+    frameMs,
+    micSpeechFrames: 2,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+  });
+  assert.equal(idleStart.shouldStartUserSpeech, true);
+  assert.equal(idleStart.requiredStartFrames, 3);
 });
 
 test('Gemini Live demo normalizes Chinese output transcript for display', () => {

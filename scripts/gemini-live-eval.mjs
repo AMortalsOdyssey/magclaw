@@ -29,11 +29,15 @@ const DEFAULT_TTS_VOICE = 'Tingting';
 const DEFAULT_ENGLISH_VOICE = 'Samantha';
 const DEFAULT_PRE_SILENCE_MS = 350;
 const DEFAULT_POST_SILENCE_MS = 250;
+const evalTasks = [];
 
 const SYSTEM_INSTRUCTION = `
 You are evaluating a realtime voice assistant for MagClaw.
 Reply in the same language as the user, keep answers short, and use tools immediately
 when a test case asks for weather, math, demo tickets, tasks, or public holidays.
+Only call tools when the user explicitly asks for that tool-like action. Do not call tools
+for interruption/control phrases such as "等一下", "停一下", "wait", or "stop", and do not
+call tools for casual chat, explanations, advice, or long-form speaking requests.
 For Chinese replies, use Mainland Mandarin phrasing and Simplified Chinese characters.
 For unclear noisy or overlapping speech, ask a concise clarification instead of inventing details.
 After a function response, start the answer immediately with one short spoken sentence.
@@ -44,6 +48,8 @@ For short follow-ups that mention a new city or entity but omit the verb, inheri
 tool intent and call the same relevant tool with the newly mentioned city/entity instead of
 asking what the user means. Treat any placeholder examples in these instructions as examples,
 not as user requests.
+For task follow-ups asking to list, show, or query tasks that were just created in this demo
+session, call list_demo_tasks immediately instead of asking for clarification.
 `.trim();
 
 const CASES = [
@@ -144,10 +150,39 @@ const CASES = [
     maxFirstAudioMs: 3200,
   },
   {
+    id: 'multi_turn_mixed_tools_zh',
+    label: '多轮工具链：计算、创建任务、查询任务',
+    mode: 'multi_turn',
+    turns: [
+      {
+        label: '第一轮：计算',
+        segments: [{ text: '先帮我算一下三十七乘以二十四。', voice: DEFAULT_TTS_VOICE }],
+        expectTool: 'calculate_expression',
+        expectToolArgs: { expression: /37\s*[*×x]\s*24/ },
+        expectOutput: [/888|八百八十八/],
+      },
+      {
+        label: '第二轮：创建任务',
+        segments: [{ text: '再创建一个演示任务，标题是实时语音回归检查，优先级高。', voice: DEFAULT_TTS_VOICE }],
+        expectTool: 'create_demo_task',
+        expectToolArgs: { title: /实时语音回归/ },
+        expectOutput: [/实时语音回归|回归检查/, /任务|创建|created|task/i],
+      },
+      {
+        label: '第三轮：查询刚才任务',
+        segments: [{ text: '列一下刚才创建的任务。', voice: DEFAULT_TTS_VOICE }],
+        expectTool: 'list_demo_tasks',
+        expectOutput: [/实时语音回归|回归检查/, /任务|task/i],
+      },
+    ],
+    expectSimplifiedChinese: true,
+    maxFirstAudioMs: 3600,
+  },
+  {
     id: 'barge_in_stop_zh',
     label: '打断：助手说话中插入停一下',
     mode: 'barge_in',
-    firstSegments: [{ text: '请用一分钟介绍一下 Gemini Live 的实时语音能力。', voice: DEFAULT_TTS_VOICE }],
+    firstSegments: [{ text: '请朗读下面这段文字三遍：今天下午风很轻，窗外很安静，我们正在测试实时语音打断效果。', voice: DEFAULT_TTS_VOICE }],
     interruptSegments: [{ text: '等一下，先停一下。', voice: DEFAULT_TTS_VOICE }],
     interruptAfterFirstAudioMs: 450,
     expectInterrupted: true,
@@ -477,6 +512,16 @@ function getToolDeclarations() {
       },
     },
     {
+      name: 'list_demo_tasks',
+      description: 'List deterministic mock tasks created earlier in this evaluation session.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          limit: { type: Type.NUMBER, description: 'Maximum tasks to return.' },
+        },
+      },
+    },
+    {
       name: 'lookup_demo_ticket',
       description: 'Look up a deterministic demo ticket by id.',
       parameters: {
@@ -520,7 +565,7 @@ function runEvalTool(name, args) {
   }
   if (name === 'create_demo_task') {
     const priority = args.priority || 'medium';
-    return {
+    const task = {
       id: `TASK-${Date.now().toString().slice(-6)}`,
       title: args.title || 'untitled',
       priority,
@@ -528,6 +573,16 @@ function runEvalTool(name, args) {
       status: 'created',
       source: 'eval_mock',
       spoken_summary: `已创建任务：“${args.title || 'untitled'}”，优先级${priority === 'high' ? '高' : priority === 'low' ? '低' : '中等'}。`,
+    };
+    evalTasks.push(task);
+    return task;
+  }
+  if (name === 'list_demo_tasks') {
+    const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
+    return {
+      count: evalTasks.length,
+      tasks: evalTasks.slice(-limit).reverse(),
+      source: 'eval_mock',
     };
   }
   if (name === 'lookup_demo_ticket') {
@@ -2094,6 +2149,7 @@ async function main() {
   const results = [];
   for (const { testCase, audio } of prepared) {
     for (let repeatIndex = 1; repeatIndex <= args.repeat; repeatIndex += 1) {
+      evalTasks.length = 0;
       console.log(`\n=== ${testCase.id}: ${testCase.label} (${repeatIndex}/${args.repeat}) ===`);
       const result = testCase.mode === 'multi_turn'
         ? (args.target === 'websocket'

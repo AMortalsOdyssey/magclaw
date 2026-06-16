@@ -75,6 +75,9 @@ noise. Ask the user to repeat instead of turning an unclear word into a search q
 Do not call google_search for greetings, chitchat, one-word ambiguous utterances, or unclear
 transcripts. Only search when the user explicitly asks to search, look up, Google, find
 current information, or research a topic.
+Only call tools when the user explicitly asks for that tool-like action. Do not call tools
+for interruption/control phrases such as "等一下", "停一下", "wait", or "stop", and do not
+call tools for casual chat, explanations, advice, or long-form speaking requests.
 
 Voice style: relaxed, concise, and conversational. Do not sound like a scripted support bot.
 For Chinese output, use natural Mainland Mandarin phrasing, Simplified Chinese characters in
@@ -87,6 +90,8 @@ For short follow-ups that mention a new city or entity but omit the verb, inheri
 tool intent and call the same relevant tool with the newly mentioned city/entity instead of
 asking what the user means. Treat any placeholder examples in these instructions as examples,
 not as user requests.
+For task follow-ups asking to list, show, or query tasks that were just created in this demo
+session, call list_demo_tasks immediately instead of asking for clarification.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [
@@ -123,7 +128,7 @@ const GEMINI_LIVE_VOICES = [
 ];
 
 const DEFAULT_VOICE_NAME = 'Kore';
-const demoTasks = new Map();
+const defaultDemoTasks = new Map();
 const weatherCache = new Map();
 const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
 const WEATHER_FETCH_TIMEOUT_MS = 700;
@@ -703,6 +708,38 @@ function makeMicGateConfig() {
   };
 }
 
+export function calculateGeminiLiveMicGateFrame(input = {}) {
+  const stats = input.stats || {};
+  const tuning = input.tuning || {};
+  const frameMs = Number(input.frameMs) || 1;
+  const micSpeechFrames = Number(input.micSpeechFrames) || 0;
+  const assistantAudioPlaying = Boolean(input.assistantAudioPlaying);
+  const acceptedBargeIn = Boolean(input.acceptedBargeIn);
+  const rmsThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInRms : tuning.idleRms) || 0;
+  const peakThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInPeak : tuning.idlePeak) || 0;
+  const requiredStartFrames = assistantAudioPlaying && !acceptedBargeIn
+    ? Math.max(1, Math.ceil((Number(tuning.bargeInMs) || 1) / frameMs))
+    : Math.max(1, Number(tuning.startFrames) || 1);
+  const active = Number(stats.rms) >= rmsThreshold || Number(stats.peak) >= peakThreshold;
+  const nextSpeechFrames = active ? micSpeechFrames + 1 : 0;
+  const candidateBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames > 0;
+  const shouldDeferForBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames < requiredStartFrames;
+  const shouldAcceptBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames >= requiredStartFrames;
+  const shouldStartUserSpeech = nextSpeechFrames >= requiredStartFrames;
+  return {
+    active,
+    nextSpeechFrames,
+    requiredStartFrames,
+    rmsThreshold,
+    peakThreshold,
+    candidateBargeIn,
+    heardMs: Math.round(nextSpeechFrames * frameMs),
+    shouldDeferForBargeIn,
+    shouldAcceptBargeIn,
+    shouldStartUserSpeech,
+  };
+}
+
 function responseDelayWarningMs() {
   return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2000, {
     min: 500,
@@ -1078,10 +1115,10 @@ function demoPriorityLabel(priority) {
   return '中等';
 }
 
-function createDemoTask(rawArgs = {}) {
+function createDemoTask(rawArgs = {}, store = defaultDemoTasks) {
   const title = String(rawArgs.title || '').trim().slice(0, 160);
   if (!title) return { error: 'title is required' };
-  const id = `TASK-${String(demoTasks.size + 1).padStart(4, '0')}`;
+  const id = `TASK-${String(store.size + 1).padStart(4, '0')}`;
   const priority = ['low', 'medium', 'high'].includes(String(rawArgs.priority || '').toLowerCase())
     ? String(rawArgs.priority).toLowerCase()
     : 'medium';
@@ -1095,15 +1132,15 @@ function createDemoTask(rawArgs = {}) {
     created_at: new Date().toISOString(),
   };
   task.spoken_summary = `已创建任务：“${task.title}”，优先级${task.priority_label_zh}。`;
-  demoTasks.set(id, task);
+  store.set(id, task);
   return task;
 }
 
-function listDemoTasks(rawArgs = {}) {
+function listDemoTasks(rawArgs = {}, store = defaultDemoTasks) {
   const limit = Math.min(Math.max(Number(rawArgs.limit) || 5, 1), 20);
   return {
-    count: demoTasks.size,
-    tasks: [...demoTasks.values()].slice(-limit).reverse(),
+    count: store.size,
+    tasks: [...store.values()].slice(-limit).reverse(),
   };
 }
 
@@ -1135,15 +1172,16 @@ async function getPublicHolidays(rawArgs = {}) {
   };
 }
 
-async function runDemoTool(name, args) {
+async function runDemoTool(name, args, context = {}) {
+  const taskStore = context.demoTasks || defaultDemoTasks;
   if (name === 'get_weather') return getWeather(args);
   if (name === 'google_search') return googleSearch(args);
   if (name === 'lookup_demo_ticket') return lookupDemoTicket(args);
   if (name === 'calculate_expression') return calculateExpression(args);
   if (name === 'convert_units') return convertUnits(args);
   if (name === 'random_choice') return randomChoice(args);
-  if (name === 'create_demo_task') return createDemoTask(args);
-  if (name === 'list_demo_tasks') return listDemoTasks(args);
+  if (name === 'create_demo_task') return createDemoTask(args, taskStore);
+  if (name === 'list_demo_tasks') return listDemoTasks(args, taskStore);
   if (name === 'get_public_holidays') return getPublicHolidays(args);
   return { error: `Unknown tool: ${name}` };
 }
@@ -1325,8 +1363,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let latestInputTranscriptAt = 0;
   let loggedFirstInputTranscript = false;
   let loggedFirstOutputAudioAfterFlush = false;
+  let clientAudioTurnOpen = false;
   const traceId = randomUUID().slice(0, 8);
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
+  const sessionDemoTasks = new Map();
   const client = new GoogleGenAI({
     vertexai: true,
     project: config.project,
@@ -1376,6 +1416,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       ageMs: latestInputTranscriptAt ? Date.now() - latestInputTranscriptAt : null,
       waitedMs: Date.now() - startedAt,
     };
+  };
+  const resetInputTranscriptForClientTurn = () => {
+    latestInputTranscript = '';
+    latestInputTranscriptAt = 0;
+    loggedFirstInputTranscript = false;
   };
 
   const close = () => {
@@ -1549,7 +1594,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
             let output;
             const toolStartedAt = Date.now();
             try {
-              output = await runDemoTool(name, callArgs);
+              output = await runDemoTool(name, callArgs, { demoTasks: sessionDemoTasks });
             } catch (error) {
               output = { error: error.message || String(error) };
             }
@@ -1610,6 +1655,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   return {
     sendAudio(chunk) {
       if (closed || !session) return;
+      if (!clientAudioTurnOpen) {
+        clientAudioTurnOpen = true;
+        resetInputTranscriptForClientTurn();
+        logTrace('client_audio_turn_start', { bytes: chunk.length });
+      }
       if (!firstClientAudioAt) {
         firstClientAudioAt = Date.now();
         logTrace('first_client_audio', { bytes: chunk.length });
@@ -1618,10 +1668,12 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     },
     sendEnd() {
       if (closed || !session) return;
+      clientAudioTurnOpen = false;
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
     flushAudioStream(meta = {}) {
       if (closed || !session) return;
+      clientAudioTurnOpen = false;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'client_silence').slice(0, 80);
       lastToolResponseSentAt = 0;
@@ -1638,6 +1690,8 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     },
     activityStart(meta = {}) {
       if (closed || !session) return;
+      clientAudioTurnOpen = true;
+      resetInputTranscriptForClientTurn();
       logTrace('client_activity_start', {
         reason: String(meta.reason || 'manual_activity').slice(0, 80),
       });
@@ -1645,6 +1699,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     },
     activityEnd(meta = {}) {
       if (closed || !session) return;
+      clientAudioTurnOpen = false;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'manual_activity').slice(0, 80);
       lastToolResponseSentAt = 0;
@@ -2248,6 +2303,7 @@ function makeIndexHtml(config) {
     </main>
   </div>
   <script>
+    const calculateGeminiLiveMicGateFrame = ${calculateGeminiLiveMicGateFrame.toString()};
     const CONFIG = ${escapedConfig};
     const startButton = document.getElementById('startButton');
     const buttonText = document.getElementById('buttonText');
@@ -2712,37 +2768,35 @@ function makeIndexHtml(config) {
         const pcm = float32ToInt16Pcm(downsampled);
         const assistantAudioPlaying = isAssistantAudioPlaying(context);
         const frameMs = (event.inputBuffer.length / context.sampleRate) * 1000;
-        const rmsThreshold = assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInRms : tuning.idleRms;
-        const peakThreshold = assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInPeak : tuning.idlePeak;
-        const requiredStartFrames = assistantAudioPlaying && !acceptedBargeIn
-          ? Math.max(1, Math.ceil(tuning.bargeInMs / frameMs))
-          : tuning.startFrames;
-        const active = stats.rms >= rmsThreshold || stats.peak >= peakThreshold;
+        const gate = calculateGeminiLiveMicGateFrame({
+          stats,
+          tuning,
+          frameMs,
+          micSpeechFrames,
+          assistantAudioPlaying,
+          acceptedBargeIn,
+        });
+        const active = gate.active;
         const sendPcm = (buffer) => {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(buffer);
         };
 
-        if (active) {
-          micSpeechFrames += 1;
-        } else {
-          micSpeechFrames = 0;
+        micSpeechFrames = gate.nextSpeechFrames;
+
+        if (gate.candidateBargeIn) {
+          updateSpeechMetrics('候选打断', gate.heardMs + '/' + tuning.bargeInMs + 'ms');
         }
 
-        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames > 0) {
-          const heardMs = Math.round(micSpeechFrames * frameMs);
-          updateSpeechMetrics('候选打断', heardMs + '/' + tuning.bargeInMs + 'ms');
-        }
-
-        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames < requiredStartFrames) {
+        if (gate.shouldDeferForBargeIn) {
           micPreRoll.push(pcm);
           while (micPreRoll.length > tuning.preRollFrames) micPreRoll.shift();
           return;
         }
 
-        if (assistantAudioPlaying && !acceptedBargeIn && micSpeechFrames >= requiredStartFrames) {
+        if (gate.shouldAcceptBargeIn) {
           acceptedBargeIn = true;
           userSpeaking = true;
-          utteranceStartedAt = now - (requiredStartFrames * frameMs);
+          utteranceStartedAt = now - (gate.requiredStartFrames * frameMs);
           lastVoiceAt = now;
           clearPlayback();
           if (now - lastBargeInNoticeAt > 1200) {
@@ -2751,7 +2805,7 @@ function makeIndexHtml(config) {
           }
         }
 
-        if (!userSpeaking && micSpeechFrames >= requiredStartFrames) {
+        if (!userSpeaking && gate.shouldStartUserSpeech) {
           userSpeaking = true;
           utteranceStartedAt = now;
           lastEndpointAt = 0;
@@ -2765,7 +2819,7 @@ function makeIndexHtml(config) {
         }
 
         let shouldSend = micHoldFrames > 0;
-        if (micSpeechFrames >= requiredStartFrames) {
+        if (gate.shouldStartUserSpeech) {
           if (micHoldFrames === 0 && micPreRoll.length > 0) {
             for (const frame of micPreRoll) sendPcm(frame);
           }
