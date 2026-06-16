@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, Type } from '@google/genai';
@@ -347,6 +348,22 @@ function jsonResponse(res, status, payload) {
 function sendWsJson(ws, payload) {
   if (ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify(payload));
+}
+
+function sanitizeEndpointMetrics(value) {
+  if (!value || typeof value !== 'object') return null;
+  const numericKeys = ['waitMs', 'silenceMs', 'speechDurationMs', 'transcriptChars', 'transcriptAgeMs'];
+  const metrics = {};
+  for (const key of numericKeys) {
+    if (value[key] === null) {
+      metrics[key] = null;
+      continue;
+    }
+    const number = Number(value[key]);
+    if (Number.isFinite(number)) metrics[key] = Math.round(number);
+  }
+  if (['responsive', 'balanced', 'patient'].includes(value.profile)) metrics.profile = value.profile;
+  return metrics;
 }
 
 function makeAudioPayload(pcmChunk) {
@@ -1061,12 +1078,22 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   }
   let session = null;
   let closed = false;
+  let readySent = false;
+  let firstClientAudioAt = 0;
+  let lastFlushAt = 0;
+  let lastFlushReason = '';
+  let loggedFirstInputTranscript = false;
+  let loggedFirstOutputAudioAfterFlush = false;
+  const traceId = randomUUID().slice(0, 8);
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
   const client = new GoogleGenAI({
     vertexai: true,
     project: config.project,
     location: config.location,
   });
+  const logTrace = (event, fields = {}) => {
+    console.info(`[GeminiLiveDemo] trace=${traceId} ${event} ${JSON.stringify(fields)}`);
+  };
 
   const close = () => {
     if (closed) return;
@@ -1083,20 +1110,33 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     config: makeLiveConfig({ ...sessionOptions, voiceName }),
     callbacks: {
       onopen: () => {
-        console.info('[GeminiLiveDemo] session opened');
-        sendWsJson(ws, {
-          type: 'ready',
-          model: config.model,
-          voiceName,
-          outputSampleRate: OUTPUT_SAMPLE_RATE,
-          tools: publicToolCards(),
-        });
+        logTrace('session_opened', { model: config.model, voiceName });
       },
       onmessage: (message) => {
         if (message.setupComplete) {
-          sendWsJson(ws, { type: 'setup_complete', sessionId: message.setupComplete.sessionId || null });
+          const sessionId = message.setupComplete.sessionId || null;
+          logTrace('setup_complete', { sessionId });
+          sendWsJson(ws, { type: 'setup_complete', sessionId });
+          if (!readySent) {
+            readySent = true;
+            sendWsJson(ws, {
+              type: 'ready',
+              model: config.model,
+              voiceName,
+              outputSampleRate: OUTPUT_SAMPLE_RATE,
+              tools: publicToolCards(),
+            });
+          }
         }
         if (message.serverContent?.inputTranscription?.text) {
+          if (!loggedFirstInputTranscript) {
+            loggedFirstInputTranscript = true;
+            logTrace('first_input_transcript', {
+              chars: message.serverContent.inputTranscription.text.length,
+              fromFirstClientAudioMs: firstClientAudioAt ? Date.now() - firstClientAudioAt : null,
+              fromEndpointMs: lastFlushAt ? Date.now() - lastFlushAt : null,
+            });
+          }
           sendWsJson(ws, {
             type: 'input_transcript',
             text: message.serverContent.inputTranscription.text,
@@ -1129,6 +1169,14 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           sendWsJson(ws, { type: 'text', text });
         }
         for (const audio of extractAudioParts(message)) {
+          if (lastFlushAt && !loggedFirstOutputAudioAfterFlush) {
+            loggedFirstOutputAudioAfterFlush = true;
+            logTrace('first_output_audio_after_endpoint', {
+              bytes: audio.length,
+              reason: lastFlushReason || null,
+              endpointToAudioMs: Date.now() - lastFlushAt,
+            });
+          }
           sendWsJson(ws, { type: 'audio', audio, sampleRate: OUTPUT_SAMPLE_RATE });
         }
 
@@ -1190,14 +1238,25 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   return {
     sendAudio(chunk) {
       if (closed || !session) return;
+      if (!firstClientAudioAt) {
+        firstClientAudioAt = Date.now();
+        logTrace('first_client_audio', { bytes: chunk.length });
+      }
       session.sendRealtimeInput({ audio: makeAudioPayload(chunk) });
     },
     sendEnd() {
       if (closed || !session) return;
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
-    flushAudioStream() {
+    flushAudioStream(meta = {}) {
       if (closed || !session) return;
+      lastFlushAt = Date.now();
+      lastFlushReason = String(meta.reason || 'client_silence').slice(0, 80);
+      loggedFirstOutputAudioAfterFlush = false;
+      logTrace('client_endpoint', {
+        reason: lastFlushReason,
+        metrics: meta.metrics || null,
+      });
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
     close,
@@ -2062,31 +2121,33 @@ function makeIndexHtml(config) {
       return /(等一下|停一下|先停|打住|别说了|暂停|stop|wait|hold on|不是|不对|等等)/i.test(String(text || ''));
     }
 
-    function looksLikeThinkingPause(text) {
+    function looksLikeThinkingPause(text, speechDurationMs, transcriptAgeMs) {
       const normalized = String(text || '')
         .replace(/\s+/g, '')
         .replace(/[。！？?!]+$/g, '');
-      if (!normalized) return true;
+      if (!normalized) return speechDurationMs > 4500;
+      if (transcriptAgeMs > 1500 && speechDurationMs < 6500) return false;
       if (/[，、,;；:：]$/.test(String(text || '').trim())) return true;
       return /(然后|就是|比如|我想|我觉得|那个|呃|嗯|额|还有|接着|因为|如果|但是|以及|或者|先|帮我|你能不能|我希望|怎么说)$/.test(normalized);
     }
 
     function endpointWaitForTranscript(text, speechDurationMs) {
       const tuning = readTuning();
-      if (looksLikeThinkingPause(text)) return tuning.thinkingPauseMs;
+      const transcriptAgeMs = latestInputTranscriptAt > 0 ? performance.now() - latestInputTranscriptAt : Infinity;
+      if (looksLikeThinkingPause(text, speechDurationMs, transcriptAgeMs)) return tuning.thinkingPauseMs;
       if (speechDurationMs > 6500 && !/[。！？?!]$/.test(String(text || '').trim())) {
         return Math.max(tuning.shortPauseMs, Math.round(tuning.thinkingPauseMs * 0.75));
       }
       return tuning.shortPauseMs;
     }
 
-    function sendEndpoint(reason) {
+    function sendEndpoint(reason, metrics = {}) {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const now = performance.now();
       if (now - lastEndpointAt < 600) return;
       lastEndpointAt = now;
       firstAudioRequestedAt = now;
-      ws.send(JSON.stringify({ type: 'audio_stream_end', reason }));
+      ws.send(JSON.stringify({ type: 'audio_stream_end', reason, metrics }));
       updateSpeechMetrics('等待模型', reason);
     }
 
@@ -2305,7 +2366,16 @@ function makeIndexHtml(config) {
           endpointWaitText.textContent = Math.max(0, Math.round(waitMs - silenceMs)) + 'ms';
           if (silenceMs >= waitMs) {
             const reason = waitMs > tuning.shortPauseMs ? 'thinking_pause' : 'short_pause';
-            sendEndpoint(reason + ':' + Math.round(waitMs) + 'ms');
+            sendEndpoint(reason + ':' + Math.round(waitMs) + 'ms', {
+              waitMs: Math.round(waitMs),
+              silenceMs: Math.round(silenceMs),
+              speechDurationMs: Math.round(speechDurationMs),
+              transcriptChars: latestInputTranscript.length,
+              transcriptAgeMs: latestInputTranscriptAt > 0
+                ? Math.round(now - latestInputTranscriptAt)
+                : null,
+              profile: activeProfile,
+            });
             userSpeaking = false;
             acceptedBargeIn = false;
             micSpeechFrames = 0;
@@ -2608,7 +2678,10 @@ function createServer(config) {
         live?.close();
       }
       if (message.type === 'audio_stream_end') {
-        live?.flushAudioStream();
+        live?.flushAudioStream({
+          reason: String(message.reason || 'client_silence').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
+        });
         sendWsJson(ws, {
           type: 'endpoint',
           reason: String(message.reason || 'client_silence').slice(0, 80),
@@ -2821,7 +2894,10 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
         live?.close();
       }
       if (message.type === 'audio_stream_end') {
-        live?.flushAudioStream();
+        live?.flushAudioStream({
+          reason: String(message.reason || 'client_silence').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
+        });
         sendWsJson(ws, {
           type: 'endpoint',
           reason: String(message.reason || 'client_silence').slice(0, 80),
