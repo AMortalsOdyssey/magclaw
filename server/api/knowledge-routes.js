@@ -116,7 +116,7 @@ function ensureWriter(deps, req, res, space) {
   const actor = ensureMember(deps, req, res);
   if (!actor) return null;
   if (canWriteKnowledgeContent(space, actor)) return actor;
-  deps.sendError(res, 403, 'Only Server owners or Knowledge Space whitelist members can change content.');
+  deps.sendError(res, 403, 'Only Server owners/admins or Knowledge Space whitelist members can change content.');
   return null;
 }
 

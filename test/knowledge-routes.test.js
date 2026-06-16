@@ -163,7 +163,7 @@ test('owner imports, manages whitelist/settings, editor publishes, and Feishu fa
   assert.equal(deps.persistCalls.length >= 5, true);
 });
 
-test('Knowledge write routes require owner or Knowledge whitelist, not admin role alone', async () => {
+test('Knowledge write routes require owner/admin or Knowledge whitelist', async () => {
   const deps = routeDeps();
 
   deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_admin', role: 'admin' }, user: { id: 'user_admin' } });
@@ -171,13 +171,12 @@ test('Knowledge write routes require owner or Knowledge whitelist, not admin rol
     markdown: SAMPLE_MARKDOWN,
     sourceName: 'Team Consensus',
   });
-  assert.equal(adminImport.statusCode, 403);
-  assert.match(adminImport.error, /owner|whitelist/i);
+  assert.equal(adminImport.statusCode, 201);
 
   deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_owner', role: 'owner' }, user: { id: 'user_owner' } });
   const ownerImport = await callRoute(deps, 'POST', '/api/knowledge/import', {
-    markdown: SAMPLE_MARKDOWN,
-    sourceName: 'Team Consensus',
+    markdown: '# Owner Consensus\n\n## Owner Module\n\nOwner import.\n',
+    sourceName: 'Owner Consensus',
   });
   assert.equal(ownerImport.statusCode, 201);
 
@@ -199,7 +198,7 @@ test('Knowledge write routes require owner or Knowledge whitelist, not admin rol
     changes: [],
   });
   assert.equal(missingRoleDraft.statusCode, 403);
-  assert.match(missingRoleDraft.error, /owner|whitelist/i);
+  assert.match(missingRoleDraft.error, /owner|admin|whitelist/i);
 });
 
 test('ask and align return matched anchors with MagClaw links', async () => {

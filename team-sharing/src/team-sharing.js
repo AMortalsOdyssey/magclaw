@@ -3409,9 +3409,16 @@ async function resolveTeamSharingConsensusClient(flags = {}, env = process.env) 
     serverSlug: undefined,
     serverId: undefined,
     serverUrl: teamSharingConsensusServerUrl(flags, flags.serverUrl),
-  }, env, { allowLogin: true });
+  }, env, { allowLogin: false });
   const serverUrl = teamSharingConsensusServerUrl(flags, base.serverUrl);
   const workspace = teamSharingConsensusWorkspace(flags, base.project.config);
+  const authIssue = base.authIssue || null;
+  if (authIssue && authIssue.reason !== 'workspace_mismatch') {
+    const error = new Error(`Team Sharing CLI login is required. Run: team-sharing login --server-url ${serverUrl}`);
+    error.status = 401;
+    error.reason = authIssue.reason || 'login_required';
+    throw error;
+  }
   return { ...base, serverUrl, workspace };
 }
 

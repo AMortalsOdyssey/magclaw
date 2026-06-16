@@ -3316,8 +3316,11 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
       }),
     },
   ), true);
-  assert.equal(adminImport.statusCode, 403);
-  assert.equal(adminImport.data.reason, 'writer_required');
+  assert.equal(adminImport.statusCode, 201);
+  assert.equal(adminImport.data.ok, true);
+  assert.equal(adminImport.data.imported.documents, 2);
+  assert.equal(Boolean(adminImport.data.consensusId), true);
+  assert.equal(Boolean(adminImport.data.rootDocId), true);
 
   const importRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -3339,7 +3342,7 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(importRes.data.imported.documents, 2);
   assert.equal(importRes.data.consensusId, importRes.data.consensus.id);
   assert.equal(importRes.data.rootDocId, importRes.data.consensus.rootDocId);
-  assert.equal(importRes.data.space.consensusGroups.length, 1);
+  assert.equal(importRes.data.space.consensusGroups.length, 2);
 
   const doc = deps.state.knowledgeSpace.spaces.ws_route.documents.find((item) => item.title === 'Memory Module');
   assert.ok(doc?.id);

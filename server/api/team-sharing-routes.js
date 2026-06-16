@@ -5453,7 +5453,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     try {
       if (action === 'import') {
         if (!canWriteKnowledgeContent(space, access.actor)) {
-          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners or Knowledge Space whitelist members can import Knowledge Space Markdown.' });
+          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners/admins or Knowledge Space whitelist members can import Knowledge Space Markdown.' });
           return true;
         }
         const result = importKnowledgeMarkdown({
@@ -5524,7 +5524,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       }
       if (action === 'edit') {
         if (!canWriteKnowledgeContent(space, access.actor)) {
-          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners or Knowledge Space whitelist members can draft content changes.' });
+          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners/admins or Knowledge Space whitelist members can draft content changes.' });
           return true;
         }
         const docId = String(body.docId || body.doc || '').trim();

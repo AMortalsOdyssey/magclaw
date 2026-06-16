@@ -597,7 +597,7 @@ export function isKnowledgeWhitelisted(space, actor) {
 }
 
 export function canWriteKnowledgeContent(space, actor) {
-  return isKnowledgeOwner(actor) || isKnowledgeWhitelisted(space, actor);
+  return isKnowledgeAdmin(actor) || isKnowledgeWhitelisted(space, actor);
 }
 
 function maskKnowledgeSettingValue(value) {

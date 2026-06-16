@@ -251,6 +251,74 @@ test('team sharing cli parses nested consensus search command as Knowledge-only 
   assert.equal(parsed.flags.limit, '5');
 });
 
+test('Knowledge consensus search ignores project workspace mismatch when workspace is explicit', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-workspace-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-consensus-workspace-home-'));
+  const requests = [];
+  const server = await startJsonServer((req, res, bodyText) => {
+    requests.push({ method: req.method, url: req.url, body: bodyText, auth: req.headers.authorization || '' });
+    if (req.url === '/api/team-sharing/knowledge/kizuna/search') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        kind: 'knowledge_consensus_search',
+        query: '团队分工方案',
+        count: 1,
+        results: [{ type: 'document', id: 'doc_prod', title: '团队分工方案' }],
+      }));
+      return;
+    }
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `unexpected route ${req.url}` }));
+  });
+  const env = {
+    ...process.env,
+    HOME: home,
+    MAGCLAW_TEAM_SHARING_HOME: path.join(home, '.magclaw', 'team-sharing'),
+  };
+  const paths = teamSharingPaths({ cwd, env });
+  await mkdir(path.dirname(paths.profileConfig), { recursive: true });
+  await mkdir(path.dirname(paths.projectConfig), { recursive: true });
+  await writeFile(paths.profileConfig, [
+    'version: 1',
+    'profile: default',
+    `server_url: ${server.url}`,
+    'workspace_id: wsp_prod',
+    'token: token_prod',
+    'token_expires_at: 2099-01-01T00:00:00.000Z',
+    `machine_fingerprint: ${teamSharingMachineFingerprint(env)}`,
+    '',
+  ].join('\n'));
+  await writeFile(paths.projectConfig, [
+    'version: 1',
+    'enabled: true',
+    'profile: default',
+    'server_url: https://magclaw-testing.multiego.me',
+    'workspace_id: wsp_testing',
+    '',
+  ].join('\n'));
+
+  try {
+    const result = await searchKnowledgeConsensusCommand({
+      cwd,
+      serverUrl: server.url,
+      workspace: 'kizuna',
+      query: '团队分工方案',
+      limit: 3,
+    }, env);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.count, 1);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].method, 'POST');
+    assert.equal(requests[0].url, '/api/team-sharing/knowledge/kizuna/search');
+    assert.match(requests[0].auth, /^Bearer /);
+    assert.equal(JSON.parse(requests[0].body).workspaceId, 'kizuna');
+  } finally {
+    await server.close();
+  }
+});
+
 test('team sharing cli setup prints onboarding guidance by default for piped npm runs', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-setup-output-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-setup-output-home-'));
