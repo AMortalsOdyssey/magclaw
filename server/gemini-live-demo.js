@@ -83,6 +83,10 @@ After receiving a tool result, start the spoken answer immediately with one shor
 Do not restate the request, explain the tool, or add filler before the result.
 If a function response contains spoken_summary, say that spoken_summary verbatim as the first sentence.
 For create_demo_task, the first sentence must include the created task title and priority.
+For short follow-ups that mention a new city or entity but omit the verb, inherit the previous
+tool intent and call the same relevant tool with the newly mentioned city/entity instead of
+asking what the user means. Treat any placeholder examples in these instructions as examples,
+not as user requests.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [

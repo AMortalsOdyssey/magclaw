@@ -40,6 +40,10 @@ After a function response, start the answer immediately with one short spoken se
 Do not restate the request, explain the tool, or add filler before the result.
 If a function response contains spoken_summary, say that spoken_summary verbatim as the first sentence.
 For create_demo_task, the first sentence must include the created task title and priority.
+For short follow-ups that mention a new city or entity but omit the verb, inherit the previous
+tool intent and call the same relevant tool with the newly mentioned city/entity instead of
+asking what the user means. Treat any placeholder examples in these instructions as examples,
+not as user requests.
 `.trim();
 
 const CASES = [
@@ -115,6 +119,29 @@ const CASES = [
     expectToolArgs: { city: /Shanghai|上海/i },
     expectOutput: [/Shanghai|上海/i, /weather|temperature|degree|celsius|°|天气|气温|温度|度/i],
     maxFirstAudioMs: 2800,
+  },
+  {
+    id: 'multi_turn_weather_followup_zh',
+    label: '多轮上下文：天气追问城市',
+    mode: 'multi_turn',
+    turns: [
+      {
+        label: '第一轮：杭州天气',
+        segments: [{ text: '帮我查一下杭州今天的天气。', voice: DEFAULT_TTS_VOICE }],
+        expectTool: 'get_weather',
+        expectToolArgs: { city: /Hangzhou|杭州/i },
+        expectOutput: [/杭州|Hangzhou/i, /天气|气温|温度|度|摄氏|°|weather|temperature/i],
+      },
+      {
+        label: '第二轮：追问上海',
+        segments: [{ text: '那上海呢？', voice: DEFAULT_TTS_VOICE }],
+        expectTool: 'get_weather',
+        expectToolArgs: { city: /Shanghai|上海/i },
+        expectOutput: [/上海|Shanghai/i, /天气|气温|温度|度|摄氏|°|weather|temperature/i],
+      },
+    ],
+    expectSimplifiedChinese: true,
+    maxFirstAudioMs: 3200,
   },
   {
     id: 'barge_in_stop_zh',
@@ -377,6 +404,20 @@ function synthesizeCaseAudio(testCase, outDir) {
     return { firstPcm, interruptPcm, files: [path.join(caseDir, 'first.wav'), path.join(caseDir, 'interrupt.wav')] };
   }
 
+  if (testCase.mode === 'multi_turn') {
+    const turns = testCase.turns.map((turn, index) => {
+      const pcm = addWhiteNoise(
+        synthesizeSegments(turn.segments, caseDir, `turn-${index + 1}`),
+        turn.noiseLevel ?? testCase.noiseLevel ?? 0,
+        `${testCase.id}:turn-${index + 1}`,
+      );
+      const wavPath = path.join(caseDir, `turn-${index + 1}.wav`);
+      writeWavFile(wavPath, pcm);
+      return { pcm, file: wavPath };
+    });
+    return { turns, files: turns.map((turn) => turn.file) };
+  }
+
   let pcm;
   if (testCase.tracks?.length) {
     const tracks = testCase.tracks.map((track, index) => ({
@@ -515,6 +556,32 @@ function toolResponseForModel(output) {
   return { output };
 }
 
+function compactControlText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[，。！？；：、,.!?;:~～…'"“”‘’()（）[\]{}]/g, '');
+}
+
+function isControlOnlyUtterance(value) {
+  return /^(等一下|等下|等等|稍等|让一下|停一下|停下|先停|暂停|打住|别说了|不要说了|先别说|先别讲|停|stop|wait|pause|holdon|onemoment|waitasecond|hangon)$/.test(
+    compactControlText(value),
+  );
+}
+
+function shouldBlockEvalToolCall(name, args = {}, latestInputTranscript = '') {
+  const argText = Object.values(args || {}).join(' ');
+  if (isControlOnlyUtterance(latestInputTranscript) || isControlOnlyUtterance(argText)) {
+    return {
+      blocked: true,
+      name,
+      reason: 'control_utterance_without_tool_intent',
+      latestInputTranscript,
+    };
+  }
+  return { blocked: false };
+}
+
 function makeLiveConfig(args) {
   const manualActivity = args.activityMode === 'manual';
   return {
@@ -598,6 +665,16 @@ function sendWsJson(ws, payload) {
   ws.send(JSON.stringify(payload));
 }
 
+function audioDurationMs(audio) {
+  if (audio?.turns?.length) {
+    return audio.turns.reduce((total, turn) => (
+      total + Math.round((turn.pcm.length / 2 / INPUT_SAMPLE_RATE) * 1000)
+    ), 0);
+  }
+  const pcm = audio?.pcm || audio?.firstPcm || Buffer.alloc(0);
+  return Math.round((pcm.length / 2 / INPUT_SAMPLE_RATE) * 1000);
+}
+
 function selectedCases(args) {
   if (args.listCases) return [];
   let cases;
@@ -644,6 +721,26 @@ function nowMs(startedAt) {
   return Date.now() - startedAt;
 }
 
+function makeEvalMetrics(testCase, target, startedAt) {
+  return {
+    id: testCase.id,
+    label: testCase.label,
+    mode: testCase.mode,
+    target,
+    startedAt: new Date(startedAt).toISOString(),
+    streams: [],
+    events: [],
+    toolCalls: [],
+    blockedToolCalls: [],
+    toolSummaries: [],
+    responseDelayWarnings: [],
+    inputTranscript: '',
+    outputTranscript: '',
+    text: '',
+    audioBytes: 0,
+  };
+}
+
 function sendActivityStart(session, metrics, mark, args, phase) {
   if (args.activityMode !== 'manual') return;
   session.sendRealtimeInput({ activityStart: {} });
@@ -663,23 +760,7 @@ function sendActivityEnd(session, mark, args, phase) {
 
 async function runSingleCase(client, config, testCase, audio, args) {
   const startedAt = Date.now();
-  const metrics = {
-    id: testCase.id,
-    label: testCase.label,
-    mode: testCase.mode,
-    target: 'sdk',
-    startedAt: new Date(startedAt).toISOString(),
-    streams: [],
-    events: [],
-    toolCalls: [],
-    blockedToolCalls: [],
-    toolSummaries: [],
-    responseDelayWarnings: [],
-    inputTranscript: '',
-    outputTranscript: '',
-    text: '',
-    audioBytes: 0,
-  };
+  const metrics = makeEvalMetrics(testCase, 'sdk', startedAt);
 
   let session;
   let finished = false;
@@ -731,17 +812,35 @@ async function runSingleCase(client, config, testCase, audio, args) {
         }
         const calls = message.toolCall?.functionCalls || [];
         if (calls.length > 0) {
-          if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
-          for (const call of calls) {
+          const allowedCalls = [];
+          const functionResponses = calls.map((call) => {
+            const guard = shouldBlockEvalToolCall(call.name, call.args || {}, metrics.inputTranscript);
+            if (guard.blocked) {
+              metrics.blockedToolCalls.push({
+                name: call.name || 'unknown',
+                args: call.args || {},
+                reason: guard.reason,
+                atMs: nowMs(startedAt),
+              });
+              return {
+                id: call.id,
+                name: call.name,
+                response: toolResponseForModel({
+                  error: 'blocked_tool_call',
+                  reason: guard.reason,
+                  message: 'The tool call was blocked because the latest user utterance did not clearly request it.',
+                }),
+              };
+            }
+            if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
             const toolCall = {
               name: call.name || 'unknown',
               args: call.args || {},
               atMs: nowMs(startedAt),
             };
             metrics.toolCalls.push(toolCall);
+            allowedCalls.push(toolCall);
             currentTurnToolCalls += 1;
-          }
-          const functionResponses = calls.map((call) => {
             const output = runEvalTool(call.name, call.args || {});
             if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
               metrics.toolSummaries.push({
@@ -758,7 +857,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
           });
           session.sendToolResponse({ functionResponses });
           metrics.lastToolResponseSentMs = nowMs(startedAt);
-          mark('tool_response_sent', { count: calls.length });
+          mark('tool_response_sent', { count: allowedCalls.length, blocked: calls.length - allowedCalls.length });
         }
         if (message.serverContent?.generationComplete) mark('generation_complete');
         if (message.serverContent?.turnComplete) {
@@ -843,6 +942,228 @@ async function runSingleCase(client, config, testCase, audio, args) {
   return scoreCase(testCase, metrics);
 }
 
+async function runMultiTurnCase(client, config, testCase, audio, args) {
+  const startedAt = Date.now();
+  const metrics = makeEvalMetrics(testCase, 'sdk', startedAt);
+  metrics.turns = [];
+
+  let session;
+  let finished = false;
+  let activeTurn = null;
+  let resolveTurnDone = null;
+  let resolveSetup;
+  const setupReady = new Promise((resolve) => {
+    resolveSetup = resolve;
+  });
+  const mark = (name, extra = {}) => {
+    metrics.events.push({ name, atMs: nowMs(startedAt), ...extra });
+    if (activeTurn) activeTurn.events.push({ name, atMs: nowMs(startedAt), ...extra });
+  };
+  const resolveActiveTurn = (reason) => {
+    if (resolveTurnDone) {
+      const resolve = resolveTurnDone;
+      resolveTurnDone = null;
+      resolve(reason);
+    }
+  };
+  const recordTextForTurn = (field, value) => {
+    if (!activeTurn) return;
+    activeTurn[field] += value;
+  };
+  let currentTurnAudioBytes = 0;
+  let currentTurnTextChars = 0;
+  let currentTurnToolCalls = 0;
+
+  session = await client.live.connect({
+    model: config.model,
+    config: makeLiveConfig(args),
+    callbacks: {
+      onopen: () => mark('open'),
+      onmessage: (message) => {
+        if (message.setupComplete) mark('setup_complete', { sessionId: message.setupComplete.sessionId || null });
+        if (message.setupComplete) resolveSetup();
+        if (message.serverContent?.inputTranscription?.text) {
+          if (!metrics.firstInputTranscriptMs) metrics.firstInputTranscriptMs = nowMs(startedAt);
+          if (activeTurn && !activeTurn.firstInputTranscriptMs) activeTurn.firstInputTranscriptMs = nowMs(startedAt);
+          metrics.inputTranscript += message.serverContent.inputTranscription.text;
+          recordTextForTurn('inputTranscript', message.serverContent.inputTranscription.text);
+        }
+        if (message.serverContent?.outputTranscription?.text) {
+          if (!metrics.firstOutputTranscriptMs) metrics.firstOutputTranscriptMs = nowMs(startedAt);
+          if (activeTurn && !activeTurn.firstOutputTranscriptMs) activeTurn.firstOutputTranscriptMs = nowMs(startedAt);
+          metrics.outputTranscript += message.serverContent.outputTranscription.text;
+          recordTextForTurn('outputTranscript', message.serverContent.outputTranscription.text);
+        }
+        for (const text of extractTextParts(message)) {
+          if (!metrics.firstTextMs) metrics.firstTextMs = nowMs(startedAt);
+          if (activeTurn && !activeTurn.firstTextMs) activeTurn.firstTextMs = nowMs(startedAt);
+          metrics.text += text;
+          recordTextForTurn('text', text);
+          currentTurnTextChars += text.length;
+        }
+        const audioChunks = extractAudioParts(message);
+        for (const chunk of audioChunks) {
+          if (!metrics.firstAudioMs) metrics.firstAudioMs = nowMs(startedAt);
+          if (activeTurn && !activeTurn.firstAudioMs) activeTurn.firstAudioMs = nowMs(startedAt);
+          metrics.audioBytes += chunk.length;
+          if (activeTurn) activeTurn.audioBytes += chunk.length;
+          currentTurnAudioBytes += chunk.length;
+        }
+        if (message.serverContent?.interrupted) {
+          if (!metrics.interruptedMs) metrics.interruptedMs = nowMs(startedAt);
+          if (activeTurn && !activeTurn.interruptedMs) activeTurn.interruptedMs = nowMs(startedAt);
+          mark('interrupted');
+        }
+        const calls = message.toolCall?.functionCalls || [];
+        if (calls.length > 0) {
+          const allowedCalls = [];
+          const functionResponses = calls.map((call) => {
+            const guard = shouldBlockEvalToolCall(
+              call.name,
+              call.args || {},
+              activeTurn?.inputTranscript || metrics.inputTranscript,
+            );
+            if (guard.blocked) {
+              const blocked = {
+                name: call.name || 'unknown',
+                args: call.args || {},
+                reason: guard.reason,
+                atMs: nowMs(startedAt),
+              };
+              metrics.blockedToolCalls.push(blocked);
+              activeTurn?.blockedToolCalls.push(blocked);
+              return {
+                id: call.id,
+                name: call.name,
+                response: toolResponseForModel({
+                  error: 'blocked_tool_call',
+                  reason: guard.reason,
+                  message: 'The tool call was blocked because the latest user utterance did not clearly request it.',
+                }),
+              };
+            }
+            if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
+            if (activeTurn && !activeTurn.firstToolCallMs) activeTurn.firstToolCallMs = nowMs(startedAt);
+            const toolCall = {
+              name: call.name || 'unknown',
+              args: call.args || {},
+              atMs: nowMs(startedAt),
+            };
+            metrics.toolCalls.push(toolCall);
+            activeTurn?.toolCalls.push(toolCall);
+            allowedCalls.push(toolCall);
+            currentTurnToolCalls += 1;
+            const output = runEvalTool(call.name, call.args || {});
+            if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
+              const summary = {
+                name: call.name || 'unknown',
+                text: output.spoken_summary,
+                atMs: nowMs(startedAt),
+              };
+              metrics.toolSummaries.push(summary);
+              activeTurn?.toolSummaries.push(summary);
+            }
+            return {
+              id: call.id,
+              name: call.name,
+              response: toolResponseForModel(output),
+            };
+          });
+          session.sendToolResponse({ functionResponses });
+          metrics.lastToolResponseSentMs = nowMs(startedAt);
+          if (activeTurn) activeTurn.lastToolResponseSentMs = nowMs(startedAt);
+          mark('tool_response_sent', { count: allowedCalls.length, blocked: calls.length - allowedCalls.length });
+        }
+        if (message.serverContent?.generationComplete) mark('generation_complete');
+        if (message.serverContent?.turnComplete) {
+          mark('turn_complete');
+          const hadEmptyTurn =
+            currentTurnToolCalls === 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+          const hadOnlyToolCallsThisTurn =
+            currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+          currentTurnAudioBytes = 0;
+          currentTurnTextChars = 0;
+          currentTurnToolCalls = 0;
+          if (
+            activeTurn &&
+            hadEmptyTurn &&
+            activeTurn.spec?.expectTool &&
+            !activeTurn.toolCalls.some((call) => call.name === activeTurn.spec.expectTool)
+          ) {
+            mark('empty_turn_complete_waiting_for_tool', { expectedTool: activeTurn.spec.expectTool });
+            return;
+          }
+          if (hadOnlyToolCallsThisTurn) {
+            mark('tool_turn_complete');
+            return;
+          }
+          resolveActiveTurn('turn_complete');
+        }
+        if (message.usageMetadata) metrics.usage = message.usageMetadata;
+      },
+      onerror: (error) => {
+        metrics.error = error?.message || String(error);
+        activeTurn && (activeTurn.error = metrics.error);
+        finished = true;
+        resolveSetup();
+        resolveActiveTurn('error');
+      },
+      onclose: (event) => {
+        metrics.closed = { code: event?.code ?? null, reason: event?.reason || '' };
+        resolveSetup();
+        if (!finished) resolveActiveTurn('closed');
+      },
+    },
+  });
+
+  await Promise.race([setupReady, sleep(5000, { ref: false })]);
+  if (!metrics.events.some((event) => event.name === 'setup_complete')) {
+    metrics.setupWarning = 'setup_complete_not_seen_before_upload';
+  }
+
+  for (let index = 0; index < testCase.turns.length; index += 1) {
+    const spec = testCase.turns[index];
+    activeTurn = makeEvalMetrics(
+      { id: `${testCase.id}:turn_${index + 1}`, label: spec.label || `Turn ${index + 1}`, mode: 'single' },
+      'sdk',
+      startedAt,
+    );
+    activeTurn.spec = spec;
+    activeTurn.turnIndex = index + 1;
+    metrics.turns.push(activeTurn);
+    const turnDone = new Promise((resolve) => {
+      resolveTurnDone = resolve;
+    });
+    mark('upload_start', { phase: `turn_${index + 1}` });
+    sendActivityStart(session, activeTurn, mark, args, `turn_${index + 1}`);
+    await streamPcm(session, audio.turns[index].pcm, args, metrics, `turn_${index + 1}`);
+    sendActivityEnd(session, mark, args, `turn_${index + 1}`);
+    activeTurn.endpointMs = nowMs(startedAt);
+    metrics.endpointMs = activeTurn.endpointMs;
+    const reason = await Promise.race([
+      turnDone,
+      sleep(args.timeoutMs, { ref: false }).then(() => 'timeout'),
+    ]);
+    activeTurn.finishReason = reason;
+    activeTurn.finishedAtMs = nowMs(startedAt);
+    if (reason === 'timeout' || reason === 'error' || reason === 'closed') {
+      if (!metrics.error && reason !== 'timeout') metrics.error = reason;
+      break;
+    }
+    activeTurn = null;
+    await sleep(180);
+  }
+
+  metrics.finishReason = metrics.error || metrics.turns.length < testCase.turns.length ? 'incomplete' : 'turn_complete';
+  metrics.finishedAtMs = nowMs(startedAt);
+  try {
+    session.close();
+  } catch {
+    // best effort
+  }
+  return scoreMultiTurnCase(testCase, metrics);
+}
+
 function getAudioMessageBytes(audio) {
   if (!audio) return 0;
   if (typeof audio === 'string') return Buffer.byteLength(audio, 'base64');
@@ -854,23 +1175,7 @@ function getAudioMessageBytes(audio) {
 
 async function runWebSocketCase(testCase, audio, args) {
   const startedAt = Date.now();
-  const metrics = {
-    id: testCase.id,
-    label: testCase.label,
-    mode: testCase.mode,
-    target: 'websocket',
-    startedAt: new Date(startedAt).toISOString(),
-    streams: [],
-    events: [],
-    toolCalls: [],
-    blockedToolCalls: [],
-    toolSummaries: [],
-    responseDelayWarnings: [],
-    inputTranscript: '',
-    outputTranscript: '',
-    text: '',
-    audioBytes: 0,
-  };
+  const metrics = makeEvalMetrics(testCase, 'websocket', startedAt);
   const mark = (name, extra = {}) => {
     metrics.events.push({ name, atMs: nowMs(startedAt), ...extra });
   };
@@ -1115,6 +1420,347 @@ async function runWebSocketCase(testCase, audio, args) {
     // best effort
   }
   return scoreCase(testCase, metrics);
+}
+
+async function runWebSocketMultiTurnCase(testCase, audio, args) {
+  const startedAt = Date.now();
+  const metrics = makeEvalMetrics(testCase, 'websocket', startedAt);
+  metrics.turns = [];
+  const mark = (name, extra = {}) => {
+    metrics.events.push({ name, atMs: nowMs(startedAt), ...extra });
+    if (activeTurn) activeTurn.events.push({ name, atMs: nowMs(startedAt), ...extra });
+  };
+
+  let ws;
+  let finished = false;
+  let activeTurn = null;
+  let resolveReady;
+  let resolveTurnDone;
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve;
+  });
+  const resolveActiveTurn = (reason) => {
+    if (resolveTurnDone) {
+      const resolve = resolveTurnDone;
+      resolveTurnDone = null;
+      resolve(reason);
+    }
+  };
+  let currentTurnAudioBytes = 0;
+  let currentTurnTextChars = 0;
+  let currentTurnToolCalls = 0;
+
+  ws = new WebSocket(args.wsUrl);
+  ws.binaryType = 'arraybuffer';
+  ws.on('open', () => mark('ws_open'));
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    let message;
+    try {
+      message = JSON.parse(String(data));
+    } catch {
+      return;
+    }
+    if (message.type === 'awaiting_start') {
+      mark('awaiting_start');
+      sendWsJson(ws, {
+        type: 'start',
+        voiceName: 'Puck',
+        systemInstruction: SYSTEM_INSTRUCTION,
+        realtimeTuning: {
+          manualActivity: args.activityMode === 'manual',
+          activityMode: args.activityMode,
+          silenceDurationMs: 420,
+          prefixPaddingMs: 140,
+          startSensitivity: 'START_SENSITIVITY_HIGH',
+          endSensitivity: 'END_SENSITIVITY_HIGH',
+          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+        },
+      });
+      return;
+    }
+    if (message.type === 'starting') mark('starting');
+    if (message.type === 'setup_complete') mark('setup_complete', { sessionId: message.sessionId || null });
+    if (message.type === 'ready') {
+      mark('ready');
+      resolveReady();
+    }
+    if (message.type === 'endpoint') mark('endpoint', { reason: message.reason || '' });
+    if (message.type === 'input_transcript') {
+      if (!metrics.firstInputTranscriptMs) metrics.firstInputTranscriptMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.firstInputTranscriptMs) activeTurn.firstInputTranscriptMs = nowMs(startedAt);
+      metrics.inputTranscript += message.text || '';
+      if (activeTurn) activeTurn.inputTranscript += message.text || '';
+    }
+    if (message.type === 'output_transcript') {
+      if (!metrics.firstOutputTranscriptMs) metrics.firstOutputTranscriptMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.firstOutputTranscriptMs) activeTurn.firstOutputTranscriptMs = nowMs(startedAt);
+      metrics.outputTranscript += message.text || '';
+      if (activeTurn) activeTurn.outputTranscript += message.text || '';
+    }
+    if (message.type === 'text') {
+      if (!metrics.firstTextMs) metrics.firstTextMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.firstTextMs) activeTurn.firstTextMs = nowMs(startedAt);
+      metrics.text += message.text || '';
+      if (activeTurn) activeTurn.text += message.text || '';
+      currentTurnTextChars += String(message.text || '').length;
+    }
+    if (message.type === 'audio') {
+      const bytes = getAudioMessageBytes(message.audio);
+      if (!metrics.firstAudioMs) metrics.firstAudioMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.firstAudioMs) activeTurn.firstAudioMs = nowMs(startedAt);
+      metrics.audioBytes += bytes;
+      if (activeTurn) activeTurn.audioBytes += bytes;
+      currentTurnAudioBytes += bytes;
+    }
+    if (message.type === 'response_latency') {
+      const latency = {
+        endpointToAudioMs: Number.isFinite(message.endpointToAudioMs) ? message.endpointToAudioMs : null,
+        toolResponseToAudioMs: Number.isFinite(message.toolResponseToAudioMs) ? message.toolResponseToAudioMs : null,
+        reason: message.reason || '',
+        toolNames: message.toolNames || [],
+        atMs: nowMs(startedAt),
+      };
+      metrics.responseLatency = latency;
+      if (activeTurn) activeTurn.responseLatency = latency;
+      mark('response_latency', latency);
+    }
+    if (message.type === 'response_delay_warning') {
+      const warning = {
+        trigger: message.trigger || '',
+        thresholdMs: Number.isFinite(message.thresholdMs) ? message.thresholdMs : null,
+        endpointToAudioMs: Number.isFinite(message.endpointToAudioMs) ? message.endpointToAudioMs : null,
+        toolResponseToAudioMs: Number.isFinite(message.toolResponseToAudioMs) ? message.toolResponseToAudioMs : null,
+        reason: message.reason || '',
+        toolNames: message.toolNames || [],
+        atMs: nowMs(startedAt),
+      };
+      metrics.responseDelayWarnings.push(warning);
+      activeTurn?.responseDelayWarnings.push(warning);
+      mark('response_delay_warning', warning);
+    }
+    if (message.type === 'tool_call') {
+      if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.firstToolCallMs) activeTurn.firstToolCallMs = nowMs(startedAt);
+      const toolCall = {
+        name: message.name || 'unknown',
+        args: message.args || {},
+        atMs: nowMs(startedAt),
+      };
+      metrics.toolCalls.push(toolCall);
+      activeTurn?.toolCalls.push(toolCall);
+      currentTurnToolCalls += 1;
+    }
+    if (message.type === 'tool_blocked') {
+      const blocked = {
+        name: message.name || 'unknown',
+        args: message.args || {},
+        reason: message.reason || '',
+        atMs: nowMs(startedAt),
+      };
+      metrics.blockedToolCalls.push(blocked);
+      activeTurn?.blockedToolCalls.push(blocked);
+      mark('tool_blocked', { name: blocked.name, reason: blocked.reason });
+    }
+    if (message.type === 'tool_result') {
+      metrics.lastToolResponseSentMs = nowMs(startedAt);
+      if (activeTurn) activeTurn.lastToolResponseSentMs = nowMs(startedAt);
+      metrics.lastToolDurationMs = Number.isFinite(message.durationMs) ? message.durationMs : undefined;
+      const toolCall = [...metrics.toolCalls].reverse().find((call) => call.name === message.name);
+      if (toolCall && Number.isFinite(message.durationMs)) toolCall.durationMs = message.durationMs;
+      mark('tool_result', { name: message.name || 'unknown' });
+    }
+    if (message.type === 'tool_summary') {
+      const summary = {
+        name: message.name || 'unknown',
+        text: message.text || '',
+        atMs: nowMs(startedAt),
+      };
+      metrics.toolSummaries.push(summary);
+      activeTurn?.toolSummaries.push(summary);
+      mark('tool_summary', { name: summary.name });
+    }
+    if (message.type === 'interrupted') {
+      if (!metrics.interruptedMs) metrics.interruptedMs = nowMs(startedAt);
+      if (activeTurn && !activeTurn.interruptedMs) activeTurn.interruptedMs = nowMs(startedAt);
+      mark('interrupted');
+    }
+    if (message.type === 'turn_complete') {
+      mark('turn_complete');
+      const hadEmptyTurn =
+        currentTurnToolCalls === 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+      const hadOnlyToolCallsThisTurn =
+        currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+      currentTurnAudioBytes = 0;
+      currentTurnTextChars = 0;
+      currentTurnToolCalls = 0;
+      if (
+        activeTurn &&
+        hadEmptyTurn &&
+        activeTurn.spec?.expectTool &&
+        !activeTurn.toolCalls.some((call) => call.name === activeTurn.spec.expectTool)
+      ) {
+        mark('empty_turn_complete_waiting_for_tool', { expectedTool: activeTurn.spec.expectTool });
+        return;
+      }
+      if (hadOnlyToolCallsThisTurn) {
+        mark('tool_turn_complete');
+        return;
+      }
+      resolveActiveTurn('turn_complete');
+    }
+    if (message.type === 'error' || message.type === 'warning') {
+      metrics.error = message.message || message.code || message.type;
+      activeTurn && (activeTurn.error = metrics.error);
+      finished = true;
+      resolveReady();
+      resolveActiveTurn(message.type);
+    }
+    if (message.type === 'closed') {
+      metrics.closed = { code: message.code ?? null, reason: message.reason || '' };
+      if (!finished) resolveActiveTurn('closed');
+    }
+  });
+  ws.on('error', (error) => {
+    metrics.error = error?.message || String(error);
+    activeTurn && (activeTurn.error = metrics.error);
+    finished = true;
+    resolveReady();
+    resolveActiveTurn('error');
+  });
+  ws.on('close', (code, reason) => {
+    metrics.closed = { code, reason: String(reason || '') };
+    if (!finished) {
+      resolveReady();
+      resolveActiveTurn('closed');
+    }
+  });
+
+  await Promise.race([ready, sleep(12_000, { ref: false })]);
+  if (!metrics.events.some((event) => event.name === 'ready')) {
+    metrics.setupWarning = 'ready_not_seen_before_upload';
+  }
+  if (metrics.error || ws.readyState !== WebSocket.OPEN) {
+    metrics.finishReason = metrics.error ? 'error' : 'not_ready';
+    metrics.finishedAtMs = nowMs(startedAt);
+    return scoreMultiTurnCase(testCase, metrics);
+  }
+
+  for (let index = 0; index < testCase.turns.length; index += 1) {
+    const spec = testCase.turns[index];
+    activeTurn = makeEvalMetrics(
+      { id: `${testCase.id}:turn_${index + 1}`, label: spec.label || `Turn ${index + 1}`, mode: 'single' },
+      'websocket',
+      startedAt,
+    );
+    activeTurn.spec = spec;
+    activeTurn.turnIndex = index + 1;
+    metrics.turns.push(activeTurn);
+    const turnDone = new Promise((resolve) => {
+      resolveTurnDone = resolve;
+    });
+    mark('upload_start', { phase: `turn_${index + 1}` });
+    if (args.activityMode === 'manual') sendWsJson(ws, { type: 'activity_start', reason: `eval_turn_${index + 1}` });
+    await streamPcmToWebSocket(ws, audio.turns[index].pcm, args, metrics, `turn_${index + 1}`);
+    if (args.activityMode === 'manual') {
+      sendWsJson(ws, { type: 'activity_end', reason: `eval_turn_${index + 1}` });
+    } else {
+      sendWsJson(ws, { type: 'audio_stream_end', reason: `eval_turn_${index + 1}` });
+    }
+    activeTurn.endpointMs = nowMs(startedAt);
+    metrics.endpointMs = activeTurn.endpointMs;
+    const reason = await Promise.race([
+      turnDone,
+      sleep(args.timeoutMs, { ref: false }).then(() => 'timeout'),
+    ]);
+    activeTurn.finishReason = reason;
+    activeTurn.finishedAtMs = nowMs(startedAt);
+    if (reason === 'timeout' || reason === 'error' || reason === 'warning' || reason === 'closed') {
+      if (!metrics.error && reason !== 'timeout') metrics.error = reason;
+      break;
+    }
+    activeTurn = null;
+    await sleep(180);
+  }
+
+  metrics.finishReason = metrics.error || metrics.turns.length < testCase.turns.length ? 'incomplete' : 'turn_complete';
+  metrics.finishedAtMs = nowMs(startedAt);
+  try {
+    ws.close(1000, 'eval complete');
+    await Promise.race([
+      new Promise((resolve) => ws.once('close', resolve)),
+      sleep(120),
+    ]);
+    if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+  } catch {
+    // best effort
+  }
+  return scoreMultiTurnCase(testCase, metrics);
+}
+
+function scoreMultiTurnCase(testCase, metrics) {
+  const failures = [];
+  const warnings = [];
+  const turnScores = [];
+  for (let index = 0; index < testCase.turns.length; index += 1) {
+    const turnSpec = testCase.turns[index];
+    const turnMetrics = metrics.turns?.[index];
+    if (!turnMetrics) {
+      failures.push(`missing_turn:${index + 1}`);
+      continue;
+    }
+    const turnCase = {
+      ...turnSpec,
+      id: `${testCase.id}:turn_${index + 1}`,
+      label: turnSpec.label || `Turn ${index + 1}`,
+      mode: 'single',
+      expectSimplifiedChinese: turnSpec.expectSimplifiedChinese ?? testCase.expectSimplifiedChinese,
+      maxFirstAudioMs: turnSpec.maxFirstAudioMs ?? testCase.maxFirstAudioMs,
+    };
+    const scored = scoreCase(turnCase, turnMetrics);
+    turnScores.push({
+      index: index + 1,
+      id: turnCase.id,
+      pass: scored.pass,
+      endpointToFirstAudioMs: scored.endpointToFirstAudioMs,
+      endpointToToolCallMs: scored.endpointToToolCallMs,
+      toolResponseToFirstAudioMs: scored.toolResponseToFirstAudioMs,
+      toolCalls: scored.toolCalls,
+      qualityChecks: scored.qualityChecks,
+      failures: scored.failures,
+      warnings: scored.warnings,
+    });
+    for (const failure of scored.failures || []) failures.push(`turn_${index + 1}:${failure}`);
+    for (const warning of scored.warnings || []) warnings.push(`turn_${index + 1}:${warning}`);
+  }
+  if (metrics.error) failures.push(`session_error:${metrics.error}`);
+  if ((metrics.turns || []).length < testCase.turns.length) {
+    failures.push(`incomplete_turns:${(metrics.turns || []).length}/${testCase.turns.length}`);
+  }
+
+  const maxFinite = (values) => {
+    const finite = values.filter((value) => Number.isFinite(value));
+    return finite.length ? Math.max(...finite) : undefined;
+  };
+  metrics.turnScores = turnScores;
+  metrics.endpointToFirstAudioMs = maxFinite(turnScores.map((turn) => turn.endpointToFirstAudioMs));
+  metrics.endpointToToolCallMs = maxFinite(turnScores.map((turn) => turn.endpointToToolCallMs));
+  metrics.toolResponseToFirstAudioMs = maxFinite(turnScores.map((turn) => turn.toolResponseToFirstAudioMs));
+  metrics.qualityChecks = turnScores.flatMap((turn) =>
+    (turn.qualityChecks || []).map((check) => ({
+      ...check,
+      turn: turn.index,
+      label: `turn_${turn.index}:${check.label}`,
+    })),
+  );
+  metrics.normalizedOutputText = (metrics.turns || [])
+    .map((turn) => turn.normalizedOutputText || '')
+    .join('\n');
+  metrics.pass = failures.length === 0;
+  metrics.failures = failures;
+  metrics.warnings = [...new Set(warnings)];
+  return metrics;
 }
 
 function scoreCase(testCase, metrics) {
@@ -1423,8 +2069,8 @@ async function main() {
         repeatIndex: index + 1,
         dryRun: true,
         files: audio.files,
-        audioMs: Math.round(((audio.pcm?.length || audio.firstPcm?.length || 0) / 2 / INPUT_SAMPLE_RATE) * 1000),
-        expectedTool: testCase.expectTool || null,
+        audioMs: audioDurationMs(audio),
+        expectedTool: testCase.expectTool || testCase.turns?.map((turn) => turn.expectTool).filter(Boolean) || null,
         expectedInterrupted: Boolean(testCase.expectInterrupted),
         pass: true,
         failures: [],
@@ -1449,9 +2095,13 @@ async function main() {
   for (const { testCase, audio } of prepared) {
     for (let repeatIndex = 1; repeatIndex <= args.repeat; repeatIndex += 1) {
       console.log(`\n=== ${testCase.id}: ${testCase.label} (${repeatIndex}/${args.repeat}) ===`);
-      const result = args.target === 'websocket'
-        ? await runWebSocketCase(testCase, audio, args)
-        : await runSingleCase(client, config, testCase, audio, args);
+      const result = testCase.mode === 'multi_turn'
+        ? (args.target === 'websocket'
+          ? await runWebSocketMultiTurnCase(testCase, audio, args)
+          : await runMultiTurnCase(client, config, testCase, audio, args))
+        : (args.target === 'websocket'
+          ? await runWebSocketCase(testCase, audio, args)
+          : await runSingleCase(client, config, testCase, audio, args));
       result.repeatIndex = repeatIndex;
       result.target = args.target;
       results.push(result);
