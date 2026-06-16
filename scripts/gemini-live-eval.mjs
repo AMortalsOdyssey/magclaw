@@ -32,6 +32,7 @@ const SYSTEM_INSTRUCTION = `
 You are evaluating a realtime voice assistant for MagClaw.
 Reply in the same language as the user, keep answers short, and use tools immediately
 when a test case asks for weather, math, demo tickets, tasks, or public holidays.
+For Chinese replies, use Mainland Mandarin phrasing and Simplified Chinese characters.
 For unclear noisy or overlapping speech, ask a concise clarification instead of inventing details.
 `.trim();
 
@@ -42,6 +43,8 @@ const CASES = [
     mode: 'single',
     segments: [{ text: '帮我查一下杭州今天的天气。', voice: DEFAULT_TTS_VOICE }],
     expectTool: 'get_weather',
+    expectToolArgs: { city: /Hangzhou|杭州/i },
+    expectSimplifiedChinese: true,
     maxFirstAudioMs: 2800,
   },
   {
@@ -50,6 +53,7 @@ const CASES = [
     mode: 'single',
     segments: [{ text: '等一下。', voice: DEFAULT_TTS_VOICE }],
     expectNoTool: true,
+    expectSimplifiedChinese: true,
     maxFirstAudioMs: 2400,
   },
   {
@@ -61,6 +65,8 @@ const CASES = [
       { text: '杭州今天的天气。', voice: DEFAULT_TTS_VOICE },
     ],
     expectTool: 'get_weather',
+    expectToolArgs: { city: /Hangzhou|杭州/i },
+    expectSimplifiedChinese: true,
     maxFirstAudioMs: 3200,
   },
   {
@@ -74,6 +80,8 @@ const CASES = [
       },
     ],
     expectTool: 'create_demo_task',
+    expectToolArgs: { title: /实时语音延迟/ },
+    expectSimplifiedChinese: true,
     maxFirstAudioMs: 3600,
   },
   {
@@ -83,6 +91,8 @@ const CASES = [
     segments: [{ text: '帮我算一下三十七乘以二十四。', voice: DEFAULT_TTS_VOICE }],
     noiseLevel: 0.018,
     expectTool: 'calculate_expression',
+    expectToolArgs: { expression: /37\s*[*×x]\s*24/ },
+    expectSimplifiedChinese: true,
     maxFirstAudioMs: 3200,
   },
   {
@@ -91,6 +101,7 @@ const CASES = [
     mode: 'single',
     segments: [{ text: 'Check the weather in Hangzhou today.', voice: DEFAULT_ENGLISH_VOICE }],
     expectTool: 'get_weather',
+    expectToolArgs: { city: /Hangzhou|杭州/i },
     maxFirstAudioMs: 2800,
   },
   {
@@ -101,6 +112,7 @@ const CASES = [
     interruptSegments: [{ text: '等一下，先停一下。', voice: DEFAULT_TTS_VOICE }],
     interruptAfterFirstAudioMs: 450,
     expectInterrupted: true,
+    expectSimplifiedChinese: true,
     maxInterruptMs: 1400,
   },
   {
@@ -135,6 +147,7 @@ Options:
   --model <id>         Gemini Live model, default ${DEFAULT_MODEL}.
   --chunk-ms <n>       Streaming chunk duration, default ${DEFAULT_CHUNK_MS}.
   --input-field <name> Send audio through "audio" or "media", default audio.
+  --activity-mode <m>  "auto" uses Live VAD; "manual" sends activityStart/activityEnd. Default manual.
   --timeout-ms <n>     Per-case timeout, default ${DEFAULT_TIMEOUT_MS}.
   --keep-audio         Keep synthesized audio files. Default on for --dry-run, off otherwise.
   --list-cases         Print cases and exit.
@@ -148,6 +161,7 @@ function parseArgs(argv) {
     cases: [],
     chunkMs: DEFAULT_CHUNK_MS,
     inputField: 'audio',
+    activityMode: 'manual',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     keepAudio: undefined,
   };
@@ -171,6 +185,7 @@ function parseArgs(argv) {
     else if (arg === '--model') args.model = next();
     else if (arg === '--chunk-ms') args.chunkMs = Number(next());
     else if (arg === '--input-field') args.inputField = next();
+    else if (arg === '--activity-mode') args.activityMode = next();
     else if (arg === '--timeout-ms') args.timeoutMs = Number(next());
     else if (arg === '--keep-audio') args.keepAudio = true;
     else if (arg === '--list-cases') args.listCases = true;
@@ -466,7 +481,8 @@ function runEvalTool(name, args) {
   return { error: `unknown tool ${name}` };
 }
 
-function makeLiveConfig() {
+function makeLiveConfig(args) {
+  const manualActivity = args.activityMode === 'manual';
   return {
     responseModalities: [Modality.AUDIO],
     systemInstruction: {
@@ -477,7 +493,7 @@ function makeLiveConfig() {
     outputAudioTranscription: {},
     realtimeInputConfig: {
       automaticActivityDetection: {
-        disabled: false,
+        disabled: manualActivity,
         startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
         endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
         prefixPaddingMs: 140,
@@ -572,6 +588,23 @@ function nowMs(startedAt) {
   return Date.now() - startedAt;
 }
 
+function sendActivityStart(session, metrics, mark, args, phase) {
+  if (args.activityMode !== 'manual') return;
+  session.sendRealtimeInput({ activityStart: {} });
+  mark('activity_start', { phase });
+  metrics.manualActivity = true;
+}
+
+function sendActivityEnd(session, mark, args, phase) {
+  if (args.activityMode === 'manual') {
+    session.sendRealtimeInput({ activityEnd: {} });
+    mark('activity_end', { phase });
+  } else {
+    session.sendRealtimeInput({ audioStreamEnd: true });
+    mark('audio_stream_end', { phase });
+  }
+}
+
 async function runSingleCase(client, config, testCase, audio, args) {
   const startedAt = Date.now();
   const metrics = {
@@ -601,10 +634,13 @@ async function runSingleCase(client, config, testCase, audio, args) {
   const mark = (name, extra = {}) => {
     metrics.events.push({ name, atMs: nowMs(startedAt), ...extra });
   };
+  let currentTurnAudioBytes = 0;
+  let currentTurnTextChars = 0;
+  let currentTurnToolCalls = 0;
 
   session = await client.live.connect({
     model: config.model,
-    config: makeLiveConfig(),
+    config: makeLiveConfig(args),
     callbacks: {
       onopen: () => mark('open'),
       onmessage: (message) => {
@@ -621,11 +657,13 @@ async function runSingleCase(client, config, testCase, audio, args) {
         for (const text of extractTextParts(message)) {
           if (!metrics.firstTextMs) metrics.firstTextMs = nowMs(startedAt);
           metrics.text += text;
+          currentTurnTextChars += text.length;
         }
         const audioChunks = extractAudioParts(message);
         for (const chunk of audioChunks) {
           if (!metrics.firstAudioMs) metrics.firstAudioMs = nowMs(startedAt);
           metrics.audioBytes += chunk.length;
+          currentTurnAudioBytes += chunk.length;
         }
         if (message.serverContent?.interrupted) {
           if (!metrics.interruptedMs) metrics.interruptedMs = nowMs(startedAt);
@@ -633,6 +671,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
         }
         const calls = message.toolCall?.functionCalls || [];
         if (calls.length > 0) {
+          if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
           for (const call of calls) {
             const toolCall = {
               name: call.name || 'unknown',
@@ -640,6 +679,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
               atMs: nowMs(startedAt),
             };
             metrics.toolCalls.push(toolCall);
+            currentTurnToolCalls += 1;
           }
           session.sendToolResponse({
             functionResponses: calls.map((call) => ({
@@ -648,10 +688,21 @@ async function runSingleCase(client, config, testCase, audio, args) {
               response: { output: runEvalTool(call.name, call.args || {}) },
             })),
           });
+          metrics.lastToolResponseSentMs = nowMs(startedAt);
+          mark('tool_response_sent', { count: calls.length });
         }
         if (message.serverContent?.generationComplete) mark('generation_complete');
         if (message.serverContent?.turnComplete) {
           mark('turn_complete');
+          const hadOnlyToolCallsThisTurn =
+            currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+          currentTurnAudioBytes = 0;
+          currentTurnTextChars = 0;
+          currentTurnToolCalls = 0;
+          if (hadOnlyToolCallsThisTurn) {
+            mark('tool_turn_complete');
+            return;
+          }
           if (testCase.mode !== 'barge_in' || metrics.interruptedMs || metrics.toolCalls.length > 0) {
             finished = true;
             resolveDone('turn_complete');
@@ -680,25 +731,25 @@ async function runSingleCase(client, config, testCase, audio, args) {
 
   mark('upload_start', { phase: 'first' });
   if (testCase.mode === 'barge_in') {
+    sendActivityStart(session, metrics, mark, args, 'first');
     await streamPcm(session, audio.firstPcm, args, metrics, 'first');
-    session.sendRealtimeInput({ audioStreamEnd: true });
+    sendActivityEnd(session, mark, args, 'first');
     metrics.firstEndpointMs = nowMs(startedAt);
-    mark('audio_stream_end', { phase: 'first' });
     while (!metrics.firstAudioMs && !metrics.error && nowMs(startedAt) < args.timeoutMs) {
       await sleep(20);
     }
     await sleep(testCase.interruptAfterFirstAudioMs || 400);
     metrics.interruptUploadStartMs = nowMs(startedAt);
     mark('upload_start', { phase: 'interrupt' });
+    sendActivityStart(session, metrics, mark, args, 'interrupt');
     await streamPcm(session, audio.interruptPcm, args, metrics, 'interrupt');
-    session.sendRealtimeInput({ audioStreamEnd: true });
+    sendActivityEnd(session, mark, args, 'interrupt');
     metrics.interruptEndpointMs = nowMs(startedAt);
-    mark('audio_stream_end', { phase: 'interrupt' });
   } else {
+    sendActivityStart(session, metrics, mark, args, 'single');
     await streamPcm(session, audio.pcm, args, metrics, 'single');
-    session.sendRealtimeInput({ audioStreamEnd: true });
+    sendActivityEnd(session, mark, args, 'single');
     metrics.endpointMs = nowMs(startedAt);
-    mark('audio_stream_end', { phase: 'single' });
   }
 
   const timeout = sleep(args.timeoutMs).then(() => 'timeout');
@@ -717,13 +768,32 @@ function scoreCase(testCase, metrics) {
   const failures = [];
   const warnings = [];
   const endpointMs = testCase.mode === 'barge_in' ? metrics.firstEndpointMs : metrics.endpointMs;
+  const outputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
   if (!metrics.firstAudioMs && !metrics.firstTextMs) failures.push('no_model_response');
   if (testCase.expectTool) {
     const names = metrics.toolCalls.map((call) => call.name);
     if (!names.includes(testCase.expectTool)) failures.push(`missing_tool:${testCase.expectTool}`);
   }
+  if (testCase.expectToolArgs && metrics.toolCalls.length > 0) {
+    const expectedToolCall =
+      metrics.toolCalls.find((call) => !testCase.expectTool || call.name === testCase.expectTool) ||
+      metrics.toolCalls[0];
+    for (const [key, expected] of Object.entries(testCase.expectToolArgs)) {
+      const actual = expectedToolCall?.args?.[key];
+      const actualText = actual === undefined || actual === null ? '' : String(actual);
+      const matches = expected instanceof RegExp
+        ? expected.test(actualText)
+        : actualText === String(expected);
+      if (!matches) {
+        failures.push(`bad_tool_arg:${expectedToolCall?.name || 'unknown'}.${key}=${JSON.stringify(actual)}`);
+      }
+    }
+  }
   if (testCase.expectNoTool && metrics.toolCalls.length > 0) {
     failures.push(`unexpected_tool:${metrics.toolCalls.map((call) => call.name).join(',')}`);
+  }
+  if (testCase.expectSimplifiedChinese && hasTraditionalChinese(outputText)) {
+    failures.push('non_simplified_chinese_output');
   }
   if (testCase.expectInterrupted && !metrics.interruptedMs) failures.push('missing_interrupted_event');
   if (testCase.maxInterruptMs && metrics.interruptedMs && metrics.interruptUploadStartMs) {
@@ -734,6 +804,15 @@ function scoreCase(testCase, metrics) {
   if (testCase.maxFirstAudioMs && metrics.firstAudioMs && endpointMs) {
     const latency = metrics.firstAudioMs - endpointMs;
     metrics.endpointToFirstAudioMs = latency;
+    if (metrics.firstInputTranscriptMs) {
+      metrics.endpointToInputTranscriptMs = metrics.firstInputTranscriptMs - endpointMs;
+    }
+    if (metrics.firstToolCallMs) {
+      metrics.endpointToToolCallMs = metrics.firstToolCallMs - endpointMs;
+    }
+    if (metrics.lastToolResponseSentMs) {
+      metrics.toolResponseToFirstAudioMs = metrics.firstAudioMs - metrics.lastToolResponseSentMs;
+    }
     if (latency > testCase.maxFirstAudioMs) failures.push(`slow_first_audio:${latency}ms`);
   }
   if (testCase.expectNoHardPass) {
@@ -743,6 +822,10 @@ function scoreCase(testCase, metrics) {
   metrics.failures = failures;
   metrics.warnings = warnings;
   return metrics;
+}
+
+function hasTraditionalChinese(text) {
+  return /[為創務檢語遲優級氣溫雲於後請這個臺灣嗎]/.test(String(text || ''));
 }
 
 function writeReports(outDir, results) {
@@ -755,15 +838,18 @@ function writeReports(outDir, results) {
     '',
     `Generated: ${new Date().toISOString()}`,
     '',
-    '| Case | Pass | Endpoint->First audio | Tools | Interrupt | Failures |',
-    '| --- | --- | ---: | --- | ---: | --- |',
+    '| Case | Pass | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Tool args | Interrupt | Failures |',
+    '| --- | --- | ---: | ---: | ---: | --- | --- | ---: | --- |',
   ];
   for (const result of results) {
     lines.push([
       result.id,
       result.pass ? 'yes' : 'no',
       result.endpointToFirstAudioMs === undefined ? '-' : `${result.endpointToFirstAudioMs}ms`,
+      result.endpointToToolCallMs === undefined ? '-' : `${result.endpointToToolCallMs}ms`,
+      result.toolResponseToFirstAudioMs === undefined ? '-' : `${result.toolResponseToFirstAudioMs}ms`,
       result.toolCalls.map((call) => call.name).join(', ') || '-',
+      result.toolCalls.map((call) => JSON.stringify(call.args)).join('<br>') || '-',
       result.interruptLatencyMs === undefined ? '-' : `${result.interruptLatencyMs}ms`,
       result.failures.join('; ') || result.warnings.join('; ') || '-',
     ].join(' | '));
@@ -795,6 +881,9 @@ async function main() {
   if (!Number.isFinite(args.chunkMs) || args.chunkMs <= 0) throw new Error('--chunk-ms must be positive.');
   if (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0) throw new Error('--timeout-ms must be positive.');
   if (!['audio', 'media'].includes(args.inputField)) throw new Error('--input-field must be audio or media.');
+  if (!['auto', 'manual'].includes(args.activityMode)) {
+    throw new Error('--activity-mode must be auto or manual.');
+  }
 
   loadEnvFile(args.envFile);
   const config = getRuntimeConfig(args);
@@ -806,7 +895,7 @@ async function main() {
 
   const cases = selectedCases(args);
   if (cases.length === 0) throw new Error('No cases selected.');
-  console.log(`Gemini Live eval: ${cases.length} case(s), model=${config.model}, dryRun=${Boolean(args.dryRun)}`);
+  console.log(`Gemini Live eval: ${cases.length} case(s), model=${config.model}, dryRun=${Boolean(args.dryRun)}, activity=${args.activityMode}`);
   console.log(`Output: ${runDir}`);
 
   const prepared = cases.map((testCase) => ({

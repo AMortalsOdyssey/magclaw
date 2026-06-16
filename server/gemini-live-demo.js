@@ -71,8 +71,8 @@ transcripts. Only search when the user explicitly asks to search, look up, Googl
 current information, or research a topic.
 
 Voice style: relaxed, concise, and conversational. Do not sound like a scripted support bot.
-For Chinese output, use natural Mainland Mandarin phrasing and short sentences. After using
-a tool, report only the useful result, not the raw JSON.
+For Chinese output, use natural Mainland Mandarin phrasing, Simplified Chinese characters in
+transcripts, and short sentences. After using a tool, report only the useful result, not the raw JSON.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [
@@ -1082,6 +1082,8 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let firstClientAudioAt = 0;
   let lastFlushAt = 0;
   let lastFlushReason = '';
+  let lastToolResponseSentAt = 0;
+  let lastToolNames = [];
   let loggedFirstInputTranscript = false;
   let loggedFirstOutputAudioAfterFlush = false;
   const traceId = randomUUID().slice(0, 8);
@@ -1175,6 +1177,8 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               bytes: audio.length,
               reason: lastFlushReason || null,
               endpointToAudioMs: Date.now() - lastFlushAt,
+              toolResponseToAudioMs: lastToolResponseSentAt ? Date.now() - lastToolResponseSentAt : null,
+              toolNames: lastToolNames,
             });
           }
           sendWsJson(ws, { type: 'audio', audio, sampleRate: OUTPUT_SAMPLE_RATE });
@@ -1184,6 +1188,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         for (const call of calls) {
           const name = call.name || 'unknown';
           const callArgs = call.args || {};
+          logTrace('tool_call', {
+            name,
+            fromEndpointMs: lastFlushAt ? Date.now() - lastFlushAt : null,
+          });
           sendWsJson(ws, {
             type: 'tool_call',
             id: call.id || null,
@@ -1204,6 +1212,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               result: output,
             });
             try {
+              const responseBytes = Buffer.byteLength(JSON.stringify(output || {}), 'utf8');
               session.sendToolResponse({
                 functionResponses: [
                   {
@@ -1213,6 +1222,9 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
                   },
                 ],
               });
+              lastToolResponseSentAt = Date.now();
+              lastToolNames = [name];
+              logTrace('tool_response_sent', { name, responseBytes });
             } catch (error) {
               sendWsJson(ws, { type: 'error', message: `Tool response failed: ${error.message || error}` });
             }
