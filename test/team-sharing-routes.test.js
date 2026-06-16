@@ -86,6 +86,7 @@ function routeDeps(overrides = {}) {
     now: () => '2026-06-01T10:00:00.000Z',
     persistState: async (options) => persistCalls.push(options || {}),
     readJson: async () => ({}),
+    scheduleTeamSharingProcessing: (task) => task(),
     sendError: (res, statusCode, message) => {
       res.statusCode = statusCode;
       res.error = message;
@@ -327,6 +328,74 @@ test('team sharing route syncs a batch and search returns reranked top results',
   assert.match(searchRes.data.results[0].contextWebUrl, /anchorEventId=evt_1/);
   assert.equal(searchRes.data.results[0].contextPageUrl, searchRes.data.results[0].contextWebUrl);
   assert.ok(deps.state.teamSharing.feedback.some((item) => item.eventType === 'served' && item.queryId === searchRes.data.queryId));
+});
+
+test('team sharing sync acknowledges receipt before asynchronous processing completes', async () => {
+  const scheduled = [];
+  const indexed = [];
+  const deps = routeDeps({
+    readJson: async () => syncBody(),
+    scheduleTeamSharingProcessing: (task) => scheduled.push(task),
+    indexTeamSharingDocuments: async ({ documents }) => {
+      indexed.push(...documents);
+      return { count: documents.length };
+    },
+    summarizeSession: async () => ({
+      l0: '异步摘要：Team Sharing 已先落库 receipt，再后台生成检索文档。',
+      topics: [{
+        topicId: 'async-receipt',
+        title: 'async-receipt',
+        overview: '后台任务按 summary、indexing、completed 的阶段更新 receipt。',
+        sourceEventIds: ['evt_1'],
+      }],
+    }),
+  });
+
+  const syncRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    syncRes,
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  ), true);
+
+  assert.equal(syncRes.statusCode, 202);
+  assert.equal(syncRes.data.ok, true);
+  assert.equal(syncRes.data.receipt.status, 'queued');
+  assert.equal(syncRes.data.processing.status, 'queued');
+  assert.match(syncRes.data.receiptId, /^rcpt_/);
+  assert.equal(scheduled.length, 1);
+  assert.equal(indexed.length, 0);
+  assert.equal(deps.persistCalls[0].reason, 'team_sharing_sync_received');
+
+  const queuedStatus = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    queuedStatus,
+    new URL(`http://local/api/team-sharing/sync/status/${syncRes.data.receiptId}`),
+    deps,
+  ), true);
+  assert.equal(queuedStatus.statusCode, 200);
+  assert.equal(queuedStatus.data.receipt.status, 'queued');
+  assert.equal(queuedStatus.data.receipt.stages.accepted.status, 'completed');
+  assert.equal(queuedStatus.data.receipt.stages.summary.status, 'pending');
+
+  await scheduled[0]();
+
+  const completedStatus = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET' },
+    completedStatus,
+    new URL(`http://local/api/team-sharing/sync/status/${syncRes.data.receiptId}`),
+    deps,
+  ), true);
+  assert.equal(completedStatus.statusCode, 200);
+  assert.equal(completedStatus.data.receipt.status, 'completed');
+  assert.equal(completedStatus.data.receipt.stages.summary.status, 'completed');
+  assert.equal(completedStatus.data.receipt.stages.indexing.status, 'completed');
+  assert.equal(completedStatus.data.receipt.indexedDocumentCount, indexed.length);
+  assert.ok(indexed.some((doc) => doc.layer === 'L1' && doc.topicId === 'async-receipt'));
+  assert.ok(deps.persistCalls.some((call) => call.reason === 'team_sharing_sync_processed'));
 });
 
 test('team sharing route sync redacts local paths and accounts before storing or indexing', async () => {

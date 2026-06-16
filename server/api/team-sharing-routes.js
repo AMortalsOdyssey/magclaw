@@ -15,8 +15,10 @@ import {
 import {
   applyTeamSharingFeedback,
   contextWindowForTeamSharingSession,
+  getTeamSharingSyncReceipt,
   normalizeTeamSharingSearchMode,
   normalizeTeamSharingSearchSort,
+  processTeamSharingSyncReceipt,
   rankTeamSharingCandidates,
   syncTeamSharingBatch,
 } from '../team-sharing.js';
@@ -5038,6 +5040,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     rerank = null,
     rerankReady = null,
     saveAttachmentBuffer = null,
+    scheduleTeamSharingProcessing = null,
     sendError,
     sendJson,
     summarizeSession = null,
@@ -6392,6 +6395,22 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname.startsWith('/api/team-sharing/sync/status/')) {
+    if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
+    const receiptId = decodeURIComponent(url.pathname.slice('/api/team-sharing/sync/status/'.length)).trim();
+    const receipt = getTeamSharingSyncReceipt(state.teamSharing || {}, receiptId);
+    if (!receipt) {
+      sendError(res, 404, 'Team Sharing sync receipt not found.');
+      return true;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      done: receipt.status === 'completed' || receipt.status === 'failed',
+      receipt,
+    });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/team-sharing/sync') {
     if (!requireTeamSharingAuth(req, res, { actor, teamSharingState, sendError, teamSharingAuthRequired, validTeamSharingToken })) return true;
     const tokenRecord = tokenRecordForRequest(teamSharingState, req);
@@ -6409,42 +6428,63 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       state,
       makeId,
       now,
-      summarizeSession,
+      deferProcessing: true,
     });
     if (!result.ok) {
       sendError(res, result.code === 'channel_not_found' ? 404 : 400, result.error || 'Team sharing sync failed.');
       return true;
     }
-    if (!result.duplicate && result.appendedEventCount > 0 && typeof indexTeamSharingDocuments === 'function') {
-      const documents = asArray(state.teamSharing?.vectorDocuments)
-        .filter((doc) => doc.sessionId === result.sessionId && doc.active !== false);
-      try {
-        const indexed = await indexTeamSharingDocuments({
-          workspaceId: effectiveWorkspaceId,
-          sessionId: result.sessionId,
-          documents,
-          teamSharingState: state.teamSharing || {},
-        });
-        result.indexedDocumentCount = Number(indexed?.count || documents.length || 0);
-      } catch (error) {
-        result.indexedDocumentCount = 0;
-        result.indexError = 'Team sharing vector indexing failed.';
-        addSystemEvent('team_sharing_index_error', 'Team sharing vector indexing failed.', {
-          workspaceId: effectiveWorkspaceId,
-          sessionId: result.sessionId,
-          message: String(error?.message || error).slice(0, 300),
-        });
-      }
-    }
-    addSystemEvent('team_sharing_sync', `Team sharing synced ${result.appendedEventCount} event(s).`, {
+    addSystemEvent('team_sharing_sync_received', `Team sharing received ${result.appendedEventCount} event(s).`, {
       workspaceId: effectiveWorkspaceId,
       sessionId: result.sessionId,
       messageId: result.messageId,
       duplicate: result.duplicate,
+      receiptId: result.receiptId || '',
     });
-    await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_sync' });
+    await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_sync_received' });
     broadcastState();
     sendJson(res, result.duplicate ? 200 : 202, result);
+    if (!result.duplicate && result.appendedEventCount > 0 && result.receiptId) {
+      const runProcessing = async () => {
+        const processed = await processTeamSharingSyncReceipt(result.receiptId, {
+          state,
+          now,
+          summarizeSession,
+          indexTeamSharingDocuments,
+        });
+        if (!processed.ok) {
+          addSystemEvent('team_sharing_sync_process_error', 'Team sharing sync processing failed.', {
+            workspaceId: effectiveWorkspaceId,
+            sessionId: result.sessionId,
+            receiptId: result.receiptId,
+            message: String(processed.error || processed.receipt?.error?.message || processed.code || 'processing_failed').slice(0, 300),
+          });
+        } else {
+          addSystemEvent('team_sharing_sync_processed', 'Team sharing sync processing completed.', {
+            workspaceId: effectiveWorkspaceId,
+            sessionId: result.sessionId,
+            receiptId: result.receiptId,
+            indexedDocumentCount: processed.receipt?.indexedDocumentCount || 0,
+          });
+        }
+        await persistState({ workspaceId: effectiveWorkspaceId, reason: 'team_sharing_sync_processed' });
+        broadcastState();
+      };
+      const schedule = typeof scheduleTeamSharingProcessing === 'function'
+        ? scheduleTeamSharingProcessing
+        : (task) => setTimeout(() => {
+          task().catch((error) => {
+            addSystemEvent('team_sharing_sync_process_error', 'Team sharing sync processing failed.', {
+              workspaceId: effectiveWorkspaceId,
+              sessionId: result.sessionId,
+              receiptId: result.receiptId,
+              message: String(error?.message || error).slice(0, 300),
+            });
+          });
+        }, 0);
+      const scheduled = schedule(runProcessing);
+      if (scheduled && typeof scheduled.then === 'function') await scheduled;
+    }
     return true;
   }
 

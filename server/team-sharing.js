@@ -350,6 +350,7 @@ function ensureTeamSharingState(teamSharingState = null) {
   target.sessions = target.sessions && typeof target.sessions === 'object' ? target.sessions : {};
   target.events = target.events && typeof target.events === 'object' ? target.events : {};
   target.syncLedger = target.syncLedger && typeof target.syncLedger === 'object' ? target.syncLedger : {};
+  target.syncReceipts = target.syncReceipts && typeof target.syncReceipts === 'object' ? target.syncReceipts : {};
   target.abstracts = target.abstracts && typeof target.abstracts === 'object' ? target.abstracts : {};
   target.activities = Array.isArray(target.activities) ? target.activities : [];
   target.feedback = Array.isArray(target.feedback) ? target.feedback : [];
@@ -360,6 +361,85 @@ function ensureTeamSharingState(teamSharingState = null) {
 
 export function createInitialTeamSharingState() {
   return ensureTeamSharingState({});
+}
+
+function teamSharingReceiptId(idempotencyKey = '') {
+  return `rcpt_${stableHash(idempotencyKey)}`;
+}
+
+function defaultTeamSharingSyncStages() {
+  return {
+    accepted: { status: 'pending' },
+    summary: { status: 'pending' },
+    indexing: { status: 'pending' },
+    completed: { status: 'pending' },
+  };
+}
+
+function setTeamSharingReceiptStage(receipt, stage, status, timestamp, patch = {}) {
+  if (!receipt || !stage) return;
+  receipt.stages = {
+    ...defaultTeamSharingSyncStages(),
+    ...(receipt.stages || {}),
+  };
+  const previous = receipt.stages[stage] || {};
+  receipt.stages[stage] = {
+    ...previous,
+    status,
+    ...(previous.startedAt || status === 'pending' ? {} : { startedAt: timestamp }),
+    ...(status === 'running' ? { startedAt: previous.startedAt || timestamp } : {}),
+    ...(['completed', 'failed'].includes(status) ? { completedAt: timestamp } : {}),
+    ...patch,
+  };
+  receipt.updatedAt = timestamp;
+}
+
+function compactReceiptError(error) {
+  if (!error) return null;
+  return {
+    name: String(error?.name || 'Error').slice(0, 80),
+    message: compactText(error?.message || String(error), 300),
+    code: String(error?.code || '').slice(0, 80),
+  };
+}
+
+function createTeamSharingSyncReceipt(teamSharingState, receiptPatch = {}) {
+  const receiptId = String(receiptPatch.receiptId || '').trim();
+  if (!receiptId) return null;
+  const existing = teamSharingState.syncReceipts[receiptId] || {};
+  const timestamp = receiptPatch.updatedAt || receiptPatch.createdAt || new Date().toISOString();
+  const stages = {
+    ...defaultTeamSharingSyncStages(),
+    ...(existing.stages || {}),
+    ...(receiptPatch.stages || {}),
+  };
+  const receipt = {
+    receiptId,
+    idempotencyKey: receiptPatch.idempotencyKey || existing.idempotencyKey || '',
+    status: receiptPatch.status || existing.status || 'queued',
+    phase: receiptPatch.phase || existing.phase || 'accepted',
+    detail: receiptPatch.detail || existing.detail || '',
+    workspaceId: receiptPatch.workspaceId || existing.workspaceId || '',
+    channelId: receiptPatch.channelId || existing.channelId || '',
+    sessionId: receiptPatch.sessionId || existing.sessionId || '',
+    messageId: receiptPatch.messageId || existing.messageId || '',
+    runtime: receiptPatch.runtime || existing.runtime || '',
+    projectKey: receiptPatch.projectKey || existing.projectKey || '',
+    appendedEventCount: Number(receiptPatch.appendedEventCount ?? existing.appendedEventCount ?? 0),
+    acceptedEventIds: asArray(receiptPatch.acceptedEventIds ?? existing.acceptedEventIds).filter(Boolean),
+    indexedDocumentCount: Number(receiptPatch.indexedDocumentCount ?? existing.indexedDocumentCount ?? 0),
+    error: receiptPatch.error ?? existing.error ?? null,
+    stages,
+    createdAt: existing.createdAt || receiptPatch.createdAt || timestamp,
+    updatedAt: timestamp,
+  };
+  teamSharingState.syncReceipts[receiptId] = receipt;
+  return receipt;
+}
+
+export function getTeamSharingSyncReceipt(teamSharingStateInput, receiptId = '') {
+  const teamSharingState = ensureTeamSharingState(teamSharingStateInput);
+  return teamSharingState.syncReceipts[String(receiptId || '').trim()] || null;
 }
 
 function normalizeRuntime(value) {
@@ -1506,6 +1586,8 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     updatedAt: createdAt,
   });
   if (teamSharingState.syncLedger[idempotencyKey]?.status === 'accepted') {
+    const duplicateReceiptId = teamSharingReceiptId(idempotencyKey);
+    const duplicateReceipt = teamSharingState.syncReceipts[duplicateReceiptId] || null;
     return {
       ok: true,
       duplicate: true,
@@ -1514,6 +1596,8 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
       appendedEventCount: 0,
       titleChanged,
       abstractRevision: session.abstractRevision,
+      receiptId: duplicateReceiptId,
+      ...(duplicateReceipt ? { receipt: duplicateReceipt, processing: { status: duplicateReceipt.status, phase: duplicateReceipt.phase } } : {}),
     };
   }
 
@@ -1588,6 +1672,72 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
   if (acceptedEvents.length) {
     session.lastEventOrdinal = Math.max(session.lastEventOrdinal || 0, ...acceptedEvents.map((event) => Number(event.ordinal || 0)));
     session.updatedAt = now();
+    if (deps.deferProcessing) {
+      session.indexStatus = 'queued';
+    }
+  }
+  const receiptId = teamSharingReceiptId(idempotencyKey);
+  teamSharingState.syncLedger[idempotencyKey] = {
+    idempotencyKey,
+    receiptId,
+    runtime: session.runtime,
+    projectKey: session.projectKey,
+    sessionId,
+    fromOrdinal: Number(packageBody.fromOrdinal || 0),
+    toOrdinal: Number(packageBody.toOrdinal || 0),
+    batchHash: stableHash(JSON.stringify(packageBody.events || [])),
+    status: 'accepted',
+    appendedEventCount: acceptedEvents.length,
+    createdAt,
+  };
+  if (deps.deferProcessing) {
+    const receipt = createTeamSharingSyncReceipt(teamSharingState, {
+      receiptId,
+      idempotencyKey,
+      status: acceptedEvents.length ? 'queued' : 'completed',
+      phase: acceptedEvents.length ? 'accepted' : 'completed',
+      detail: acceptedEvents.length
+        ? 'Sync payload persisted and queued for Team Sharing processing.'
+        : 'Sync payload persisted; no new events required processing.',
+      workspaceId: session.workspaceId,
+      channelId: session.channelId,
+      sessionId,
+      messageId: session.messageId,
+      runtime: session.runtime,
+      projectKey: session.projectKey,
+      appendedEventCount: acceptedEvents.length,
+      acceptedEventIds: acceptedEvents.map((event) => event.eventId).filter(Boolean),
+      stages: {
+        accepted: {
+          status: 'completed',
+          startedAt: createdAt,
+          completedAt: createdAt,
+          detail: 'Sync payload persisted.',
+        },
+        summary: { status: acceptedEvents.length ? 'pending' : 'completed' },
+        indexing: { status: acceptedEvents.length ? 'pending' : 'completed' },
+        completed: { status: acceptedEvents.length ? 'pending' : 'completed' },
+      },
+      createdAt,
+      updatedAt: createdAt,
+    });
+    return {
+      ok: true,
+      duplicate: false,
+      sessionId,
+      messageId: session.messageId,
+      appendedEventCount: acceptedEvents.length,
+      titleChanged,
+      abstractRevision: session.abstractRevision,
+      receiptId,
+      receipt,
+      processing: {
+        status: receipt.status,
+        phase: receipt.phase,
+      },
+    };
+  }
+  if (acceptedEvents.length) {
     let summary = null;
     if (typeof deps.summarizeSession === 'function') {
       try {
@@ -1613,18 +1763,6 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     }
     updateSessionAbstract(teamSharingState, session, acceptedEvents, { now, summary });
   }
-  teamSharingState.syncLedger[idempotencyKey] = {
-    idempotencyKey,
-    runtime: session.runtime,
-    projectKey: session.projectKey,
-    sessionId,
-    fromOrdinal: Number(packageBody.fromOrdinal || 0),
-    toOrdinal: Number(packageBody.toOrdinal || 0),
-    batchHash: stableHash(JSON.stringify(packageBody.events || [])),
-    status: 'accepted',
-    appendedEventCount: acceptedEvents.length,
-    createdAt,
-  };
   return {
     ok: true,
     duplicate: false,
@@ -1633,7 +1771,127 @@ export async function syncTeamSharingBatch(packageBody = {}, deps = {}) {
     appendedEventCount: acceptedEvents.length,
     titleChanged,
     abstractRevision: session.abstractRevision,
+    receiptId,
   };
+}
+
+export async function processTeamSharingSyncReceipt(receiptId = '', deps = {}) {
+  const state = deps.state || {};
+  const teamSharingState = ensureTeamSharingState(state.teamSharing);
+  state.teamSharing = teamSharingState;
+  const now = deps.now || (() => new Date().toISOString());
+  const receipt = getTeamSharingSyncReceipt(teamSharingState, receiptId);
+  if (!receipt) return { ok: false, code: 'receipt_not_found', error: 'Team Sharing sync receipt not found.' };
+  if (receipt.status === 'completed' || receipt.status === 'failed') return { ok: receipt.status === 'completed', receipt };
+
+  const timestamp = now();
+  receipt.status = 'processing';
+  receipt.phase = 'summary';
+  receipt.detail = 'Generating Team Sharing summary and search documents.';
+  receipt.startedAt = receipt.startedAt || timestamp;
+  receipt.updatedAt = timestamp;
+  setTeamSharingReceiptStage(receipt, 'summary', 'running', timestamp, {
+    detail: 'Summary generation started.',
+  });
+
+  const session = teamSharingState.sessions[receipt.sessionId] || null;
+  if (!session) {
+    const failedAt = now();
+    receipt.status = 'failed';
+    receipt.phase = 'summary';
+    receipt.error = { message: 'Team Sharing session not found for receipt.' };
+    receipt.detail = 'Team Sharing session not found for receipt.';
+    setTeamSharingReceiptStage(receipt, 'summary', 'failed', failedAt, { error: receipt.error });
+    setTeamSharingReceiptStage(receipt, 'completed', 'failed', failedAt, { error: receipt.error });
+    return { ok: false, receipt };
+  }
+
+  const allEvents = asArray(teamSharingState.events[receipt.sessionId]);
+  const acceptedIds = new Set(asArray(receipt.acceptedEventIds).map((id) => String(id || '')));
+  const acceptedEvents = acceptedIds.size
+    ? allEvents.filter((event) => acceptedIds.has(String(event.eventId || '')))
+    : allEvents;
+  let summary = null;
+  let summaryWarning = null;
+  if (typeof deps.summarizeSession === 'function') {
+    try {
+      summary = await deps.summarizeSession({
+        session,
+        events: allEvents,
+        acceptedEvents,
+        previousAbstract: teamSharingState.abstracts[receipt.sessionId]?.abstractMarkdown || '',
+      });
+    } catch (error) {
+      summary = null;
+      summaryWarning = compactReceiptError(error);
+    }
+  }
+  const summaryTitle = summarySessionTitleCandidate(summary);
+  if (summaryTitle && sessionTitleNeedsSummaryPromotion(session)) {
+    applyTeamSharingSessionTitle({
+      state,
+      teamSharingState,
+      session,
+      title: summaryTitle,
+      updatedAt: now(),
+    });
+  }
+  updateSessionAbstract(teamSharingState, session, acceptedEvents, { now, summary });
+  setTeamSharingReceiptStage(receipt, 'summary', 'completed', now(), {
+    detail: summaryWarning ? 'Fallback summary generated after summary provider error.' : 'Summary stage completed.',
+    ...(summaryWarning ? { warning: summaryWarning } : {}),
+  });
+
+  receipt.status = 'processing';
+  receipt.phase = 'indexing';
+  receipt.detail = 'Indexing Team Sharing documents.';
+  setTeamSharingReceiptStage(receipt, 'indexing', 'running', now(), {
+    detail: 'Vector indexing started.',
+  });
+  const documents = asArray(teamSharingState.vectorDocuments)
+    .filter((doc) => doc.sessionId === receipt.sessionId && doc.active !== false);
+  try {
+    let indexed = null;
+    if (typeof deps.indexTeamSharingDocuments === 'function' && documents.length) {
+      indexed = await deps.indexTeamSharingDocuments({
+        workspaceId: receipt.workspaceId || session.workspaceId,
+        sessionId: receipt.sessionId,
+        documents,
+        teamSharingState,
+      });
+    }
+    const indexedDocumentCount = Number(indexed?.count || documents.length || 0);
+    receipt.indexedDocumentCount = indexedDocumentCount;
+    receipt.status = 'completed';
+    receipt.phase = 'completed';
+    receipt.detail = 'Team Sharing sync processing completed.';
+    setTeamSharingReceiptStage(receipt, 'indexing', 'completed', now(), {
+      detail: 'Vector indexing completed.',
+      indexedDocumentCount,
+    });
+    setTeamSharingReceiptStage(receipt, 'completed', 'completed', now(), {
+      detail: 'Team Sharing sync processing completed.',
+    });
+    receipt.completedAt = receipt.updatedAt;
+    return { ok: true, receipt };
+  } catch (error) {
+    const compactError = compactReceiptError(error);
+    receipt.indexedDocumentCount = 0;
+    receipt.status = 'failed';
+    receipt.phase = 'indexing';
+    receipt.detail = 'Team Sharing vector indexing failed.';
+    receipt.error = compactError;
+    session.indexStatus = 'failed';
+    setTeamSharingReceiptStage(receipt, 'indexing', 'failed', now(), {
+      detail: 'Team Sharing vector indexing failed.',
+      error: compactError,
+    });
+    setTeamSharingReceiptStage(receipt, 'completed', 'failed', now(), {
+      detail: 'Team Sharing sync processing failed.',
+      error: compactError,
+    });
+    return { ok: false, receipt };
+  }
 }
 
 export function contextWindowForTeamSharingSession(teamSharingStateInput, sessionId, options = {}) {

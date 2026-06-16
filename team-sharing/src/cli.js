@@ -37,6 +37,7 @@ import {
   statusTeamSharingSkill,
   syncTeamSharingTranscript,
   updateTeamSharingPackage,
+  waitTeamSharingReceipt,
   getTeamSharingSessionReporting,
   setTeamSharingSessionReporting,
   unsetTeamSharingProject,
@@ -189,7 +190,8 @@ function renderTeamSharingHelp() {
     '  edit-consensus Draft a Knowledge Space document edit from Markdown',
     '  align-consensus Check discussion text against Knowledge Space consensus',
     '  export-consensus Export one Knowledge Space consensus as Markdown',
-    '  sync     Upload one transcript file (--session-title or MAGCLAW_SESSION_TITLE controls the displayed title)',
+    '  sync     Upload one transcript file and start background receipt audit by default (--no-wait disables)',
+    '  wait     Wait for a Team Sharing sync receipt (--background starts one deduped local worker)',
     '  session-reporting Control reporting for one local session (off|on|status)',
     '  skills   Install/remove/status the local Team Sharing skill',
     '  hooks    Install/remove/status Team Sharing hooks',
@@ -428,6 +430,9 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
         }
         printJson(result);
       }
+      break;
+    case 'wait':
+      printJson(await waitTeamSharingReceipt(flags, env));
       break;
     case 'session-reporting':
     case 'session-report':

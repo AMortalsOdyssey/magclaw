@@ -52,6 +52,7 @@ import {
   setTeamSharingSessionReporting,
   teamSharingMachineFingerprint,
   teamSharingPaths,
+  waitTeamSharingReceipt,
   formatTeamSharingReadLinkResult,
   whoamiTeamSharingProfile,
 } from '../team-sharing/src/team-sharing.js';
@@ -1482,6 +1483,278 @@ test('team sharing cli sync audits cloud upload failures with status and error d
     assert.equal(records[0].cloud.response.error, 'cloud timeout');
     assert.equal(records[0].error.status, 504);
     assert.doesNotMatch(JSON.stringify(records[0]), /team-sharing-token-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing wait polls receipt status with capped linear backoff and local audit records', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-wait-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-wait-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  const receiptId = 'rcpt_wait_123';
+  const statuses = [
+    { status: 'queued', phase: 'accepted', detail: 'receipt persisted' },
+    { status: 'processing', phase: 'summary', detail: 'summary running' },
+    { status: 'completed', phase: 'completed', detail: 'index ready', indexedDocumentCount: 4 },
+  ];
+  const requests = [];
+  const server = await startJsonServer(async (req, res) => {
+    requests.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+    const next = statuses[Math.min(requests.length - 1, statuses.length - 1)];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      done: next.status === 'completed',
+      receipt: {
+        receiptId,
+        sessionId: 'sess_wait',
+        ...next,
+        stages: {
+          accepted: { status: 'completed' },
+          summary: { status: next.status === 'queued' ? 'pending' : 'completed' },
+          indexing: { status: next.status === 'completed' ? 'completed' : 'pending' },
+        },
+      },
+    }));
+  });
+  const delays = [];
+  try {
+    await loginTeamSharingProfile({
+      serverUrl: server.url,
+      workspaceId: 'ws_team',
+      token: 'team-sharing-token-secret',
+    }, env);
+    await initTeamSharingProject({
+      cwd,
+      channel: 'chan_team',
+      serverUrl: server.url,
+      workspaceId: 'ws_team',
+      projectKey: 'magclaw',
+    }, env);
+
+    const result = await waitTeamSharingReceipt({
+      cwd,
+      receiptId,
+      notify: true,
+      initialIntervalMs: 10_000,
+      intervalStepMs: 10_000,
+      maxIntervalMs: 60_000,
+      timeoutMs: 300_000,
+      sleep: async (ms) => delays.push(ms),
+    }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.receipt.status, 'completed');
+    assert.deepEqual(delays, [10_000, 20_000]);
+    assert.equal(requests.length, 3);
+    assert.ok(requests.every((request) => request.url === `/api/team-sharing/sync/status/${receiptId}`));
+    assert.ok(requests.every((request) => request.authorization === 'Bearer team-sharing-token-secret'));
+    assert.equal(records.length, 3);
+    assert.deepEqual(records.map((record) => record.operation), ['wait', 'wait', 'wait']);
+    assert.deepEqual(records.map((record) => record.status), ['queued', 'processing', 'completed']);
+    assert.equal(records[2].receipt.indexedDocumentCount, 4);
+    assert.equal(records[2].notify, true);
+    assert.doesNotMatch(JSON.stringify(records), /team-sharing-token-secret/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('team sharing background wait starts one worker per receipt and dedupes duplicate receipt waits', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-bg-wait-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-bg-wait-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+  }, env);
+
+  const spawnCalls = [];
+  const spawnWaitWorker = ({ command, args, env: workerEnv, cwd: workerCwd }) => {
+    spawnCalls.push({
+      command,
+      args,
+      cwd: workerCwd,
+      waitWorker: workerEnv.MAGCLAW_TEAM_SHARING_WAIT_WORKER,
+      owner: workerEnv.MAGCLAW_TEAM_SHARING_WAIT_LOCK_OWNER,
+    });
+    return { pid: process.pid };
+  };
+
+  const first = await waitTeamSharingReceipt({
+    cwd,
+    receiptId: 'rcpt_bg_1',
+    background: true,
+    notify: true,
+    spawnWaitWorker,
+  }, env);
+  const duplicate = await waitTeamSharingReceipt({
+    cwd,
+    receiptId: 'rcpt_bg_1',
+    background: true,
+    notify: true,
+    spawnWaitWorker,
+  }, env);
+  const secondReceipt = await waitTeamSharingReceipt({
+    cwd,
+    receiptId: 'rcpt_bg_2',
+    background: true,
+    spawnWaitWorker,
+  }, env);
+  const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+  const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+
+  assert.equal(first.status, 'background_started');
+  assert.equal(first.background, true);
+  assert.equal(duplicate.status, 'already_waiting');
+  assert.equal(duplicate.alreadyWaiting, true);
+  assert.equal(secondReceipt.status, 'background_started');
+  assert.equal(spawnCalls.length, 2);
+  assert.equal(spawnCalls[0].command, process.execPath);
+  assert.equal(spawnCalls[0].cwd, cwd);
+  assert.ok(spawnCalls[0].args.includes('wait'));
+  assert.ok(spawnCalls[0].args.includes('rcpt_bg_1'));
+  assert.ok(spawnCalls[0].args.includes('--wait-worker'));
+  assert.equal(spawnCalls[0].waitWorker, '1');
+  assert.ok(spawnCalls[0].owner);
+  assert.ok(spawnCalls[1].args.includes('rcpt_bg_2'));
+  assert.deepEqual(records.map((record) => record.status), ['background_started', 'already_waiting', 'background_started']);
+  assert.deepEqual(records.map((record) => record.operation), ['wait', 'wait', 'wait']);
+  assert.doesNotMatch(JSON.stringify(records), /team-sharing-token-secret/);
+});
+
+test('team sharing cli sync launches a deduped background wait by default after receipt acceptance', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-sync-bg-wait-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-sync-bg-wait-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_sync_wait', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '后台等待 receipt' }] } }),
+  ].join('\n'));
+  const spawnCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 202,
+    statusText: 'Accepted',
+    json: async () => ({
+      ok: true,
+      receiptId: 'rcpt_sync_bg',
+      receipt: { receiptId: 'rcpt_sync_bg', status: 'queued' },
+      processing: { status: 'queued' },
+      appendedEventCount: 1,
+      abstractRevision: 0,
+      indexedDocumentCount: 0,
+      messageId: 'msg_sync_bg',
+    }),
+  });
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      spawnWaitWorker: ({ command, args, env: workerEnv }) => {
+        spawnCalls.push({ command, args, owner: workerEnv.MAGCLAW_TEAM_SHARING_WAIT_LOCK_OWNER });
+        return { pid: process.pid };
+      },
+    }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.receiptId, 'rcpt_sync_bg');
+    assert.equal(result.wait.status, 'background_started');
+    assert.equal(spawnCalls.length, 1);
+    assert.ok(spawnCalls[0].args.includes('rcpt_sync_bg'));
+    assert.deepEqual(records.map((record) => record.status), ['uploaded', 'background_started']);
+    assert.doesNotMatch(JSON.stringify(records), /team-sharing-token-secret/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('team sharing cli sync --no-wait disables the default background wait worker', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-sync-no-wait-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-sync-no-wait-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_sync_no_wait', cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '不要后台等待' }] } }),
+  ].join('\n'));
+  const spawnCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 202,
+    statusText: 'Accepted',
+    json: async () => ({
+      ok: true,
+      receiptId: 'rcpt_sync_no_wait',
+      receipt: { receiptId: 'rcpt_sync_no_wait', status: 'queued' },
+      processing: { status: 'queued' },
+      appendedEventCount: 1,
+      messageId: 'msg_sync_no_wait',
+    }),
+  });
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      noWait: true,
+      spawnWaitWorker: ({ command, args }) => {
+        spawnCalls.push({ command, args });
+        return { pid: process.pid };
+      },
+    }, env);
+    const auditText = await readFile(path.join(cwd, '.magclaw', 'team-sharing-audit.jsonl'), 'utf8');
+    const records = auditText.trim().split(/\r?\n/).map((line) => JSON.parse(line));
+
+    assert.equal(result.ok, true);
+    assert.equal(result.receiptId, 'rcpt_sync_no_wait');
+    assert.equal(result.wait, undefined);
+    assert.equal(spawnCalls.length, 0);
+    assert.deepEqual(records.map((record) => record.status), ['uploaded']);
+    assert.doesNotMatch(JSON.stringify(records), /team-sharing-token-secret/);
   } finally {
     globalThis.fetch = originalFetch;
   }

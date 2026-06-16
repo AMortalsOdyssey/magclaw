@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { appendFile, chmod, cp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -32,6 +32,7 @@ const TEAM_SHARING_MARKETPLACE_NAME = 'magclaw';
 const TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT = path.join(TEAM_SHARING_PACKAGE_ROOT, 'codex-plugin');
 const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+const DEFAULT_WAIT_LOCK_STALE_MS = 10 * 60_000;
 const TEAM_SHARING_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const TEAM_SHARING_AGENT_SKILL_IDS = Object.freeze([
   'setup',
@@ -2553,9 +2554,20 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       generated: Number(result?.abstractRevision || 0) > 0,
     },
   });
+  let waitResult = null;
+  const shouldWaitAfterSync = result?.receiptId && syncWaitAfterReceiptEnabled(flags, env);
+  if (shouldWaitAfterSync) {
+    waitResult = await waitTeamSharingReceipt({
+      ...flags,
+      receiptId: result.receiptId,
+      _: ['wait', result.receiptId],
+      background: syncWaitAfterReceiptBackground(flags, env),
+    }, env);
+  }
   return {
     ...result,
     cursor: syncPackage.cursor,
+    ...(waitResult ? { wait: waitResult } : {}),
   };
   } catch (error) {
     if (!error?.auditRecorded) {
@@ -2567,6 +2579,422 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
       });
     }
     throw error;
+  }
+}
+
+function waitIntervalMs(value, fallback) {
+  const number = Number(value);
+  return Math.max(1, Number.isFinite(number) && number > 0 ? number : fallback);
+}
+
+function teamSharingReceiptDone(receipt = {}, data = {}) {
+  if (data.done === true) return true;
+  return ['completed', 'failed'].includes(String(receipt.status || '').trim().toLowerCase());
+}
+
+function firstDefinedFlag(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+
+function syncWaitAfterReceiptEnabled(flags = {}, env = process.env) {
+  if (boolFlag(flags.noWait || flags.noWaitReceipt || flags.noWaitForProcessing, false)) return false;
+  const explicit = firstDefinedFlag(
+    flags.wait,
+    flags.waitReceipt,
+    flags.waitForProcessing,
+    env.MAGCLAW_TEAM_SHARING_SYNC_WAIT,
+    env.MAGCLAW_TEAM_SHARING_WAIT_AFTER_SYNC,
+  );
+  return boolFlag(explicit, true);
+}
+
+function syncWaitAfterReceiptBackground(flags = {}, env = process.env) {
+  if (boolFlag(flags.foreground || flags.foregroundWait || flags.waitForeground, false)) return false;
+  if (boolFlag(flags.noBackground || flags.noBackgroundWait, false)) return false;
+  const explicit = firstDefinedFlag(
+    flags.background,
+    flags.backgroundWait,
+    env.MAGCLAW_TEAM_SHARING_SYNC_WAIT_BACKGROUND,
+  );
+  return boolFlag(explicit, true);
+}
+
+function teamSharingWaitLockDir(projectPaths = {}, receiptId = '') {
+  const auditDir = path.dirname(projectPaths.projectAuditLog || teamSharingPaths({}).projectAuditLog);
+  return path.join(auditDir, 'team-sharing-waits', `${stableHash(receiptId)}.lock`);
+}
+
+function waitLockOwnerId(receiptId = '', flags = {}, env = process.env) {
+  const explicit = String(flags.waitLockOwner || env.MAGCLAW_TEAM_SHARING_WAIT_LOCK_OWNER || '').trim();
+  if (explicit) return explicit;
+  return `wait_${stableHash(`${receiptId}:${process.pid}:${Date.now()}:${Math.random()}`)}`;
+}
+
+async function readTeamSharingWaitLock(lockDir) {
+  return readJsonFile(path.join(lockDir, 'owner.json'), null);
+}
+
+async function writeTeamSharingWaitLock(lockDir, owner = {}) {
+  await writeJsonFile(path.join(lockDir, 'owner.json'), owner, { privateFile: true });
+}
+
+function waitLockProcessAlive(pid) {
+  const numericPid = Number(pid || 0);
+  if (!numericPid || !Number.isFinite(numericPid)) return true;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function waitLockIsStale(owner = {}, staleMs = DEFAULT_WAIT_LOCK_STALE_MS) {
+  if (!owner || typeof owner !== 'object') return true;
+  if (!waitLockProcessAlive(owner.pid)) return true;
+  const updatedAtMs = new Date(owner.updatedAt || owner.createdAt || 0).getTime();
+  if (!Number.isFinite(updatedAtMs) || updatedAtMs <= 0) return true;
+  return Date.now() - updatedAtMs > Math.max(60_000, Number(staleMs || DEFAULT_WAIT_LOCK_STALE_MS) || DEFAULT_WAIT_LOCK_STALE_MS);
+}
+
+function compactWaitLockOwner(owner = {}) {
+  if (!owner || typeof owner !== 'object') return null;
+  return {
+    receiptId: owner.receiptId || '',
+    mode: owner.mode || '',
+    pid: Number(owner.pid || 0) || 0,
+    ownerIdHash: owner.ownerId ? stableHash(owner.ownerId) : '',
+    createdAt: owner.createdAt || '',
+    updatedAt: owner.updatedAt || '',
+  };
+}
+
+async function acquireTeamSharingWaitLock({ projectPaths, receiptId, mode = 'foreground', ownerId = '', staleMs = DEFAULT_WAIT_LOCK_STALE_MS } = {}) {
+  const lockDir = teamSharingWaitLockDir(projectPaths, receiptId);
+  await mkdir(path.dirname(lockDir), { recursive: true });
+  const timestamp = now();
+  const owner = {
+    version: 1,
+    receiptId,
+    mode,
+    ownerId,
+    pid: process.pid,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeTeamSharingWaitLock(lockDir, owner);
+      return { acquired: true, lockDir, owner, existingOwned: false };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      const existing = await readTeamSharingWaitLock(lockDir);
+      if (existing?.ownerId && existing.ownerId === ownerId) {
+        const adopted = {
+          ...existing,
+          mode,
+          pid: process.pid,
+          updatedAt: now(),
+        };
+        await writeTeamSharingWaitLock(lockDir, adopted);
+        return { acquired: true, lockDir, owner: adopted, existingOwned: true };
+      }
+      if (waitLockIsStale(existing, staleMs)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      return { acquired: false, lockDir, existingOwner: existing || null };
+    }
+  }
+  const existingOwner = await readTeamSharingWaitLock(lockDir);
+  return { acquired: false, lockDir, existingOwner };
+}
+
+async function updateTeamSharingWaitLock(lock, patch = {}) {
+  if (!lock?.acquired || !lock.lockDir) return lock;
+  const nextOwner = {
+    ...(lock.owner || {}),
+    ...patch,
+    updatedAt: now(),
+  };
+  await writeTeamSharingWaitLock(lock.lockDir, nextOwner);
+  lock.owner = nextOwner;
+  return lock;
+}
+
+async function releaseTeamSharingWaitLock(lock, ownerId = '') {
+  if (!lock?.acquired || !lock.lockDir) return;
+  const existing = await readTeamSharingWaitLock(lock.lockDir);
+  if (ownerId && existing?.ownerId && existing.ownerId !== ownerId) return;
+  await rm(lock.lockDir, { recursive: true, force: true });
+}
+
+function pushCliArg(args, flag, value) {
+  if (value === undefined || value === null || value === false || value === '') return;
+  args.push(flag);
+  if (value !== true) args.push(String(value));
+}
+
+function buildTeamSharingWaitWorkerArgs(flags = {}, receiptId = '') {
+  const args = [TEAM_SHARING_SOURCE_COMMAND, 'wait', receiptId, '--wait-worker'];
+  pushCliArg(args, '--cwd', path.resolve(flags.cwd || process.cwd()));
+  pushCliArg(args, '--profile', flags.profile);
+  pushCliArg(args, '--server-url', flags.serverUrl);
+  pushCliArg(args, '--workspace-id', flags.workspaceId || flags.workspace);
+  pushCliArg(args, '--initial-interval-ms', flags.initialIntervalMs);
+  pushCliArg(args, '--interval-step-ms', flags.intervalStepMs);
+  pushCliArg(args, '--max-interval-ms', flags.maxIntervalMs);
+  pushCliArg(args, '--timeout-ms', flags.timeoutMs || flags.pollTimeoutMs);
+  pushCliArg(args, '--request-timeout-ms', flags.requestTimeoutMs || flags.requestTimeout);
+  if (boolFlag(flags.notify, false)) args.push('--notify');
+  if (boolFlag(flags.noAudit, false)) args.push('--no-audit');
+  return args;
+}
+
+function defaultSpawnTeamSharingWaitWorker({ command, args, env, cwd }) {
+  const child = spawn(command, args, {
+    cwd,
+    env,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: runtimePlatform(env) === 'win32',
+  });
+  child.unref();
+  return child;
+}
+
+export async function waitTeamSharingReceipt(flags = {}, env = process.env) {
+  const receiptId = String(flags.receiptId || flags.receipt || flags._?.[1] || flags._?.[0] || '').trim();
+  if (!receiptId) throw new Error('Usage: team-sharing wait <receiptId>');
+  const auditStartedAt = now();
+  const auditStartedAtMs = Date.now();
+  const client = await resolveTeamSharingClient(flags, env, { allowLogin: true });
+  const { project, profile, serverUrl, token, machineFingerprint, authIssue } = client;
+  const auditFile = project.paths.projectAuditLog;
+  const baseAudit = {
+    operation: 'wait',
+    startedAt: auditStartedAt,
+    cwdHash: stableHash(path.resolve(flags.cwd || process.cwd())),
+    receiptId,
+    notify: boolFlag(flags.notify, false),
+    project: {
+      projectKey: project.config.projectKey,
+      workspaceId: project.config.workspaceId,
+      channelId: project.config.channelId,
+      serverUrl: flags.serverUrl || serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
+    },
+    login: loginAuditInfo({
+      profileName: flags.profile || project.config.profile || DEFAULT_PROFILE,
+      profileConfig: profile.config || {},
+      projectConfig: project.config || {},
+    }),
+  };
+  const writeAudit = async (patch = {}) => appendTeamSharingAuditRecord(auditFile, {
+    ...baseAudit,
+    ...patch,
+    completedAt: now(),
+    durationMs: Date.now() - auditStartedAtMs,
+  }, flags, env);
+  if (authIssue) {
+    await writeAudit({
+      ok: false,
+      status: 'error',
+      phase: 'auth',
+      reason: authIssue.reason || 'login_required',
+    });
+    const error = new Error(authIssue.reason === 'login_expired'
+      ? 'Team Sharing login expired. Run `team-sharing login` again.'
+      : 'Run `team-sharing login` first.');
+    error.auditRecorded = true;
+    throw error;
+  }
+
+  const background = boolFlag(flags.background || flags.backgroundWait, false);
+  const waitWorker = boolFlag(flags.waitWorker || env.MAGCLAW_TEAM_SHARING_WAIT_WORKER, false);
+  const ownerId = waitLockOwnerId(receiptId, flags, env);
+  const lock = await acquireTeamSharingWaitLock({
+    projectPaths: project.paths,
+    receiptId,
+    mode: waitWorker ? 'background_worker' : (background ? 'background' : 'foreground'),
+    ownerId,
+    staleMs: flags.waitLockStaleMs || env.MAGCLAW_TEAM_SHARING_WAIT_LOCK_STALE_MS,
+  });
+  if (!lock.acquired) {
+    await writeAudit({
+      ok: true,
+      status: 'already_waiting',
+      phase: 'wait_lock',
+      receipt: null,
+      waitLock: {
+        active: true,
+        owner: compactWaitLockOwner(lock.existingOwner),
+      },
+    });
+    return {
+      ok: true,
+      status: 'already_waiting',
+      alreadyWaiting: true,
+      receiptId,
+      waitLock: {
+        active: true,
+        owner: compactWaitLockOwner(lock.existingOwner),
+      },
+    };
+  }
+  if (background && !waitWorker) {
+    try {
+      const command = process.execPath;
+      const args = buildTeamSharingWaitWorkerArgs(flags, receiptId);
+      const workerEnv = {
+        ...process.env,
+        ...env,
+        MAGCLAW_TEAM_SHARING_WAIT_LOCK_OWNER: ownerId,
+        MAGCLAW_TEAM_SHARING_WAIT_WORKER: '1',
+      };
+      const cwd = path.resolve(flags.cwd || process.cwd());
+      const spawnWaitWorker = typeof flags.spawnWaitWorker === 'function'
+        ? flags.spawnWaitWorker
+        : defaultSpawnTeamSharingWaitWorker;
+      const child = spawnWaitWorker({ command, args, env: workerEnv, cwd, receiptId });
+      const pid = Number(child?.pid || 0) || 0;
+      await updateTeamSharingWaitLock(lock, {
+        mode: 'background_worker',
+        pid,
+        spawnedByPid: process.pid,
+      });
+      await writeAudit({
+        ok: true,
+        status: 'background_started',
+        phase: 'wait_background',
+        background: true,
+        worker: {
+          pid,
+          command: path.basename(command),
+          args: args.map((arg) => String(arg || '').includes(TEAM_SHARING_SOURCE_COMMAND) ? 'team-sharing' : arg),
+        },
+        waitLock: {
+          active: true,
+          owner: compactWaitLockOwner(lock.owner),
+        },
+      });
+      return {
+        ok: true,
+        status: 'background_started',
+        background: true,
+        receiptId,
+        pid,
+      };
+    } catch (error) {
+      await releaseTeamSharingWaitLock(lock, ownerId);
+      await writeAudit({
+        ok: false,
+        status: 'error',
+        phase: 'wait_background',
+        error: compactAuditError(error),
+      });
+      error.auditRecorded = true;
+      throw error;
+    }
+  }
+
+  const initialIntervalMs = waitIntervalMs(flags.initialIntervalMs || env.MAGCLAW_TEAM_SHARING_WAIT_INITIAL_INTERVAL_MS, 10_000);
+  const intervalStepMs = waitIntervalMs(flags.intervalStepMs || env.MAGCLAW_TEAM_SHARING_WAIT_INTERVAL_STEP_MS, 10_000);
+  const maxIntervalMs = waitIntervalMs(flags.maxIntervalMs || env.MAGCLAW_TEAM_SHARING_WAIT_MAX_INTERVAL_MS, 60_000);
+  const timeoutMs = waitIntervalMs(flags.timeoutMs || flags.pollTimeoutMs || env.MAGCLAW_TEAM_SHARING_WAIT_TIMEOUT_MS, 300_000);
+  const statusRequestTimeoutMs = requestTimeoutMs({
+    ...flags,
+    timeoutMs: flags.requestTimeoutMs || undefined,
+    timeout: flags.requestTimeout || undefined,
+  }, env);
+  const sleepFn = typeof flags.sleep === 'function' ? flags.sleep : sleep;
+  const pathname = `/api/team-sharing/sync/status/${encodeURIComponent(receiptId)}`;
+  const startedAtMs = Date.now();
+  let scheduledElapsedMs = 0;
+  let attempt = 0;
+  let lastReceipt = null;
+  try {
+    while ((Date.now() - startedAtMs + scheduledElapsedMs) <= timeoutMs) {
+      attempt += 1;
+      await updateTeamSharingWaitLock(lock, { attempt });
+      const request = await teamSharingRequest({
+        serverUrl: flags.serverUrl || serverUrl || profile.config?.server_url || DEFAULT_SERVER_URL,
+        token,
+        machineFingerprint,
+        method: 'GET',
+        pathname,
+        timeoutMs: statusRequestTimeoutMs,
+      });
+      const data = request.data || {};
+      const receipt = data.receipt || {};
+      lastReceipt = Object.keys(receipt).length ? receipt : lastReceipt;
+      const status = String(receipt.status || (request.ok ? 'unknown' : (request.timeout ? 'timeout' : 'error'))).trim() || 'unknown';
+      await writeAudit({
+        ok: request.ok && data.ok !== false,
+        status,
+        phase: receipt.phase || 'receipt_status',
+        attempt,
+        request: {
+          method: 'GET',
+          pathname,
+          statusCode: request.status,
+          statusText: request.statusText,
+          durationMs: request.durationMs,
+          timeout: request.timeout,
+        },
+        receipt: lastReceipt || null,
+        cloud: {
+          ok: request.ok && data.ok !== false,
+          statusCode: request.status,
+          response: data,
+        },
+        ...(request.ok ? {} : { error: compactAuditError(Object.assign(new Error(request.error || `${request.status} ${request.statusText}`), {
+          status: request.status,
+          statusText: request.statusText,
+          timeout: request.timeout,
+          durationMs: request.durationMs,
+          responseData: data,
+        })) }),
+      });
+      if (!request.ok) {
+        return {
+          ok: false,
+          status,
+          receipt: lastReceipt,
+          attempt,
+          error: data.error || request.error || `${request.status} ${request.statusText}`,
+        };
+      }
+      if (teamSharingReceiptDone(receipt, data)) {
+        return {
+          ok: receipt.status !== 'failed',
+          status: receipt.status || status,
+          receipt,
+          attempt,
+        };
+      }
+      const nextDelayMs = Math.min(maxIntervalMs, initialIntervalMs + ((attempt - 1) * intervalStepMs));
+      if ((Date.now() - startedAtMs + scheduledElapsedMs + nextDelayMs) > timeoutMs) break;
+      scheduledElapsedMs += nextDelayMs;
+      await sleepFn(nextDelayMs);
+    }
+    await writeAudit({
+      ok: false,
+      status: 'timeout',
+      phase: lastReceipt?.phase || 'receipt_status',
+      attempt,
+      receipt: lastReceipt || null,
+      reason: 'wait_timeout',
+    });
+    return {
+      ok: false,
+      status: 'timeout',
+      receipt: lastReceipt,
+      attempt,
+      timeoutMs,
+    };
+  } finally {
+    await releaseTeamSharingWaitLock(lock, ownerId);
   }
 }
 
