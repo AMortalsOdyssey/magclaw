@@ -90,8 +90,11 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.match(res.body, /responseDelayWarningMs/);
       assert.match(res.body, /response_delay_warning/);
       assert.match(res.body, /response_latency/);
+      assert.match(res.body, /tool_summary/);
       assert.match(res.body, /TODO\(phase-2\): add multi-speaker diarization/);
       assert.match(res.body, /calculate_expression/);
+      assert.match(res.body, /If a function response contains spoken_summary/);
+      assert.match(res.body, /For create_demo_task, the first sentence must include the created task title and priority/);
       assert.match(res.body, /音频检测/);
       assert.equal(res.headers['permissions-policy'], 'microphone=(self)');
       assert.doesNotMatch(res.headers['content-security-policy'], /\bsandbox\b/);

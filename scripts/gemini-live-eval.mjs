@@ -38,6 +38,8 @@ For Chinese replies, use Mainland Mandarin phrasing and Simplified Chinese chara
 For unclear noisy or overlapping speech, ask a concise clarification instead of inventing details.
 After a function response, start the answer immediately with one short spoken sentence.
 Do not restate the request, explain the tool, or add filler before the result.
+If a function response contains spoken_summary, say that spoken_summary verbatim as the first sentence.
+For create_demo_task, the first sentence must include the created task title and priority.
 `.trim();
 
 const CASES = [
@@ -476,12 +478,15 @@ function runEvalTool(name, args) {
     return { expression, value };
   }
   if (name === 'create_demo_task') {
+    const priority = args.priority || 'medium';
     return {
       id: `TASK-${Date.now().toString().slice(-6)}`,
       title: args.title || 'untitled',
-      priority: args.priority || 'medium',
+      priority,
+      priority_label_zh: priority === 'high' ? '高' : priority === 'low' ? '低' : '中等',
       status: 'created',
       source: 'eval_mock',
+      spoken_summary: `已创建任务：“${args.title || 'untitled'}”，优先级${priority === 'high' ? '高' : priority === 'low' ? '低' : '中等'}。`,
     };
   }
   if (name === 'lookup_demo_ticket') {
@@ -501,6 +506,13 @@ function runEvalTool(name, args) {
     };
   }
   return { error: `unknown tool ${name}` };
+}
+
+function toolResponseForModel(output) {
+  if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
+    return { spoken_summary: output.spoken_summary };
+  }
+  return { output };
 }
 
 function makeLiveConfig(args) {
@@ -661,6 +673,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
     events: [],
     toolCalls: [],
     blockedToolCalls: [],
+    toolSummaries: [],
     responseDelayWarnings: [],
     inputTranscript: '',
     outputTranscript: '',
@@ -728,13 +741,22 @@ async function runSingleCase(client, config, testCase, audio, args) {
             metrics.toolCalls.push(toolCall);
             currentTurnToolCalls += 1;
           }
-          session.sendToolResponse({
-            functionResponses: calls.map((call) => ({
+          const functionResponses = calls.map((call) => {
+            const output = runEvalTool(call.name, call.args || {});
+            if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
+              metrics.toolSummaries.push({
+                name: call.name || 'unknown',
+                text: output.spoken_summary,
+                atMs: nowMs(startedAt),
+              });
+            }
+            return {
               id: call.id,
               name: call.name,
-              response: { output: runEvalTool(call.name, call.args || {}) },
-            })),
+              response: toolResponseForModel(output),
+            };
           });
+          session.sendToolResponse({ functionResponses });
           metrics.lastToolResponseSentMs = nowMs(startedAt);
           mark('tool_response_sent', { count: calls.length });
         }
@@ -842,6 +864,7 @@ async function runWebSocketCase(testCase, audio, args) {
     events: [],
     toolCalls: [],
     blockedToolCalls: [],
+    toolSummaries: [],
     responseDelayWarnings: [],
     inputTranscript: '',
     outputTranscript: '',
@@ -970,6 +993,14 @@ async function runWebSocketCase(testCase, audio, args) {
       if (toolCall && Number.isFinite(message.durationMs)) toolCall.durationMs = message.durationMs;
       mark('tool_result', { name: message.name || 'unknown' });
     }
+    if (message.type === 'tool_summary') {
+      metrics.toolSummaries.push({
+        name: message.name || 'unknown',
+        text: message.text || '',
+        atMs: nowMs(startedAt),
+      });
+      mark('tool_summary', { name: message.name || 'unknown' });
+    }
     if (message.type === 'interrupted') {
       if (!metrics.interruptedMs) metrics.interruptedMs = nowMs(startedAt);
       mark('interrupted');
@@ -1091,7 +1122,10 @@ function scoreCase(testCase, metrics) {
   const warnings = [];
   const endpointMs = testCase.mode === 'barge_in' ? metrics.firstEndpointMs : metrics.endpointMs;
   const rawOutputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
-  const outputText = normalizeChineseDisplayText(rawOutputText);
+  const rawToolSummaryText = (metrics.toolSummaries || []).map((item) => item.text || '').join('\n');
+  const modelOutputText = normalizeChineseDisplayText(rawOutputText);
+  const outputText = normalizeChineseDisplayText(`${rawOutputText}\n${rawToolSummaryText}`);
+  metrics.normalizedModelOutputText = modelOutputText;
   metrics.normalizedOutputText = outputText;
   metrics.qualityChecks = [];
   if (!metrics.firstAudioMs && !metrics.firstTextMs) {
@@ -1104,9 +1138,13 @@ function scoreCase(testCase, metrics) {
       const matches = expected instanceof RegExp
         ? expected.test(outputText)
         : outputText.includes(String(expected));
+      const modelMatches = expected instanceof RegExp
+        ? expected.test(modelOutputText)
+        : modelOutputText.includes(String(expected));
       const label = expected instanceof RegExp ? expected.toString() : String(expected);
-      metrics.qualityChecks.push({ label, pass: matches });
+      metrics.qualityChecks.push({ label, pass: matches, modelPass: modelMatches });
       if (!matches) failures.push(`quality_missing:${label}`);
+      else if (!modelMatches) warnings.push(`model_audio_missing_quality:${label}`);
     }
   }
   if (testCase.expectTool) {

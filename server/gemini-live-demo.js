@@ -63,8 +63,11 @@ You can use these safe tools:
 3. lookup_demo_ticket: deterministic mock ticket data. Use it for testing structured
    business-function calls without touching real systems.
 4. calculate_expression: safe arithmetic for explicit math requests.
-5. create_demo_task: create a mock task for explicit task-creation requests.
-6. list_demo_tasks: list mock tasks only when the user clearly asks for demo tasks.
+5. convert_units: safe unit conversion for explicit conversion requests.
+6. random_choice: pick one option when the user asks you to choose from a short list.
+7. create_demo_task: create a mock task for explicit task-creation requests.
+8. list_demo_tasks: list mock tasks only when the user clearly asks for demo tasks.
+9. get_public_holidays: public holiday lookup by country code and optional year.
 
 Default to Mainland Mandarin Chinese unless the user is clearly speaking English. In a
 Chinese conversation, treat very short isolated English-looking fragments as possible ASR
@@ -78,6 +81,8 @@ For Chinese output, use natural Mainland Mandarin phrasing, Simplified Chinese c
 transcripts, and short sentences. After using a tool, report only the useful result, not the raw JSON.
 After receiving a tool result, start the spoken answer immediately with one short sentence.
 Do not restate the request, explain the tool, or add filler before the result.
+If a function response contains spoken_summary, say that spoken_summary verbatim as the first sentence.
+For create_demo_task, the first sentence must include the created task title and priority.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [
@@ -1063,20 +1068,29 @@ function randomChoice(rawArgs = {}) {
   };
 }
 
+function demoPriorityLabel(priority) {
+  if (priority === 'high') return '高';
+  if (priority === 'low') return '低';
+  return '中等';
+}
+
 function createDemoTask(rawArgs = {}) {
   const title = String(rawArgs.title || '').trim().slice(0, 160);
   if (!title) return { error: 'title is required' };
   const id = `TASK-${String(demoTasks.size + 1).padStart(4, '0')}`;
+  const priority = ['low', 'medium', 'high'].includes(String(rawArgs.priority || '').toLowerCase())
+    ? String(rawArgs.priority).toLowerCase()
+    : 'medium';
   const task = {
     id,
     title,
     assignee: String(rawArgs.assignee || 'unassigned').trim().slice(0, 80),
-    priority: ['low', 'medium', 'high'].includes(String(rawArgs.priority || '').toLowerCase())
-      ? String(rawArgs.priority).toLowerCase()
-      : 'medium',
+    priority,
+    priority_label_zh: demoPriorityLabel(priority),
     status: 'open',
     created_at: new Date().toISOString(),
   };
+  task.spoken_summary = `已创建任务：“${task.title}”，优先级${task.priority_label_zh}。`;
   demoTasks.set(id, task);
   return task;
 }
@@ -1128,6 +1142,13 @@ async function runDemoTool(name, args) {
   if (name === 'list_demo_tasks') return listDemoTasks(args);
   if (name === 'get_public_holidays') return getPublicHolidays(args);
   return { error: `Unknown tool: ${name}` };
+}
+
+function toolResponseForModel(output) {
+  if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
+    return { spoken_summary: output.spoken_summary };
+  }
+  return { output };
 }
 
 function compactToolText(value) {
@@ -1497,7 +1518,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
                     {
                       id: call.id,
                       name,
-                      response: { output },
+                      response: toolResponseForModel(output),
                     },
                   ],
                 });
@@ -1536,6 +1557,14 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               result: output,
               durationMs: toolDurationMs,
             });
+            if (output && typeof output === 'object' && typeof output.spoken_summary === 'string') {
+              sendWsJson(ws, {
+                type: 'tool_summary',
+                id: call.id || null,
+                name,
+                text: output.spoken_summary,
+              });
+            }
             try {
               const responseBytes = Buffer.byteLength(JSON.stringify(output || {}), 'utf8');
               session.sendToolResponse({
@@ -1543,7 +1572,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
                   {
                     id: call.id,
                     name,
-                    response: { output },
+                    response: toolResponseForModel(output),
                   },
                 ],
               });
@@ -2875,6 +2904,8 @@ function makeIndexHtml(config) {
         addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')');
       } else if (message.type === 'tool_result') {
         addEntry('tool', 'Tool Result', message.name + ' → ' + JSON.stringify(message.result));
+      } else if (message.type === 'tool_summary') {
+        addEntry('assistant', '确认', message.text);
       } else if (message.type === 'interrupted') {
         clearPlayback();
         acceptedBargeIn = false;
