@@ -46,6 +46,7 @@ const CASES = [
     segments: [{ text: '帮我查一下杭州今天的天气。', voice: DEFAULT_TTS_VOICE }],
     expectTool: 'get_weather',
     expectToolArgs: { city: /Hangzhou|杭州/i },
+    expectOutput: [/杭州|Hangzhou/i, /天气|气温|温度|度|摄氏|°|weather|temperature/i],
     expectSimplifiedChinese: true,
     maxFirstAudioMs: 2800,
   },
@@ -69,6 +70,7 @@ const CASES = [
     ],
     expectTool: 'get_weather',
     expectToolArgs: { city: /Hangzhou|杭州/i },
+    expectOutput: [/杭州|Hangzhou/i, /天气|气温|温度|度|摄氏|°|weather|temperature/i],
     expectSimplifiedChinese: true,
     maxFirstAudioMs: 3200,
   },
@@ -84,6 +86,7 @@ const CASES = [
     ],
     expectTool: 'create_demo_task',
     expectToolArgs: { title: /实时语音延迟/ },
+    expectOutput: [/任务|创建|记下|created|task/i, /检查实时语音延迟/],
     expectSimplifiedChinese: true,
     maxFirstAudioMs: 3600,
   },
@@ -95,6 +98,7 @@ const CASES = [
     noiseLevel: 0.018,
     expectTool: 'calculate_expression',
     expectToolArgs: { expression: /37\s*[*×x]\s*24/ },
+    expectOutput: [/888|八百八十八/],
     expectSimplifiedChinese: true,
     maxFirstAudioMs: 3200,
   },
@@ -105,6 +109,7 @@ const CASES = [
     segments: [{ text: 'Check the weather in Hangzhou today.', voice: DEFAULT_ENGLISH_VOICE }],
     expectTool: 'get_weather',
     expectToolArgs: { city: /Hangzhou|杭州/i },
+    expectOutput: [/Hangzhou|杭州/i, /weather|temperature|degree|celsius|°|天气|气温|温度|度/i],
     maxFirstAudioMs: 2800,
   },
   {
@@ -1059,9 +1064,21 @@ function scoreCase(testCase, metrics) {
   const warnings = [];
   const endpointMs = testCase.mode === 'barge_in' ? metrics.firstEndpointMs : metrics.endpointMs;
   const outputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
+  metrics.qualityChecks = [];
   if (!metrics.firstAudioMs && !metrics.firstTextMs) {
     if (testCase.allowNoModelResponse) warnings.push('no_model_response_allowed');
     else failures.push('no_model_response');
+  }
+  if (testCase.expectOutput?.length) {
+    if (!outputText.trim()) failures.push('missing_output_for_quality_check');
+    for (const expected of testCase.expectOutput) {
+      const matches = expected instanceof RegExp
+        ? expected.test(outputText)
+        : outputText.includes(String(expected));
+      const label = expected instanceof RegExp ? expected.toString() : String(expected);
+      metrics.qualityChecks.push({ label, pass: matches });
+      if (!matches) failures.push(`quality_missing:${label}`);
+    }
   }
   if (testCase.expectTool) {
     const names = metrics.toolCalls.map((call) => call.name);
@@ -1146,6 +1163,7 @@ function summarizeResults(results) {
     const endpointToAudio = group.map((result) => result.endpointToFirstAudioMs);
     const endpointToTool = group.map((result) => result.endpointToToolCallMs);
     const toolToAudio = group.map((result) => result.toolResponseToFirstAudioMs);
+    const qualityRuns = group.filter((result) => (result.qualityChecks || []).length > 0);
     cases.push({
       id,
       label: group[0]?.label || id,
@@ -1157,6 +1175,10 @@ function summarizeResults(results) {
       maxEndpointToFirstAudioMs: percentile(endpointToAudio, 1),
       p50EndpointToToolCallMs: percentile(endpointToTool, 0.5),
       p95ToolResponseToFirstAudioMs: percentile(toolToAudio, 0.95),
+      qualityApplicableCount: qualityRuns.length,
+      qualityPassCount: qualityRuns.filter((result) =>
+        (result.qualityChecks || []).every((check) => check.pass),
+      ).length,
       failures: [...new Set(group.flatMap((result) => result.failures || []))],
       warnings: [...new Set(group.flatMap((result) => result.warnings || []))],
     });
@@ -1184,14 +1206,15 @@ function writeReports(outDir, results) {
     '',
     '## Summary',
     '',
-    '| Case | Target | Pass | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Failures |',
-    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Case | Target | Pass | Quality | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Findings |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const item of summary.cases) {
     lines.push([
       item.id,
       item.target,
       `${item.passCount}/${item.count}`,
+      item.qualityApplicableCount ? `${item.qualityPassCount}/${item.qualityApplicableCount}` : '-',
       msCell(item.p50EndpointToFirstAudioMs),
       msCell(item.p95EndpointToFirstAudioMs),
       msCell(item.maxEndpointToFirstAudioMs),
@@ -1204,13 +1227,15 @@ function writeReports(outDir, results) {
     '',
     '## Runs',
     '',
-    '| Case | Pass | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Blocked | Tool args | Interrupt | Failures |',
-    '| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- |',
+    '| Case | Pass | Quality | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Blocked | Tool args | Interrupt | Findings |',
+    '| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | --- |',
   );
   for (const result of results) {
+    const qualityChecks = result.qualityChecks || [];
     lines.push([
       result.repeatIndex ? `${result.id} #${result.repeatIndex}` : result.id,
       result.pass ? 'yes' : 'no',
+      qualityChecks.length ? `${qualityChecks.filter((check) => check.pass).length}/${qualityChecks.length}` : '-',
       msCell(result.endpointToFirstAudioMs),
       msCell(result.endpointToToolCallMs),
       msCell(result.toolResponseToFirstAudioMs),
