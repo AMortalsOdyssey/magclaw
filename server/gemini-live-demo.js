@@ -1122,14 +1122,85 @@ function compactToolText(value) {
   return String(value || '').toLowerCase().replace(/\s+/g, '');
 }
 
+function normalizeChineseDisplayText(value) {
+  let text = String(value || '');
+  const replacements = [
+    ['為', '为'],
+    ['經', '经'],
+    ['創', '创'],
+    ['務', '务'],
+    ['檢', '检'],
+    ['語', '语'],
+    ['遲', '迟'],
+    ['優', '优'],
+    ['級', '级'],
+    ['氣', '气'],
+    ['溫', '温'],
+    ['雲', '云'],
+    ['於', '于'],
+    ['後', '后'],
+    ['請', '请'],
+    ['這', '这'],
+    ['個', '个'],
+    ['臺', '台'],
+    ['灣', '湾'],
+    ['讓', '让'],
+  ];
+  for (const [from, to] of replacements) {
+    text = text.split(from).join(to);
+  }
+  return text
+    .replace(/([\u3400-\u9fff])\s+([\u3400-\u9fff])/g, '$1$2')
+    .replace(/([\u3400-\u9fff])\s+([，。！？；：、])/g, '$1$2')
+    .replace(/([（《“])\s+([\u3400-\u9fff])/g, '$1$2');
+}
+
+function controlIntentText(value) {
+  return compactToolText(value).replace(/[，。！？；：、,.!?;:~～…'"“”‘’()（）[\]{}]/g, '');
+}
+
+function isControlOnlyUtterance(value) {
+  const text = controlIntentText(value);
+  return /^(等一下|等下|等等|稍等|让一下|停一下|停下|先停|暂停|打住|别说了|不要说了|先别说|先别讲|停|stop|wait|pause|holdon|onemoment|waitasecond|hangon)$/.test(text);
+}
+
 function hasWeatherIntent(text) {
   return /天气|气温|温度|下雨|降雨|刮风|多云|晴|阴|weather|forecast|temperature|rain|wind/.test(
     compactToolText(text),
   );
 }
 
+function hasMathIntent(text) {
+  return /(\d|一|二|两|三|四|五|六|七|八|九|十|百|千|万).*(加|减|乘|除|乘以|除以|算|等于|等於|\+|-|\*|×|x|\/|÷|percent|percentage|calculate|math|plus|minus|times|divided)/i.test(
+    compactToolText(text),
+  );
+}
+
+function hasTaskIntent(text) {
+  return /任务|待办|事项|清单|todo|task/i.test(compactToolText(text));
+}
+
+function hasTaskCreateIntent(text) {
+  const compacted = compactToolText(text);
+  return hasTaskIntent(compacted) && /创建|新建|新增|添加|记下|記下|create|add/i.test(compacted);
+}
+
+function hasTaskListIntent(text) {
+  const compacted = compactToolText(text);
+  return hasTaskIntent(compacted) && /列|查|看|显示|展示|list|show/i.test(compacted);
+}
+
 function shouldBlockDemoToolCall(name, args = {}, latestInputTranscript = '') {
   const text = compactToolText(latestInputTranscript);
+  const argText = Object.values(args || {}).join(' ');
+  if (isControlOnlyUtterance(latestInputTranscript) || isControlOnlyUtterance(argText)) {
+    return {
+      blocked: true,
+      reason: 'control_utterance_without_tool_intent',
+      latestInputTranscript,
+    };
+  }
+  if (!text) return { blocked: false };
   if (name === 'get_weather') {
     const city = compactToolText(args.city);
     const cityMentioned = Boolean(city && text.includes(city));
@@ -1150,6 +1221,27 @@ function shouldBlockDemoToolCall(name, args = {}, latestInputTranscript = '') {
         latestInputTranscript,
       };
     }
+  }
+  if (name === 'calculate_expression' && !hasMathIntent(text)) {
+    return {
+      blocked: true,
+      reason: 'math_without_user_intent',
+      latestInputTranscript,
+    };
+  }
+  if (name === 'create_demo_task' && !hasTaskCreateIntent(text)) {
+    return {
+      blocked: true,
+      reason: 'task_create_without_user_intent',
+      latestInputTranscript,
+    };
+  }
+  if (name === 'list_demo_tasks' && !hasTaskListIntent(text)) {
+    return {
+      blocked: true,
+      reason: 'task_list_without_user_intent',
+      latestInputTranscript,
+    };
   }
   return { blocked: false };
 }
@@ -1205,7 +1297,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   };
   const waitForGuardTranscript = async () => {
     const startedAt = Date.now();
-    while (!latestInputTranscript && Date.now() - startedAt < 250) {
+    while (!latestInputTranscript && Date.now() - startedAt < 500) {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     return {
@@ -1266,7 +1358,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           });
         }
         if (message.serverContent?.outputTranscription?.text) {
-          sendWsJson(ws, { type: 'output_transcript', text: message.serverContent.outputTranscription.text });
+          sendWsJson(ws, {
+            type: 'output_transcript',
+            text: normalizeChineseDisplayText(message.serverContent.outputTranscription.text),
+          });
         }
         if (message.serverContent?.interrupted) {
           sendWsJson(ws, { type: 'interrupted' });
@@ -1288,7 +1383,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         }
 
         for (const text of extractTextParts(message)) {
-          sendWsJson(ws, { type: 'text', text });
+          sendWsJson(ws, { type: 'text', text: normalizeChineseDisplayText(text) });
         }
         for (const audio of extractAudioParts(message)) {
           if (lastFlushAt && !loggedFirstOutputAudioAfterFlush) {
@@ -3175,8 +3270,10 @@ export {
   createServer,
   getToolDeclarations,
   makeIndexHtml,
+  normalizeChineseDisplayText,
   publicToolCards,
   resolveCredentialsPath,
+  shouldBlockDemoToolCall,
 };
 
 function isDirectRun() {

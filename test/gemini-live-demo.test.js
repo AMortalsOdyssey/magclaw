@@ -7,8 +7,10 @@ import test from 'node:test';
 import {
   createGeminiSession,
   handleGeminiLiveDemoHttp,
+  normalizeChineseDisplayText,
   resolveGeminiLiveDemoConfig,
   resolveCredentialsPath,
+  shouldBlockDemoToolCall,
 } from '../server/gemini-live-demo.js';
 
 function makeResponse() {
@@ -183,4 +185,56 @@ test('Gemini Live demo degrades to warning when Vertex secret is missing', async
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+test('Gemini Live demo blocks control-only utterances from calling tools', () => {
+  const toolNames = [
+    'get_weather',
+    'google_search',
+    'calculate_expression',
+    'create_demo_task',
+    'list_demo_tasks',
+  ];
+
+  for (const toolName of toolNames) {
+    const guard = shouldBlockDemoToolCall(toolName, { title: '等一下', expression: '(128 + 256) * 0.8' }, '等一下。');
+    assert.equal(guard.blocked, true);
+    assert.equal(guard.reason, 'control_utterance_without_tool_intent');
+  }
+
+  const misheardStop = shouldBlockDemoToolCall('list_demo_tasks', {}, '让 一 下');
+  assert.equal(misheardStop.blocked, true);
+  assert.equal(misheardStop.reason, 'control_utterance_without_tool_intent');
+
+  const noTaskIntent = shouldBlockDemoToolCall('calculate_expression', { expression: '(128 + 256) * 0.8' }, '让 一 下');
+  assert.equal(noTaskIntent.blocked, true);
+
+  assert.equal(
+    shouldBlockDemoToolCall('create_demo_task', { title: '检查实时语音延迟' }, '').blocked,
+    false,
+  );
+  assert.equal(
+    shouldBlockDemoToolCall('create_demo_task', { title: '等一下' }, '').reason,
+    'control_utterance_without_tool_intent',
+  );
+
+  assert.equal(
+    shouldBlockDemoToolCall('get_weather', { city: '杭州' }, '帮我查一下杭州今天的天气').blocked,
+    false,
+  );
+  assert.equal(
+    shouldBlockDemoToolCall('calculate_expression', { expression: '37 * 24' }, '帮我算一下三十七乘以二十四').blocked,
+    false,
+  );
+  assert.equal(
+    shouldBlockDemoToolCall('create_demo_task', { title: '检查实时语音延迟' }, '帮我创建一个任务，标题是检查实时语音延迟').blocked,
+    false,
+  );
+});
+
+test('Gemini Live demo normalizes Chinese output transcript for display', () => {
+  assert.equal(
+    normalizeChineseDisplayText('好的, 已 經為您 創建 任务: "检查 实时 语音 延迟"。37 乘以 24 等於 888。'),
+    '好的, 已经为您创建任务: "检查实时语音延迟"。37 乘以 24 等于 888。',
+  );
 });

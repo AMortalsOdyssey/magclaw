@@ -1063,7 +1063,9 @@ function scoreCase(testCase, metrics) {
   const failures = [];
   const warnings = [];
   const endpointMs = testCase.mode === 'barge_in' ? metrics.firstEndpointMs : metrics.endpointMs;
-  const outputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
+  const rawOutputText = `${metrics.outputTranscript || ''}${metrics.text || ''}`;
+  const outputText = normalizeChineseDisplayText(rawOutputText);
+  metrics.normalizedOutputText = outputText;
   metrics.qualityChecks = [];
   if (!metrics.firstAudioMs && !metrics.firstTextMs) {
     if (testCase.allowNoModelResponse) warnings.push('no_model_response_allowed');
@@ -1139,6 +1141,39 @@ function scoreCase(testCase, metrics) {
 
 function hasTraditionalChinese(text) {
   return /[為創務檢語遲優級氣溫雲於後請這個臺灣嗎]/.test(String(text || ''));
+}
+
+function normalizeChineseDisplayText(value) {
+  let text = String(value || '');
+  const replacements = [
+    ['為', '为'],
+    ['經', '经'],
+    ['創', '创'],
+    ['務', '务'],
+    ['檢', '检'],
+    ['語', '语'],
+    ['遲', '迟'],
+    ['優', '优'],
+    ['級', '级'],
+    ['氣', '气'],
+    ['溫', '温'],
+    ['雲', '云'],
+    ['於', '于'],
+    ['後', '后'],
+    ['請', '请'],
+    ['這', '这'],
+    ['個', '个'],
+    ['臺', '台'],
+    ['灣', '湾'],
+    ['讓', '让'],
+  ];
+  for (const [from, to] of replacements) {
+    text = text.split(from).join(to);
+  }
+  return text
+    .replace(/([\u3400-\u9fff])\s+([\u3400-\u9fff])/g, '$1$2')
+    .replace(/([\u3400-\u9fff])\s+([，。！？；：、])/g, '$1$2')
+    .replace(/([（《“])\s+([\u3400-\u9fff])/g, '$1$2');
 }
 
 function percentile(values, ratio) {
