@@ -133,6 +133,10 @@ import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
 import { handleTeamSharingApi } from './api/team-sharing-routes.js';
 import { handleKnowledgeApi } from './api/knowledge-routes.js';
+import {
+  createGeminiLiveDemoUpgradeHandler,
+  handleGeminiLiveDemoHttp,
+} from './gemini-live-demo.js';
 import { assertKnowledgeDeploySafe, assertKnowledgeSecretConfigured } from './deploy-guard.js';
 import { applyServerYamlConfig } from './config-yaml.js';
 import {
@@ -830,6 +834,12 @@ const {
   sendError,
   sendJson,
 } = serverIo;
+
+const geminiLiveDemoUpgrade = createGeminiLiveDemoUpgradeHandler({
+  cloudAuth,
+  host: HOST,
+  port: PORT,
+});
 
 const conversationModel = createConversationModel({
   getState: () => state,
@@ -1727,6 +1737,7 @@ function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
     || url.pathname.startsWith('/api/auth/')
     || url.pathname.startsWith('/api/team-sharing/')
+    || url.pathname.startsWith('/api/gemini-live/')
     || url.pathname.startsWith('/api/knowledge/')
     || url.pathname.startsWith('/api/console/')
     || url.pathname === '/api/healthz'
@@ -2201,6 +2212,12 @@ async function handleApi(req, res, url) {
   if (!daemonToolAuth && !requireCloudDeploymentApi(req, res, url)) return true;
   if (!requireAppApiAccess(req, res, url)) return true;
 
+  if (await handleGeminiLiveDemoHttp(req, res, url, {
+    cloudAuth,
+    host: HOST,
+    port: PORT,
+  })) return true;
+
   if (await handleSystemApi(req, res, url, systemApiDeps())) return true;
 
   if (await handleAgentToolApi(req, res, url, agentToolApiDeps())) return true;
@@ -2374,6 +2391,11 @@ async function handleRequest(req, res) {
       if (!handled) sendError(res, 404, 'API route not found.');
       return;
     }
+    if (await handleGeminiLiveDemoHttp(req, res, url, {
+      cloudAuth,
+      host: HOST,
+      port: PORT,
+    })) return;
     if (
       url.pathname.startsWith('/team-sharing/')
       || url.pathname.startsWith('/s/')
@@ -2460,13 +2482,14 @@ function safeUpgradeEnd(socket, response) {
 }
 
 const server = http.createServer(handleRequest);
-server.on('upgrade', (req, socket) => {
+server.on('upgrade', (req, socket, head) => {
   socket.on('error', (error) => {
     if (expectedSocketClose(error)) return;
     const code = String(error?.code || error?.errno || 'UNKNOWN');
     const message = String(error?.message || error || 'Upgrade socket error').replace(/\s+/g, ' ').slice(0, 300);
     console.warn(`[server] upgrade socket error path=${upgradeRequestPath(req)} code=${code} message=${message}`);
   });
+  if (geminiLiveDemoUpgrade.handleUpgrade(req, socket, head)) return;
   daemonRelay.handleUpgrade(req, socket).then((handled) => {
     if (!handled) {
       safeUpgradeEnd(socket, 'HTTP/1.1 404 Not Found\r\n\r\n');
@@ -2515,6 +2538,7 @@ function shutdown(signal = 'SIGTERM') {
   forceExit.unref?.();
   setTimeout(() => {
     clearInterval(heartbeatTimer);
+    geminiLiveDemoUpgrade.close?.();
     feishuConnectGateway?.stop?.();
     stopPackageVersionPolling?.();
     stopReminderScheduler();
