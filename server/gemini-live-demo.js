@@ -689,6 +689,13 @@ function makeMicGateConfig() {
   };
 }
 
+function responseDelayWarningMs() {
+  return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2500, {
+    min: 500,
+    max: 15000,
+  });
+}
+
 function sanitizeText(value, maxLength = 1600) {
   return String(value || '')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -1280,7 +1287,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let lastFlushAt = 0;
   let lastFlushReason = '';
   let lastToolResponseSentAt = 0;
+  let lastNonBlockedToolResponseSentAt = 0;
   let lastToolNames = [];
+  let responseWaitSequence = 0;
+  let responseDelayTimer = null;
   let latestInputTranscript = '';
   let latestInputTranscriptAt = 0;
   let loggedFirstInputTranscript = false;
@@ -1294,6 +1304,37 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   });
   const logTrace = (event, fields = {}) => {
     console.info(`[GeminiLiveDemo] trace=${traceId} ${event} ${JSON.stringify(fields)}`);
+  };
+  const clearResponseDelayTimer = () => {
+    if (responseDelayTimer) {
+      clearTimeout(responseDelayTimer);
+      responseDelayTimer = null;
+    }
+  };
+  const responseLatencyPayload = () => ({
+    endpointToAudioMs: lastFlushAt ? Date.now() - lastFlushAt : null,
+    toolResponseToAudioMs: lastToolResponseSentAt ? Date.now() - lastToolResponseSentAt : null,
+    reason: lastFlushReason || null,
+    toolNames: lastToolNames,
+  });
+  const scheduleResponseDelayWarning = (trigger) => {
+    clearResponseDelayTimer();
+    if (!lastFlushAt) return;
+    const sequence = responseWaitSequence;
+    const thresholdMs = responseDelayWarningMs();
+    responseDelayTimer = setTimeout(() => {
+      responseDelayTimer = null;
+      if (closed || sequence !== responseWaitSequence || loggedFirstOutputAudioAfterFlush) return;
+      const payload = {
+        type: 'response_delay_warning',
+        trigger,
+        thresholdMs,
+        ...responseLatencyPayload(),
+      };
+      console.warn(`[GeminiLiveDemo] trace=${traceId} response_delay_warning ${JSON.stringify(payload)}`);
+      sendWsJson(ws, payload);
+    }, thresholdMs);
+    responseDelayTimer.unref?.();
   };
   const waitForGuardTranscript = async () => {
     const startedAt = Date.now();
@@ -1310,6 +1351,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   const close = () => {
     if (closed) return;
     closed = true;
+    clearResponseDelayTimer();
     try {
       session?.close?.();
     } catch {
@@ -1370,6 +1412,9 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           sendWsJson(ws, { type: 'generation_complete' });
         }
         if (message.serverContent?.turnComplete) {
+          if (!loggedFirstOutputAudioAfterFlush && !lastNonBlockedToolResponseSentAt) {
+            clearResponseDelayTimer();
+          }
           sendWsJson(ws, { type: 'turn_complete' });
         }
         if (message.voiceActivityDetectionSignal || message.voiceActivity) {
@@ -1395,6 +1440,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               toolResponseToAudioMs: lastToolResponseSentAt ? Date.now() - lastToolResponseSentAt : null,
               toolNames: lastToolNames,
             });
+            sendWsJson(ws, {
+              type: 'response_latency',
+              ...responseLatencyPayload(),
+            });
+            clearResponseDelayTimer();
           }
           sendWsJson(ws, { type: 'audio', audio, sampleRate: OUTPUT_SAMPLE_RATE });
         }
@@ -1448,6 +1498,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
                 });
                 lastToolResponseSentAt = Date.now();
                 lastToolNames = [`blocked:${name}`];
+                scheduleResponseDelayWarning('blocked_tool_response');
                 logTrace('tool_response_sent', {
                   name,
                   blocked: true,
@@ -1492,7 +1543,9 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
                 ],
               });
               lastToolResponseSentAt = Date.now();
+              lastNonBlockedToolResponseSentAt = lastToolResponseSentAt;
               lastToolNames = [name];
+              scheduleResponseDelayWarning('tool_response');
               logTrace('tool_response_sent', { name, responseBytes, durationMs: toolDurationMs });
             } catch (error) {
               sendWsJson(ws, { type: 'error', message: `Tool response failed: ${error.message || error}` });
@@ -1533,11 +1586,16 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       if (closed || !session) return;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'client_silence').slice(0, 80);
+      lastToolResponseSentAt = 0;
+      lastNonBlockedToolResponseSentAt = 0;
+      lastToolNames = [];
+      responseWaitSequence += 1;
       loggedFirstOutputAudioAfterFlush = false;
       logTrace('client_endpoint', {
         reason: lastFlushReason,
         metrics: meta.metrics || null,
       });
+      scheduleResponseDelayWarning('endpoint');
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
     activityStart(meta = {}) {
@@ -1551,11 +1609,16 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       if (closed || !session) return;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'manual_activity').slice(0, 80);
+      lastToolResponseSentAt = 0;
+      lastNonBlockedToolResponseSentAt = 0;
+      lastToolNames = [];
+      responseWaitSequence += 1;
       loggedFirstOutputAudioAfterFlush = false;
       logTrace('client_activity_end', {
         reason: lastFlushReason,
         metrics: meta.metrics || null,
       });
+      scheduleResponseDelayWarning('endpoint');
       session.sendRealtimeInput({ activityEnd: {} });
     },
     close,
@@ -1631,6 +1694,7 @@ function makeIndexHtml(config) {
     inputSampleRate: INPUT_SAMPLE_RATE,
     outputSampleRate: OUTPUT_SAMPLE_RATE,
     micGate: makeMicGateConfig(),
+    responseDelayWarningMs: responseDelayWarningMs(),
     realtimeTuning: normalizeRealtimeTuning(),
     voices: GEMINI_LIVE_VOICES,
     defaultVoiceName: normalizeVoiceName(),
@@ -2416,6 +2480,20 @@ function makeIndexHtml(config) {
       latencyText.textContent = text;
     }
 
+    function latencyLabel(message) {
+      const endpointMs = Number(message?.endpointToAudioMs);
+      const toolMs = Number(message?.toolResponseToAudioMs);
+      const parts = [];
+      if (Number.isFinite(endpointMs)) parts.push('端点 ' + endpointMs + 'ms');
+      if (Number.isFinite(toolMs)) parts.push('工具后 ' + toolMs + 'ms');
+      return parts.join(' · ') || '--';
+    }
+
+    function delayWarningLabel(message) {
+      const thresholdMs = Number(message?.thresholdMs || CONFIG.responseDelayWarningMs || 2500);
+      return '>' + Math.round(thresholdMs / 100) / 10 + 's';
+    }
+
     function containsInterruptionPhrase(text) {
       return /(等一下|停一下|先停|打住|别说了|暂停|stop|wait|hold on|不是|不对|等等)/i.test(String(text || ''));
     }
@@ -2783,6 +2861,11 @@ function makeIndexHtml(config) {
         }
         assistantSpeakingAt = performance.now();
         void playPcm(message.audio, message.sampleRate);
+      } else if (message.type === 'response_latency') {
+        markLatency(latencyLabel(message));
+      } else if (message.type === 'response_delay_warning') {
+        markLatency(delayWarningLabel(message));
+        addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。');
       } else if (message.type === 'tool_call') {
         addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')');
       } else if (message.type === 'tool_result') {

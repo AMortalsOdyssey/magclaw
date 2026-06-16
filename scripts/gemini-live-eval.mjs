@@ -106,10 +106,10 @@ const CASES = [
     id: 'short_weather_en',
     label: '短命令：英文天气工具调用',
     mode: 'single',
-    segments: [{ text: 'Check the weather in Hangzhou today.', voice: DEFAULT_ENGLISH_VOICE }],
+    segments: [{ text: 'Check the weather in Shanghai, China today.', voice: DEFAULT_ENGLISH_VOICE }],
     expectTool: 'get_weather',
-    expectToolArgs: { city: /Hangzhou|杭州/i },
-    expectOutput: [/Hangzhou|杭州/i, /weather|temperature|degree|celsius|°|天气|气温|温度|度/i],
+    expectToolArgs: { city: /Shanghai|上海/i },
+    expectOutput: [/Shanghai|上海/i, /weather|temperature|degree|celsius|°|天气|气温|温度|度/i],
     maxFirstAudioMs: 2800,
   },
   {
@@ -659,6 +659,7 @@ async function runSingleCase(client, config, testCase, audio, args) {
     events: [],
     toolCalls: [],
     blockedToolCalls: [],
+    responseDelayWarnings: [],
     inputTranscript: '',
     outputTranscript: '',
     text: '',
@@ -839,6 +840,7 @@ async function runWebSocketCase(testCase, audio, args) {
     events: [],
     toolCalls: [],
     blockedToolCalls: [],
+    responseDelayWarnings: [],
     inputTranscript: '',
     outputTranscript: '',
     text: '',
@@ -917,6 +919,29 @@ async function runWebSocketCase(testCase, audio, args) {
       if (!metrics.firstAudioMs) metrics.firstAudioMs = nowMs(startedAt);
       metrics.audioBytes += bytes;
       currentTurnAudioBytes += bytes;
+    }
+    if (message.type === 'response_latency') {
+      metrics.responseLatency = {
+        endpointToAudioMs: Number.isFinite(message.endpointToAudioMs) ? message.endpointToAudioMs : null,
+        toolResponseToAudioMs: Number.isFinite(message.toolResponseToAudioMs) ? message.toolResponseToAudioMs : null,
+        reason: message.reason || '',
+        toolNames: message.toolNames || [],
+        atMs: nowMs(startedAt),
+      };
+      mark('response_latency', metrics.responseLatency);
+    }
+    if (message.type === 'response_delay_warning') {
+      const warning = {
+        trigger: message.trigger || '',
+        thresholdMs: Number.isFinite(message.thresholdMs) ? message.thresholdMs : null,
+        endpointToAudioMs: Number.isFinite(message.endpointToAudioMs) ? message.endpointToAudioMs : null,
+        toolResponseToAudioMs: Number.isFinite(message.toolResponseToAudioMs) ? message.toolResponseToAudioMs : null,
+        reason: message.reason || '',
+        toolNames: message.toolNames || [],
+        atMs: nowMs(startedAt),
+      };
+      metrics.responseDelayWarnings.push(warning);
+      mark('response_delay_warning', warning);
     }
     if (message.type === 'tool_call') {
       if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
@@ -1133,6 +1158,9 @@ function scoreCase(testCase, metrics) {
   if (metrics.blockedToolCalls?.length > 0) {
     warnings.push(`blocked_tool_call:${metrics.blockedToolCalls.map((call) => call.name).join(',')}`);
   }
+  if (metrics.responseDelayWarnings?.length > 0) {
+    warnings.push(`response_delay_warning:${metrics.responseDelayWarnings.map((item) => item.trigger || 'unknown').join(',')}`);
+  }
   metrics.pass = failures.length === 0 && !testCase.expectNoHardPass;
   metrics.failures = failures;
   metrics.warnings = warnings;
@@ -1210,6 +1238,10 @@ function summarizeResults(results) {
       maxEndpointToFirstAudioMs: percentile(endpointToAudio, 1),
       p50EndpointToToolCallMs: percentile(endpointToTool, 0.5),
       p95ToolResponseToFirstAudioMs: percentile(toolToAudio, 0.95),
+      responseDelayWarningCount: group.reduce(
+        (count, result) => count + (result.responseDelayWarnings?.length || 0),
+        0,
+      ),
       qualityApplicableCount: qualityRuns.length,
       qualityPassCount: qualityRuns.filter((result) =>
         (result.qualityChecks || []).every((check) => check.pass),
@@ -1241,8 +1273,8 @@ function writeReports(outDir, results) {
     '',
     '## Summary',
     '',
-    '| Case | Target | Pass | Quality | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Findings |',
-    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Case | Target | Pass | Quality | Delay warnings | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Findings |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const item of summary.cases) {
     lines.push([
@@ -1250,6 +1282,7 @@ function writeReports(outDir, results) {
       item.target,
       `${item.passCount}/${item.count}`,
       item.qualityApplicableCount ? `${item.qualityPassCount}/${item.qualityApplicableCount}` : '-',
+      String(item.responseDelayWarningCount || 0),
       msCell(item.p50EndpointToFirstAudioMs),
       msCell(item.p95EndpointToFirstAudioMs),
       msCell(item.maxEndpointToFirstAudioMs),
@@ -1262,8 +1295,8 @@ function writeReports(outDir, results) {
     '',
     '## Runs',
     '',
-    '| Case | Pass | Quality | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Blocked | Tool args | Interrupt | Findings |',
-    '| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | --- |',
+    '| Case | Pass | Quality | Delay warnings | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Blocked | Tool args | Interrupt | Findings |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | --- |',
   );
   for (const result of results) {
     const qualityChecks = result.qualityChecks || [];
@@ -1271,6 +1304,7 @@ function writeReports(outDir, results) {
       result.repeatIndex ? `${result.id} #${result.repeatIndex}` : result.id,
       result.pass ? 'yes' : 'no',
       qualityChecks.length ? `${qualityChecks.filter((check) => check.pass).length}/${qualityChecks.length}` : '-',
+      String(result.responseDelayWarnings?.length || 0),
       msCell(result.endpointToFirstAudioMs),
       msCell(result.endpointToToolCallMs),
       msCell(result.toolResponseToFirstAudioMs),
