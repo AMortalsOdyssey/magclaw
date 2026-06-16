@@ -110,6 +110,21 @@ const GEMINI_LIVE_VOICES = [
 
 const DEFAULT_VOICE_NAME = 'Kore';
 const demoTasks = new Map();
+const weatherCache = new Map();
+const WEATHER_CACHE_TTL_MS = 5 * 60 * 1000;
+const WEATHER_FETCH_TIMEOUT_MS = 700;
+const COMMON_CITY_COORDINATES = new Map([
+  ['hangzhou', { name: '杭州', country: 'China', latitude: 30.2741, longitude: 120.1551 }],
+  ['杭州', { name: '杭州', country: 'China', latitude: 30.2741, longitude: 120.1551 }],
+  ['beijing', { name: '北京', country: 'China', latitude: 39.9042, longitude: 116.4074 }],
+  ['北京', { name: '北京', country: 'China', latitude: 39.9042, longitude: 116.4074 }],
+  ['shanghai', { name: '上海', country: 'China', latitude: 31.2304, longitude: 121.4737 }],
+  ['上海', { name: '上海', country: 'China', latitude: 31.2304, longitude: 121.4737 }],
+  ['shenzhen', { name: '深圳', country: 'China', latitude: 22.5431, longitude: 114.0579 }],
+  ['深圳', { name: '深圳', country: 'China', latitude: 22.5431, longitude: 114.0579 }],
+  ['guangzhou', { name: '广州', country: 'China', latitude: 23.1291, longitude: 113.2644 }],
+  ['广州', { name: '广州', country: 'China', latitude: 23.1291, longitude: 113.2644 }],
+]);
 
 function parseArgs(argv) {
   const args = {
@@ -296,6 +311,7 @@ function normalizeRealtimeTuning(value = {}) {
       min: 100,
       max: 3000,
     }),
+    manualActivity: Boolean(value.manualActivity || value.activityMode === 'manual'),
     activityHandling: enumValue(
       value.activityHandling,
       ['START_OF_ACTIVITY_INTERRUPTS', 'NO_INTERRUPTION'],
@@ -644,7 +660,7 @@ function makeLiveConfig(sessionOptions = {}) {
     outputAudioTranscription: {},
     realtimeInputConfig: {
       automaticActivityDetection: {
-        disabled: false,
+        disabled: realtimeTuning.manualActivity,
         startOfSpeechSensitivity: realtimeTuning.startSensitivity,
         endOfSpeechSensitivity: realtimeTuning.endSensitivity,
         prefixPaddingMs: realtimeTuning.prefixPaddingMs,
@@ -697,49 +713,102 @@ function decodeHtml(value) {
     .replace(/&gt;/g, '>');
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': 'MagClaw Gemini Live local demo/1.0',
-    },
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
-  return response.json();
+async function fetchJson(url, options = {}) {
+  const timeoutMs = Number(options.timeoutMs) || 2500;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        accept: 'application/json',
+        'user-agent': 'MagClaw Gemini Live local demo/1.0',
+      },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
+    return response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function weatherCacheKey(city) {
+  return String(city || '').trim().toLowerCase();
+}
+
+function getCachedWeather(city) {
+  const item = weatherCache.get(weatherCacheKey(city));
+  if (!item) return null;
+  if (Date.now() - item.cachedAt > WEATHER_CACHE_TTL_MS) {
+    weatherCache.delete(weatherCacheKey(city));
+    return null;
+  }
+  return { ...item.value, cache: 'hit' };
+}
+
+function setCachedWeather(city, value) {
+  weatherCache.set(weatherCacheKey(city), { cachedAt: Date.now(), value });
+}
+
+function fallbackWeather(city, reason) {
+  return {
+    city,
+    condition: '多云',
+    temperature_c: 24,
+    humidity_percent: 58,
+    wind_kmh: 9,
+    observed_at: new Date().toISOString(),
+    source: 'demo fallback weather',
+    fallback_reason: reason,
+  };
 }
 
 async function getWeather(rawArgs = {}) {
   const city = String(rawArgs.city || '').trim();
   if (!city) return { error: 'city is required' };
+  const cached = getCachedWeather(city);
+  if (cached) return cached;
 
-  const geoUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
-  geoUrl.searchParams.set('name', city);
-  geoUrl.searchParams.set('count', '1');
-  geoUrl.searchParams.set('language', 'zh');
-  geoUrl.searchParams.set('format', 'json');
-  const geo = await fetchJson(geoUrl);
-  const place = geo.results?.[0];
-  if (!place) {
-    return { city, error: 'city_not_found', source: 'Open-Meteo' };
+  let place = COMMON_CITY_COORDINATES.get(weatherCacheKey(city));
+  try {
+    if (!place) {
+      const geoUrl = new URL('https://geocoding-api.open-meteo.com/v1/search');
+      geoUrl.searchParams.set('name', city);
+      geoUrl.searchParams.set('count', '1');
+      geoUrl.searchParams.set('language', 'zh');
+      geoUrl.searchParams.set('format', 'json');
+      const geo = await fetchJson(geoUrl, { timeoutMs: WEATHER_FETCH_TIMEOUT_MS });
+      place = geo.results?.[0];
+    }
+    if (!place) {
+      return { city, error: 'city_not_found', source: 'Open-Meteo' };
+    }
+
+    const weatherUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    weatherUrl.searchParams.set('latitude', String(place.latitude));
+    weatherUrl.searchParams.set('longitude', String(place.longitude));
+    weatherUrl.searchParams.set('current', 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code');
+    weatherUrl.searchParams.set('timezone', 'auto');
+    const weather = await fetchJson(weatherUrl, { timeoutMs: WEATHER_FETCH_TIMEOUT_MS });
+    const current = weather.current || {};
+    const result = {
+      city,
+      resolved_name: [place.name, place.admin1, place.country].filter(Boolean).join(', '),
+      temperature_c: current.temperature_2m,
+      humidity_percent: current.relative_humidity_2m,
+      wind_kmh: current.wind_speed_10m,
+      weather_code: current.weather_code,
+      observed_at: current.time,
+      source: 'Open-Meteo public API',
+    };
+    setCachedWeather(city, result);
+    return result;
+  } catch (error) {
+    const reason = error?.name === 'AbortError' ? 'timeout' : 'fetch_failed';
+    const result = fallbackWeather(city, reason);
+    setCachedWeather(city, result);
+    return result;
   }
-
-  const weatherUrl = new URL('https://api.open-meteo.com/v1/forecast');
-  weatherUrl.searchParams.set('latitude', String(place.latitude));
-  weatherUrl.searchParams.set('longitude', String(place.longitude));
-  weatherUrl.searchParams.set('current', 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code');
-  weatherUrl.searchParams.set('timezone', 'auto');
-  const weather = await fetchJson(weatherUrl);
-  const current = weather.current || {};
-  return {
-    city,
-    resolved_name: [place.name, place.admin1, place.country].filter(Boolean).join(', '),
-    temperature_c: current.temperature_2m,
-    humidity_percent: current.relative_humidity_2m,
-    wind_kmh: current.wind_speed_10m,
-    weather_code: current.weather_code,
-    observed_at: current.time,
-    source: 'Open-Meteo public API',
-  };
 }
 
 function parseGoogleResults(html) {
@@ -1049,6 +1118,42 @@ async function runDemoTool(name, args) {
   return { error: `Unknown tool: ${name}` };
 }
 
+function compactToolText(value) {
+  return String(value || '').toLowerCase().replace(/\s+/g, '');
+}
+
+function hasWeatherIntent(text) {
+  return /天气|气温|温度|下雨|降雨|刮风|多云|晴|阴|weather|forecast|temperature|rain|wind/.test(
+    compactToolText(text),
+  );
+}
+
+function shouldBlockDemoToolCall(name, args = {}, latestInputTranscript = '') {
+  const text = compactToolText(latestInputTranscript);
+  if (name === 'get_weather') {
+    const city = compactToolText(args.city);
+    const cityMentioned = Boolean(city && text.includes(city));
+    if (!hasWeatherIntent(text) && !cityMentioned) {
+      return {
+        blocked: true,
+        reason: 'weather_without_user_intent',
+        latestInputTranscript,
+      };
+    }
+  }
+  if (name === 'google_search') {
+    const hasSearchIntent = /搜索|搜一下|查一下|查找|google|谷歌|search|look up|find|research/.test(text);
+    if (!hasSearchIntent) {
+      return {
+        blocked: true,
+        reason: 'search_without_user_intent',
+        latestInputTranscript,
+      };
+    }
+  }
+  return { blocked: false };
+}
+
 function extractAudioParts(message) {
   const parts = message.serverContent?.modelTurn?.parts || [];
   const chunks = [];
@@ -1084,6 +1189,8 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let lastFlushReason = '';
   let lastToolResponseSentAt = 0;
   let lastToolNames = [];
+  let latestInputTranscript = '';
+  let latestInputTranscriptAt = 0;
   let loggedFirstInputTranscript = false;
   let loggedFirstOutputAudioAfterFlush = false;
   const traceId = randomUUID().slice(0, 8);
@@ -1095,6 +1202,17 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   });
   const logTrace = (event, fields = {}) => {
     console.info(`[GeminiLiveDemo] trace=${traceId} ${event} ${JSON.stringify(fields)}`);
+  };
+  const waitForGuardTranscript = async () => {
+    const startedAt = Date.now();
+    while (!latestInputTranscript && Date.now() - startedAt < 250) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return {
+      text: latestInputTranscript,
+      ageMs: latestInputTranscriptAt ? Date.now() - latestInputTranscriptAt : null,
+      waitedMs: Date.now() - startedAt,
+    };
   };
 
   const close = () => {
@@ -1131,6 +1249,8 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           }
         }
         if (message.serverContent?.inputTranscription?.text) {
+          latestInputTranscript = message.serverContent.inputTranscription.text;
+          latestInputTranscriptAt = Date.now();
           if (!loggedFirstInputTranscript) {
             loggedFirstInputTranscript = true;
             logTrace('first_input_transcript', {
@@ -1188,28 +1308,82 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         for (const call of calls) {
           const name = call.name || 'unknown';
           const callArgs = call.args || {};
-          logTrace('tool_call', {
-            name,
-            fromEndpointMs: lastFlushAt ? Date.now() - lastFlushAt : null,
-          });
-          sendWsJson(ws, {
-            type: 'tool_call',
-            id: call.id || null,
-            name,
-            args: callArgs,
-          });
           void (async () => {
+            const guardTranscript = await waitForGuardTranscript();
+            const guard = shouldBlockDemoToolCall(name, callArgs, guardTranscript.text);
+            logTrace('tool_call', {
+              name,
+              fromEndpointMs: lastFlushAt ? Date.now() - lastFlushAt : null,
+              transcriptWaitMs: guardTranscript.waitedMs,
+              transcriptAgeMs: guardTranscript.ageMs,
+              blocked: guard.blocked || undefined,
+              reason: guard.blocked ? guard.reason : undefined,
+            });
+            if (guard.blocked) {
+              const output = {
+                error: 'blocked_tool_call',
+                reason: guard.reason,
+                message: 'The tool call was blocked because the latest user utterance did not clearly request it.',
+              };
+              const toolStartedAt = Date.now();
+              sendWsJson(ws, {
+                type: 'tool_blocked',
+                id: call.id || null,
+                name,
+                args: callArgs,
+                reason: guard.reason,
+              });
+              sendWsJson(ws, {
+                type: 'tool_result',
+                id: call.id || null,
+                name,
+                result: output,
+                blocked: true,
+                durationMs: 0,
+              });
+              try {
+                session.sendToolResponse({
+                  functionResponses: [
+                    {
+                      id: call.id,
+                      name,
+                      response: { output },
+                    },
+                  ],
+                });
+                lastToolResponseSentAt = Date.now();
+                lastToolNames = [`blocked:${name}`];
+                logTrace('tool_response_sent', {
+                  name,
+                  blocked: true,
+                  responseBytes: Buffer.byteLength(JSON.stringify(output), 'utf8'),
+                  durationMs: Date.now() - toolStartedAt,
+                });
+              } catch (error) {
+                sendWsJson(ws, { type: 'error', message: `Tool response failed: ${error.message || error}` });
+              }
+              return;
+            }
+            sendWsJson(ws, {
+              type: 'tool_call',
+              id: call.id || null,
+              name,
+              args: callArgs,
+            });
             let output;
+            const toolStartedAt = Date.now();
             try {
               output = await runDemoTool(name, callArgs);
             } catch (error) {
               output = { error: error.message || String(error) };
             }
+            const toolDurationMs = Date.now() - toolStartedAt;
             sendWsJson(ws, {
               type: 'tool_result',
               id: call.id || null,
               name,
               result: output,
+              durationMs: toolDurationMs,
             });
             try {
               const responseBytes = Buffer.byteLength(JSON.stringify(output || {}), 'utf8');
@@ -1224,7 +1398,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               });
               lastToolResponseSentAt = Date.now();
               lastToolNames = [name];
-              logTrace('tool_response_sent', { name, responseBytes });
+              logTrace('tool_response_sent', { name, responseBytes, durationMs: toolDurationMs });
             } catch (error) {
               sendWsJson(ws, { type: 'error', message: `Tool response failed: ${error.message || error}` });
             }
@@ -1270,6 +1444,24 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         metrics: meta.metrics || null,
       });
       session.sendRealtimeInput({ audioStreamEnd: true });
+    },
+    activityStart(meta = {}) {
+      if (closed || !session) return;
+      logTrace('client_activity_start', {
+        reason: String(meta.reason || 'manual_activity').slice(0, 80),
+      });
+      session.sendRealtimeInput({ activityStart: {} });
+    },
+    activityEnd(meta = {}) {
+      if (closed || !session) return;
+      lastFlushAt = Date.now();
+      lastFlushReason = String(meta.reason || 'manual_activity').slice(0, 80);
+      loggedFirstOutputAudioAfterFlush = false;
+      logTrace('client_activity_end', {
+        reason: lastFlushReason,
+        metrics: meta.metrics || null,
+      });
+      session.sendRealtimeInput({ activityEnd: {} });
     },
     close,
   };
@@ -2699,6 +2891,21 @@ function createServer(config) {
           reason: String(message.reason || 'client_silence').slice(0, 80),
         });
       }
+      if (message.type === 'activity_start') {
+        live?.activityStart({
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
+        });
+      }
+      if (message.type === 'activity_end') {
+        live?.activityEnd({
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
+        });
+        sendWsJson(ws, {
+          type: 'endpoint',
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
+        });
+      }
     });
 
     ws.on('close', () => {
@@ -2913,6 +3120,21 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
         sendWsJson(ws, {
           type: 'endpoint',
           reason: String(message.reason || 'client_silence').slice(0, 80),
+        });
+      }
+      if (message.type === 'activity_start') {
+        live?.activityStart({
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
+        });
+      }
+      if (message.type === 'activity_end') {
+        live?.activityEnd({
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
+        });
+        sendWsJson(ws, {
+          type: 'endpoint',
+          reason: String(message.reason || 'manual_activity').slice(0, 80),
         });
       }
     });

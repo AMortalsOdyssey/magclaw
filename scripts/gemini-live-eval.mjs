@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, Type } from '@google/genai';
+import { WebSocket } from 'ws';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,6 +24,7 @@ const DEFAULT_ENV_FILE = path.join(__dirname, 'gemini-live.env.local');
 const DEFAULT_OUT_DIR = path.join(ROOT, 'tmp', 'gemini-live-eval');
 const DEFAULT_CHUNK_MS = 40;
 const DEFAULT_TIMEOUT_MS = 45_000;
+const DEFAULT_WS_URL = 'ws://127.0.0.1:8787/ws/gemini-live';
 const DEFAULT_TTS_VOICE = 'Tingting';
 const DEFAULT_ENGLISH_VOICE = 'Samantha';
 const DEFAULT_PRE_SILENCE_MS = 350;
@@ -138,6 +140,9 @@ Options:
   --case <id>          Run one case. Can be repeated.
   --all                Run all default cases.
   --limit <n>          Run the first n selected cases.
+  --repeat <n>         Repeat each selected case n times, default 1.
+  --target <name>      "sdk" calls Google directly; "websocket" calls MagClaw WS. Default sdk.
+  --ws-url <url>       WebSocket URL for --target websocket, default ${DEFAULT_WS_URL}.
   --dry-run            Generate audio and report the plan without calling Gemini.
   --out-dir <path>     Output directory, default tmp/gemini-live-eval.
   --env <path>         Env file, default scripts/gemini-live.env.local.
@@ -162,6 +167,9 @@ function parseArgs(argv) {
     chunkMs: DEFAULT_CHUNK_MS,
     inputField: 'audio',
     activityMode: 'manual',
+    repeat: 1,
+    target: 'sdk',
+    wsUrl: DEFAULT_WS_URL,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     keepAudio: undefined,
   };
@@ -176,6 +184,9 @@ function parseArgs(argv) {
     else if (arg === '--case') args.cases.push(next());
     else if (arg === '--all') args.all = true;
     else if (arg === '--limit') args.limit = Number(next());
+    else if (arg === '--repeat') args.repeat = Number(next());
+    else if (arg === '--target') args.target = next();
+    else if (arg === '--ws-url') args.wsUrl = next();
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--out-dir') args.outDir = path.resolve(next());
     else if (arg === '--env') args.envFile = path.resolve(next());
@@ -542,6 +553,28 @@ async function streamPcm(session, pcm, args, metrics, label) {
   });
 }
 
+async function streamPcmToWebSocket(ws, pcm, args, metrics, label) {
+  const chunkBytes = Math.max(2, Math.floor((INPUT_SAMPLE_RATE * 2 * args.chunkMs) / 1000));
+  const startedAt = Date.now();
+  let chunks = 0;
+  for (let offset = 0; offset < pcm.length; offset += chunkBytes) {
+    const chunk = pcm.subarray(offset, Math.min(offset + chunkBytes, pcm.length));
+    ws.send(chunk);
+    chunks += 1;
+    await sleep(args.chunkMs);
+  }
+  metrics.streams.push({
+    label,
+    chunks,
+    audioMs: Math.round((pcm.length / 2 / INPUT_SAMPLE_RATE) * 1000),
+    wallMs: Date.now() - startedAt,
+  });
+}
+
+function sendWsJson(ws, payload) {
+  ws.send(JSON.stringify(payload));
+}
+
 function selectedCases(args) {
   if (args.listCases) return [];
   let cases;
@@ -574,8 +607,8 @@ function getRuntimeConfig(args) {
   };
 }
 
-function validateConfig(config, dryRun) {
-  if (dryRun) return;
+function validateConfig(config, dryRun, target) {
+  if (dryRun || target === 'websocket') return;
   if (!config.credentialsPath || !existsSync(config.credentialsPath)) {
     throw new Error('Missing GOOGLE_APPLICATION_CREDENTIALS. Use --dry-run for audio-only generation.');
   }
@@ -611,10 +644,12 @@ async function runSingleCase(client, config, testCase, audio, args) {
     id: testCase.id,
     label: testCase.label,
     mode: testCase.mode,
+    target: 'sdk',
     startedAt: new Date(startedAt).toISOString(),
     streams: [],
     events: [],
     toolCalls: [],
+    blockedToolCalls: [],
     inputTranscript: '',
     outputTranscript: '',
     text: '',
@@ -694,11 +729,21 @@ async function runSingleCase(client, config, testCase, audio, args) {
         if (message.serverContent?.generationComplete) mark('generation_complete');
         if (message.serverContent?.turnComplete) {
           mark('turn_complete');
+          const hadEmptyTurn =
+            currentTurnToolCalls === 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
           const hadOnlyToolCallsThisTurn =
             currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
           currentTurnAudioBytes = 0;
           currentTurnTextChars = 0;
           currentTurnToolCalls = 0;
+          if (
+            hadEmptyTurn &&
+            testCase.expectTool &&
+            !metrics.toolCalls.some((call) => call.name === testCase.expectTool)
+          ) {
+            mark('empty_turn_complete_waiting_for_tool', { expectedTool: testCase.expectTool });
+            return;
+          }
           if (hadOnlyToolCallsThisTurn) {
             mark('tool_turn_complete');
             return;
@@ -764,6 +809,247 @@ async function runSingleCase(client, config, testCase, audio, args) {
   return scoreCase(testCase, metrics);
 }
 
+function getAudioMessageBytes(audio) {
+  if (!audio) return 0;
+  if (typeof audio === 'string') return Buffer.byteLength(audio, 'base64');
+  if (audio instanceof ArrayBuffer) return audio.byteLength;
+  if (ArrayBuffer.isView(audio)) return audio.byteLength;
+  if (Array.isArray(audio.data)) return audio.data.length;
+  return 0;
+}
+
+async function runWebSocketCase(testCase, audio, args) {
+  const startedAt = Date.now();
+  const metrics = {
+    id: testCase.id,
+    label: testCase.label,
+    mode: testCase.mode,
+    target: 'websocket',
+    startedAt: new Date(startedAt).toISOString(),
+    streams: [],
+    events: [],
+    toolCalls: [],
+    blockedToolCalls: [],
+    inputTranscript: '',
+    outputTranscript: '',
+    text: '',
+    audioBytes: 0,
+  };
+  const mark = (name, extra = {}) => {
+    metrics.events.push({ name, atMs: nowMs(startedAt), ...extra });
+  };
+
+  let ws;
+  let finished = false;
+  let resolveReady;
+  let resolveDone;
+  const ready = new Promise((resolve) => {
+    resolveReady = resolve;
+  });
+  const done = new Promise((resolve) => {
+    resolveDone = resolve;
+  });
+  let currentTurnAudioBytes = 0;
+  let currentTurnTextChars = 0;
+  let currentTurnToolCalls = 0;
+
+  ws = new WebSocket(args.wsUrl);
+  ws.binaryType = 'arraybuffer';
+  ws.on('open', () => mark('ws_open'));
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) return;
+    let message;
+    try {
+      message = JSON.parse(String(data));
+    } catch {
+      return;
+    }
+    if (message.type === 'awaiting_start') {
+      mark('awaiting_start');
+      sendWsJson(ws, {
+        type: 'start',
+        voiceName: 'Puck',
+        systemInstruction: SYSTEM_INSTRUCTION,
+        realtimeTuning: {
+          manualActivity: args.activityMode === 'manual',
+          activityMode: args.activityMode,
+          silenceDurationMs: 420,
+          prefixPaddingMs: 140,
+          startSensitivity: 'START_SENSITIVITY_HIGH',
+          endSensitivity: 'END_SENSITIVITY_HIGH',
+          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+        },
+      });
+      return;
+    }
+    if (message.type === 'starting') mark('starting');
+    if (message.type === 'setup_complete') mark('setup_complete', { sessionId: message.sessionId || null });
+    if (message.type === 'ready') {
+      mark('ready');
+      resolveReady();
+    }
+    if (message.type === 'endpoint') mark('endpoint', { reason: message.reason || '' });
+    if (message.type === 'input_transcript') {
+      if (!metrics.firstInputTranscriptMs) metrics.firstInputTranscriptMs = nowMs(startedAt);
+      metrics.inputTranscript += message.text || '';
+    }
+    if (message.type === 'output_transcript') {
+      if (!metrics.firstOutputTranscriptMs) metrics.firstOutputTranscriptMs = nowMs(startedAt);
+      metrics.outputTranscript += message.text || '';
+    }
+    if (message.type === 'text') {
+      if (!metrics.firstTextMs) metrics.firstTextMs = nowMs(startedAt);
+      metrics.text += message.text || '';
+      currentTurnTextChars += String(message.text || '').length;
+    }
+    if (message.type === 'audio') {
+      const bytes = getAudioMessageBytes(message.audio);
+      if (!metrics.firstAudioMs) metrics.firstAudioMs = nowMs(startedAt);
+      metrics.audioBytes += bytes;
+      currentTurnAudioBytes += bytes;
+    }
+    if (message.type === 'tool_call') {
+      if (!metrics.firstToolCallMs) metrics.firstToolCallMs = nowMs(startedAt);
+      metrics.toolCalls.push({
+        name: message.name || 'unknown',
+        args: message.args || {},
+        atMs: nowMs(startedAt),
+      });
+      currentTurnToolCalls += 1;
+    }
+    if (message.type === 'tool_blocked') {
+      metrics.blockedToolCalls.push({
+        name: message.name || 'unknown',
+        args: message.args || {},
+        reason: message.reason || '',
+        atMs: nowMs(startedAt),
+      });
+      mark('tool_blocked', { name: message.name || 'unknown', reason: message.reason || '' });
+    }
+    if (message.type === 'tool_result') {
+      metrics.lastToolResponseSentMs = nowMs(startedAt);
+      metrics.lastToolDurationMs = Number.isFinite(message.durationMs) ? message.durationMs : undefined;
+      const toolCall = [...metrics.toolCalls].reverse().find((call) => call.name === message.name);
+      if (toolCall && Number.isFinite(message.durationMs)) toolCall.durationMs = message.durationMs;
+      mark('tool_result', { name: message.name || 'unknown' });
+    }
+    if (message.type === 'interrupted') {
+      if (!metrics.interruptedMs) metrics.interruptedMs = nowMs(startedAt);
+      mark('interrupted');
+    }
+    if (message.type === 'turn_complete') {
+      mark('turn_complete');
+      const hadEmptyTurn =
+        currentTurnToolCalls === 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+      const hadOnlyToolCallsThisTurn =
+        currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+      currentTurnAudioBytes = 0;
+      currentTurnTextChars = 0;
+      currentTurnToolCalls = 0;
+      if (
+        hadEmptyTurn &&
+        testCase.expectTool &&
+        !metrics.toolCalls.some((call) => call.name === testCase.expectTool)
+      ) {
+        mark('empty_turn_complete_waiting_for_tool', { expectedTool: testCase.expectTool });
+        return;
+      }
+      if (hadOnlyToolCallsThisTurn) {
+        mark('tool_turn_complete');
+        return;
+      }
+      if (testCase.mode !== 'barge_in' || metrics.interruptedMs || metrics.toolCalls.length > 0) {
+        finished = true;
+        resolveDone('turn_complete');
+      }
+    }
+    if (message.type === 'error' || message.type === 'warning') {
+      metrics.error = message.message || message.code || message.type;
+      finished = true;
+      resolveReady();
+      resolveDone(message.type);
+    }
+    if (message.type === 'closed') {
+      metrics.closed = { code: message.code ?? null, reason: message.reason || '' };
+      if (!finished) resolveDone('closed');
+    }
+  });
+  ws.on('error', (error) => {
+    metrics.error = error?.message || String(error);
+    finished = true;
+    resolveReady();
+    resolveDone('error');
+  });
+  ws.on('close', (code, reason) => {
+    metrics.closed = { code, reason: String(reason || '') };
+    if (!finished) {
+      resolveReady();
+      resolveDone('closed');
+    }
+  });
+
+  await Promise.race([ready, sleep(12_000)]);
+  if (!metrics.events.some((event) => event.name === 'ready')) {
+    metrics.setupWarning = 'ready_not_seen_before_upload';
+  }
+  if (metrics.error || ws.readyState !== WebSocket.OPEN) {
+    metrics.finishReason = metrics.error ? 'error' : 'not_ready';
+    metrics.finishedAtMs = nowMs(startedAt);
+    return scoreCase(testCase, metrics);
+  }
+
+  mark('upload_start', { phase: 'first' });
+  if (testCase.mode === 'barge_in') {
+    if (args.activityMode === 'manual') sendWsJson(ws, { type: 'activity_start', reason: 'eval_first' });
+    await streamPcmToWebSocket(ws, audio.firstPcm, args, metrics, 'first');
+    if (args.activityMode === 'manual') {
+      sendWsJson(ws, { type: 'activity_end', reason: 'eval_first' });
+    } else {
+      sendWsJson(ws, { type: 'audio_stream_end', reason: 'eval_first' });
+    }
+    metrics.firstEndpointMs = nowMs(startedAt);
+    while (!metrics.firstAudioMs && !metrics.error && nowMs(startedAt) < args.timeoutMs) {
+      await sleep(20);
+    }
+    await sleep(testCase.interruptAfterFirstAudioMs || 400);
+    metrics.interruptUploadStartMs = nowMs(startedAt);
+    mark('upload_start', { phase: 'interrupt' });
+    if (args.activityMode === 'manual') sendWsJson(ws, { type: 'activity_start', reason: 'eval_interrupt' });
+    await streamPcmToWebSocket(ws, audio.interruptPcm, args, metrics, 'interrupt');
+    if (args.activityMode === 'manual') {
+      sendWsJson(ws, { type: 'activity_end', reason: 'eval_interrupt' });
+    } else {
+      sendWsJson(ws, { type: 'audio_stream_end', reason: 'eval_interrupt' });
+    }
+    metrics.interruptEndpointMs = nowMs(startedAt);
+  } else {
+    if (args.activityMode === 'manual') sendWsJson(ws, { type: 'activity_start', reason: 'eval_single' });
+    await streamPcmToWebSocket(ws, audio.pcm, args, metrics, 'single');
+    if (args.activityMode === 'manual') {
+      sendWsJson(ws, { type: 'activity_end', reason: 'eval_single' });
+    } else {
+      sendWsJson(ws, { type: 'audio_stream_end', reason: 'eval_single' });
+    }
+    metrics.endpointMs = nowMs(startedAt);
+  }
+
+  const reason = await Promise.race([done, sleep(args.timeoutMs).then(() => 'timeout')]);
+  metrics.finishReason = reason;
+  metrics.finishedAtMs = nowMs(startedAt);
+  try {
+    ws.close(1000, 'eval complete');
+    await Promise.race([
+      new Promise((resolve) => ws.once('close', resolve)),
+      sleep(120),
+    ]);
+    if (ws.readyState !== WebSocket.CLOSED) ws.terminate();
+  } catch {
+    // best effort
+  }
+  return scoreCase(testCase, metrics);
+}
+
 function scoreCase(testCase, metrics) {
   const failures = [];
   const warnings = [];
@@ -818,6 +1104,9 @@ function scoreCase(testCase, metrics) {
   if (testCase.expectNoHardPass) {
     warnings.push('manual_review_only_multi_speaker_case');
   }
+  if (metrics.blockedToolCalls?.length > 0) {
+    warnings.push(`blocked_tool_call:${metrics.blockedToolCalls.map((call) => call.name).join(',')}`);
+  }
   metrics.pass = failures.length === 0 && !testCase.expectNoHardPass;
   metrics.failures = failures;
   metrics.warnings = warnings;
@@ -828,29 +1117,100 @@ function hasTraditionalChinese(text) {
   return /[為創務檢語遲優級氣溫雲於後請這個臺灣嗎]/.test(String(text || ''));
 }
 
+function percentile(values, ratio) {
+  const sorted = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (sorted.length === 0) return undefined;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * ratio) - 1));
+  return sorted[index];
+}
+
+function msCell(value) {
+  return value === undefined ? '-' : `${value}ms`;
+}
+
+function summarizeResults(results) {
+  const byCase = new Map();
+  for (const result of results) {
+    if (!byCase.has(result.id)) byCase.set(result.id, []);
+    byCase.get(result.id).push(result);
+  }
+  const cases = [];
+  for (const [id, group] of byCase.entries()) {
+    const endpointToAudio = group.map((result) => result.endpointToFirstAudioMs);
+    const endpointToTool = group.map((result) => result.endpointToToolCallMs);
+    const toolToAudio = group.map((result) => result.toolResponseToFirstAudioMs);
+    cases.push({
+      id,
+      label: group[0]?.label || id,
+      target: group[0]?.target || 'sdk',
+      count: group.length,
+      passCount: group.filter((result) => result.pass).length,
+      p50EndpointToFirstAudioMs: percentile(endpointToAudio, 0.5),
+      p95EndpointToFirstAudioMs: percentile(endpointToAudio, 0.95),
+      maxEndpointToFirstAudioMs: percentile(endpointToAudio, 1),
+      p50EndpointToToolCallMs: percentile(endpointToTool, 0.5),
+      p95ToolResponseToFirstAudioMs: percentile(toolToAudio, 0.95),
+      failures: [...new Set(group.flatMap((result) => result.failures || []))],
+      warnings: [...new Set(group.flatMap((result) => result.warnings || []))],
+    });
+  }
+  return {
+    total: results.length,
+    passed: results.filter((result) => result.pass).length,
+    failed: results.filter((result) => !result.pass && !(result.warnings || []).includes('manual_review_only_multi_speaker_case')).length,
+    cases,
+  };
+}
+
 function writeReports(outDir, results) {
   const reportJson = path.join(outDir, 'report.json');
   const reportMd = path.join(outDir, 'report.md');
-  writeFileSync(reportJson, JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2));
+  const summary = summarizeResults(results);
+  writeFileSync(reportJson, JSON.stringify({ generatedAt: new Date().toISOString(), summary, results }, null, 2));
 
   const lines = [
     '# Gemini Live Eval Report',
     '',
     `Generated: ${new Date().toISOString()}`,
     '',
-    '| Case | Pass | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Tool args | Interrupt | Failures |',
-    '| --- | --- | ---: | ---: | ---: | --- | --- | ---: | --- |',
+    `Total: ${summary.total}, Passed: ${summary.passed}, Failed: ${summary.failed}`,
+    '',
+    '## Summary',
+    '',
+    '| Case | Target | Pass | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Failures |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
+  for (const item of summary.cases) {
+    lines.push([
+      item.id,
+      item.target,
+      `${item.passCount}/${item.count}`,
+      msCell(item.p50EndpointToFirstAudioMs),
+      msCell(item.p95EndpointToFirstAudioMs),
+      msCell(item.maxEndpointToFirstAudioMs),
+      msCell(item.p50EndpointToToolCallMs),
+      msCell(item.p95ToolResponseToFirstAudioMs),
+      item.failures.join('; ') || item.warnings.join('; ') || '-',
+    ].join(' | '));
+  }
+  lines.push(
+    '',
+    '## Runs',
+    '',
+    '| Case | Pass | Endpoint->First audio | Endpoint->Tool | Tool->Audio | Tools | Blocked | Tool args | Interrupt | Failures |',
+    '| --- | --- | ---: | ---: | ---: | --- | --- | --- | ---: | --- |',
+  );
   for (const result of results) {
     lines.push([
-      result.id,
+      result.repeatIndex ? `${result.id} #${result.repeatIndex}` : result.id,
       result.pass ? 'yes' : 'no',
-      result.endpointToFirstAudioMs === undefined ? '-' : `${result.endpointToFirstAudioMs}ms`,
-      result.endpointToToolCallMs === undefined ? '-' : `${result.endpointToToolCallMs}ms`,
-      result.toolResponseToFirstAudioMs === undefined ? '-' : `${result.toolResponseToFirstAudioMs}ms`,
+      msCell(result.endpointToFirstAudioMs),
+      msCell(result.endpointToToolCallMs),
+      msCell(result.toolResponseToFirstAudioMs),
       result.toolCalls.map((call) => call.name).join(', ') || '-',
+      result.blockedToolCalls?.map((call) => `${call.name}:${call.reason}`).join(', ') || '-',
       result.toolCalls.map((call) => JSON.stringify(call.args)).join('<br>') || '-',
-      result.interruptLatencyMs === undefined ? '-' : `${result.interruptLatencyMs}ms`,
+      msCell(result.interruptLatencyMs),
       result.failures.join('; ') || result.warnings.join('; ') || '-',
     ].join(' | '));
   }
@@ -880,6 +1240,8 @@ async function main() {
   if (!commandExists('ffmpeg')) throw new Error('ffmpeg is required for audio conversion.');
   if (!Number.isFinite(args.chunkMs) || args.chunkMs <= 0) throw new Error('--chunk-ms must be positive.');
   if (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0) throw new Error('--timeout-ms must be positive.');
+  if (!Number.isInteger(args.repeat) || args.repeat < 1) throw new Error('--repeat must be a positive integer.');
+  if (!['sdk', 'websocket'].includes(args.target)) throw new Error('--target must be sdk or websocket.');
   if (!['audio', 'media'].includes(args.inputField)) throw new Error('--input-field must be audio or media.');
   if (!['auto', 'manual'].includes(args.activityMode)) {
     throw new Error('--activity-mode must be auto or manual.');
@@ -887,7 +1249,7 @@ async function main() {
 
   loadEnvFile(args.envFile);
   const config = getRuntimeConfig(args);
-  validateConfig(config, args.dryRun);
+  validateConfig(config, args.dryRun, args.target);
 
   const keepAudio = args.keepAudio ?? Boolean(args.dryRun);
   const runDir = path.join(args.outDir, new Date().toISOString().replace(/[:.]/g, '-'));
@@ -895,7 +1257,8 @@ async function main() {
 
   const cases = selectedCases(args);
   if (cases.length === 0) throw new Error('No cases selected.');
-  console.log(`Gemini Live eval: ${cases.length} case(s), model=${config.model}, dryRun=${Boolean(args.dryRun)}, activity=${args.activityMode}`);
+  console.log(`Gemini Live eval: ${cases.length} case(s), repeat=${args.repeat}, target=${args.target}, model=${config.model}, dryRun=${Boolean(args.dryRun)}, activity=${args.activityMode}`);
+  if (args.target === 'websocket') console.log(`WebSocket: ${args.wsUrl}`);
   console.log(`Output: ${runDir}`);
 
   const prepared = cases.map((testCase) => ({
@@ -904,45 +1267,59 @@ async function main() {
   }));
 
   if (args.dryRun) {
-    const results = prepared.map(({ testCase, audio }) => ({
-      id: testCase.id,
-      label: testCase.label,
-      mode: testCase.mode,
-      dryRun: true,
-      files: audio.files,
-      audioMs: Math.round(((audio.pcm?.length || audio.firstPcm?.length || 0) / 2 / INPUT_SAMPLE_RATE) * 1000),
-      expectedTool: testCase.expectTool || null,
-      expectedInterrupted: Boolean(testCase.expectInterrupted),
-      pass: true,
-      failures: [],
-      warnings: testCase.expectNoHardPass ? ['manual_review_only_multi_speaker_case'] : [],
-      toolCalls: [],
-    }));
+    const results = prepared.flatMap(({ testCase, audio }) =>
+      Array.from({ length: args.repeat }, (_, index) => ({
+        id: testCase.id,
+        label: testCase.label,
+        mode: testCase.mode,
+        target: args.target,
+        repeatIndex: index + 1,
+        dryRun: true,
+        files: audio.files,
+        audioMs: Math.round(((audio.pcm?.length || audio.firstPcm?.length || 0) / 2 / INPUT_SAMPLE_RATE) * 1000),
+        expectedTool: testCase.expectTool || null,
+        expectedInterrupted: Boolean(testCase.expectInterrupted),
+        pass: true,
+        failures: [],
+        warnings: testCase.expectNoHardPass ? ['manual_review_only_multi_speaker_case'] : [],
+        toolCalls: [],
+      })),
+    );
     const reports = writeReports(runDir, results);
     console.log(`Dry run complete. Report: ${reports.reportMd}`);
     return;
   }
 
-  const client = new GoogleGenAI({
-    vertexai: true,
-    project: config.project,
-    location: config.location,
-  });
+  const client = args.target === 'sdk'
+    ? new GoogleGenAI({
+        vertexai: true,
+        project: config.project,
+        location: config.location,
+      })
+    : null;
 
   const results = [];
   for (const { testCase, audio } of prepared) {
-    console.log(`\n=== ${testCase.id}: ${testCase.label} ===`);
-    const result = await runSingleCase(client, config, testCase, audio, args);
-    results.push(result);
-    console.log(
-      JSON.stringify({
-        pass: result.pass,
-        endpointToFirstAudioMs: result.endpointToFirstAudioMs,
-        interruptLatencyMs: result.interruptLatencyMs,
-        tools: result.toolCalls.map((call) => call.name),
-        failures: result.failures,
-      }),
-    );
+    for (let repeatIndex = 1; repeatIndex <= args.repeat; repeatIndex += 1) {
+      console.log(`\n=== ${testCase.id}: ${testCase.label} (${repeatIndex}/${args.repeat}) ===`);
+      const result = args.target === 'websocket'
+        ? await runWebSocketCase(testCase, audio, args)
+        : await runSingleCase(client, config, testCase, audio, args);
+      result.repeatIndex = repeatIndex;
+      result.target = args.target;
+      results.push(result);
+      console.log(
+        JSON.stringify({
+          pass: result.pass,
+          endpointToFirstAudioMs: result.endpointToFirstAudioMs,
+          endpointToToolCallMs: result.endpointToToolCallMs,
+          toolResponseToFirstAudioMs: result.toolResponseToFirstAudioMs,
+          interruptLatencyMs: result.interruptLatencyMs,
+          tools: result.toolCalls.map((call) => call.name),
+          failures: result.failures,
+        }),
+      );
+    }
   }
 
   const reports = writeReports(runDir, results);
