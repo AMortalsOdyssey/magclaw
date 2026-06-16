@@ -393,7 +393,11 @@ function actorHumanId(actor) {
 }
 
 function actorRole(actor) {
-  return cleanString(actor?.member?.role || actor?.role || 'owner') || 'owner';
+  return cleanString(actor?.member?.role || actor?.role || '');
+}
+
+export function isKnowledgeOwner(actor) {
+  return actorRole(actor) === 'owner';
 }
 
 export function isKnowledgeAdmin(actor) {
@@ -592,6 +596,10 @@ export function isKnowledgeWhitelisted(space, actor) {
   return normalizeSpace(space).settings.whitelistHumanIds.includes(humanId);
 }
 
+export function canWriteKnowledgeContent(space, actor) {
+  return isKnowledgeOwner(actor) || isKnowledgeWhitelisted(space, actor);
+}
+
 function maskKnowledgeSettingValue(value) {
   const text = cleanString(value);
   if (!text) return '';
@@ -640,7 +648,7 @@ export function publicKnowledgeSpace(space, actor = null, options = {}) {
     updatedAt: normalized.updatedAt,
     permissions: {
       canAdmin: isKnowledgeAdmin(actor),
-      canEdit: isKnowledgeWhitelisted(normalized, actor),
+      canEdit: canWriteKnowledgeContent(normalized, actor),
     },
     settings: {
       whitelistHumanIds: normalized.settings.whitelistHumanIds,

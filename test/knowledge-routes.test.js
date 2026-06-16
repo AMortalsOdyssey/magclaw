@@ -42,17 +42,20 @@ function routeDeps(overrides = {}) {
       workspaces: [{ id: 'ws_knowledge', slug: 'knowledge-test', name: 'Knowledge Test' }],
       workspaceMembers: [
         { workspaceId: 'ws_knowledge', humanId: 'hum_owner', userId: 'user_owner', role: 'owner' },
+        { workspaceId: 'ws_knowledge', humanId: 'hum_admin', userId: 'user_admin', role: 'admin' },
         { workspaceId: 'ws_knowledge', humanId: 'hum_editor', userId: 'user_editor', role: 'member' },
         { workspaceId: 'ws_knowledge', humanId: 'hum_reader', userId: 'user_reader', role: 'member' },
       ],
       users: [
         { id: 'user_owner', name: 'Owner', email: 'owner@example.test' },
+        { id: 'user_admin', name: 'Admin', email: 'admin@example.test' },
         { id: 'user_editor', name: 'Editor', email: 'editor@example.test' },
         { id: 'user_reader', name: 'Reader', email: 'reader@example.test' },
       ],
     },
     humans: [
       { id: 'hum_owner', workspaceId: 'ws_knowledge', name: 'Owner' },
+      { id: 'hum_admin', workspaceId: 'ws_knowledge', name: 'Admin' },
       { id: 'hum_editor', workspaceId: 'ws_knowledge', name: 'Editor' },
       { id: 'hum_reader', workspaceId: 'ws_knowledge', name: 'Reader' },
     ],
@@ -158,6 +161,45 @@ test('owner imports, manages whitelist/settings, editor publishes, and Feishu fa
   assert.equal(publish.data.notification.status, 'failed');
   assert.equal(deps.state.knowledgeSpace.spaces.ws_knowledge.changelogEvents.some((event) => event.type === 'notification_failed'), true);
   assert.equal(deps.persistCalls.length >= 5, true);
+});
+
+test('Knowledge write routes require owner or Knowledge whitelist, not admin role alone', async () => {
+  const deps = routeDeps();
+
+  deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_admin', role: 'admin' }, user: { id: 'user_admin' } });
+  const adminImport = await callRoute(deps, 'POST', '/api/knowledge/import', {
+    markdown: SAMPLE_MARKDOWN,
+    sourceName: 'Team Consensus',
+  });
+  assert.equal(adminImport.statusCode, 403);
+  assert.match(adminImport.error, /owner|whitelist/i);
+
+  deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_owner', role: 'owner' }, user: { id: 'user_owner' } });
+  const ownerImport = await callRoute(deps, 'POST', '/api/knowledge/import', {
+    markdown: SAMPLE_MARKDOWN,
+    sourceName: 'Team Consensus',
+  });
+  assert.equal(ownerImport.statusCode, 201);
+
+  const settingsRes = await callRoute(deps, 'PATCH', '/api/knowledge/settings', {
+    whitelistHumanIds: ['hum_editor'],
+  });
+  assert.equal(settingsRes.statusCode, 200);
+
+  deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_editor', role: 'member' }, user: { id: 'user_editor' } });
+  const editorImport = await callRoute(deps, 'POST', '/api/knowledge/import', {
+    markdown: '# Second Consensus\n\n## Module\n\nWhitelisted import.\n',
+    sourceName: 'Second Consensus',
+  });
+  assert.equal(editorImport.statusCode, 201);
+
+  deps.setActor({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_reader' }, user: { id: 'user_reader' } });
+  const missingRoleDraft = await callRoute(deps, 'POST', '/api/knowledge/change-sessions', {
+    summary: 'Missing role attempt',
+    changes: [],
+  });
+  assert.equal(missingRoleDraft.statusCode, 403);
+  assert.match(missingRoleDraft.error, /owner|whitelist/i);
 });
 
 test('ask and align return matched anchors with MagClaw links', async () => {

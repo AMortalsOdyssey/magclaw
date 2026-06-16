@@ -13,6 +13,7 @@ import {
   getKnowledgeDocument,
   getKnowledgeGraph,
   importKnowledgeMarkdown,
+  isKnowledgeAdmin,
   moveKnowledgeSessionToDiff,
   moveKnowledgeSessionToPreview,
   publishKnowledgeSession,
@@ -372,6 +373,12 @@ test('Knowledge Markdown display hides source escapes and duplicate document tit
 
   doc.title = '世界创建 \\+ 导演派生';
   assert.equal(getKnowledgeDocument(imported.space, doc.id).title, '世界创建 + 导演派生');
+});
+
+test('Knowledge admin role checks fail closed when actor role is missing', () => {
+  assert.equal(isKnowledgeAdmin({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_missing_role' } }), false);
+  assert.equal(isKnowledgeAdmin({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_admin', role: 'admin' } }), true);
+  assert.equal(isKnowledgeAdmin({ member: { workspaceId: 'ws_knowledge', humanId: 'hum_owner', role: 'owner' } }), true);
 });
 
 test('settings encrypt Feishu secret and expose only masked status', () => {

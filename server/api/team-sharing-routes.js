@@ -3,13 +3,12 @@ import { stat } from 'node:fs/promises';
 import {
   alignKnowledgeDiscussion,
   askKnowledgeConsensus,
+  canWriteKnowledgeContent,
   createKnowledgeChangeSession,
   ensureKnowledgeSpace,
   exportKnowledgeConsensusMarkdown,
   getKnowledgeDocument,
   importKnowledgeMarkdown,
-  isKnowledgeAdmin,
-  isKnowledgeWhitelisted,
   publicKnowledgeSpace,
 } from '../knowledge-space.js';
 import {
@@ -5452,8 +5451,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     const space = ensureKnowledgeSpace(state, effectiveWorkspaceId, { now });
     try {
       if (action === 'import') {
-        if (!isKnowledgeAdmin(access.actor)) {
-          sendJson(res, 403, { ok: false, reason: 'admin_required', error: 'Only Server owners/admins can import Knowledge Space Markdown.' });
+        if (!canWriteKnowledgeContent(space, access.actor)) {
+          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners or Knowledge Space whitelist members can import Knowledge Space Markdown.' });
           return true;
         }
         const result = importKnowledgeMarkdown({
@@ -5493,8 +5492,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         return true;
       }
       if (action === 'edit') {
-        if (!isKnowledgeAdmin(access.actor) && !isKnowledgeWhitelisted(space, access.actor)) {
-          sendJson(res, 403, { ok: false, reason: 'editor_required', error: 'Only Server owners/admins or Knowledge Space whitelist members can draft content changes.' });
+        if (!canWriteKnowledgeContent(space, access.actor)) {
+          sendJson(res, 403, { ok: false, reason: 'writer_required', error: 'Only Server owners or Knowledge Space whitelist members can draft content changes.' });
           return true;
         }
         const docId = String(body.docId || body.doc || '').trim();

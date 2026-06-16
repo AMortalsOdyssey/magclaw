@@ -1,6 +1,7 @@
 import {
   alignKnowledgeDiscussion,
   askKnowledgeConsensus,
+  canWriteKnowledgeContent,
   createKnowledgeChangeSession,
   ensureKnowledgeSpace,
   getKnowledgeChangelog,
@@ -8,7 +9,6 @@ import {
   getKnowledgeGraph,
   importKnowledgeMarkdown,
   isKnowledgeAdmin,
-  isKnowledgeWhitelisted,
   moveKnowledgeSessionToDiff,
   moveKnowledgeSessionToPreview,
   publicKnowledgeSpace,
@@ -112,11 +112,11 @@ function ensureAdmin(deps, req, res) {
   return null;
 }
 
-function ensureEditor(deps, req, res, space) {
+function ensureWriter(deps, req, res, space) {
   const actor = ensureMember(deps, req, res);
   if (!actor) return null;
-  if (isKnowledgeWhitelisted(space, actor)) return actor;
-  deps.sendError(res, 403, 'Only Knowledge Space whitelist members can change content.');
+  if (canWriteKnowledgeContent(space, actor)) return actor;
+  deps.sendError(res, 403, 'Only Server owners or Knowledge Space whitelist members can change content.');
   return null;
 }
 
@@ -218,8 +218,8 @@ export async function handleKnowledgeApi(req, res, url, deps) {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/knowledge/import') {
-      const admin = ensureAdmin(deps, req, res);
-      if (!admin) return true;
+      const writer = ensureWriter(deps, req, res, space);
+      if (!writer) return true;
       const body = await parseBody(deps, req);
       const result = importKnowledgeMarkdown({
         state,
@@ -227,7 +227,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
         markdown: body.markdown || '',
         sourceName: body.sourceName || body.title || '',
         sourceUrl: body.sourceUrl || '',
-        actor: admin,
+        actor: writer,
         now: deps.now,
       });
       await persistAndNotify(
@@ -243,12 +243,12 @@ export async function handleKnowledgeApi(req, res, url, deps) {
           anchors: result.imported.anchors,
         },
       );
-      sendKnowledgeSpace(deps, res, state, result.space, admin, 201, { session: result.session, imported: result.imported, mode: result.mode });
+      sendKnowledgeSpace(deps, res, state, result.space, writer, 201, { session: result.session, imported: result.imported, mode: result.mode });
       return true;
     }
 
     if (req.method === 'POST' && url.pathname === '/api/knowledge/change-sessions') {
-      const editor = ensureEditor(deps, req, res, space);
+      const editor = ensureWriter(deps, req, res, space);
       if (!editor) return true;
       const body = await parseBody(deps, req);
       const result = createKnowledgeChangeSession({
@@ -266,7 +266,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
 
     const toDiffId = req.method === 'POST' ? routeSessionId(url.pathname, 'to-diff') : '';
     if (toDiffId) {
-      const editor = ensureEditor(deps, req, res, space);
+      const editor = ensureWriter(deps, req, res, space);
       if (!editor) return true;
       const result = moveKnowledgeSessionToDiff({ state, workspaceId, sessionId: toDiffId, now: deps.now });
       await persistAndNotify(deps, 'knowledge_change_session_diff', 'Knowledge Space draft moved to diff.', { workspaceId, changeSessionId: toDiffId });
@@ -276,7 +276,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
 
     const toPreviewId = req.method === 'POST' ? routeSessionId(url.pathname, 'to-preview') : '';
     if (toPreviewId) {
-      const editor = ensureEditor(deps, req, res, space);
+      const editor = ensureWriter(deps, req, res, space);
       if (!editor) return true;
       const result = moveKnowledgeSessionToPreview({ state, workspaceId, sessionId: toPreviewId, now: deps.now });
       await persistAndNotify(deps, 'knowledge_change_session_preview', 'Knowledge Space diff moved to preview.', { workspaceId, changeSessionId: toPreviewId });
@@ -286,7 +286,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
 
     const publishId = req.method === 'POST' ? routeSessionId(url.pathname, 'publish') : '';
     if (publishId) {
-      const editor = ensureEditor(deps, req, res, space);
+      const editor = ensureWriter(deps, req, res, space);
       if (!editor) return true;
       const result = await publishKnowledgeSession({
         state,
@@ -316,7 +316,7 @@ export async function handleKnowledgeApi(req, res, url, deps) {
 
     const retryId = req.method === 'POST' ? routeSessionId(url.pathname, 'retry-notification') : '';
     if (retryId) {
-      const editor = ensureEditor(deps, req, res, space);
+      const editor = ensureWriter(deps, req, res, space);
       if (!editor) return true;
       const result = await sendKnowledgePublishNotification({
         state,

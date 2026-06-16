@@ -3530,6 +3530,30 @@ test('team sharing codex plugin source exposes valid plugin and trigger-focused 
   }
 });
 
+test('align-consensus skill covers broad Chinese and English Knowledge Space intent variants', async () => {
+  const skill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
+  const intentMap = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'align-consensus', 'references', 'knowledge-intent.md'), 'utf8');
+  const positiveSection = intentMap.split('## Positive Coverage Cases')[1].split('## Non-trigger Cases')[0];
+  const negativeSection = intentMap.split('## Non-trigger Cases')[1];
+  const positives = [...positiveSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const negatives = [...negativeSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const knowledgeTarget = /(共识库|共识文档|团队共识|共识体系|共识|历史决策|之前说的|基础文档|指引|必做项|推广前必做|落地计划|Agent-only 工作流|agent-only workflow|agreed workflow|工作流|知识空间|知识库|知识管理|知识图谱|知识沉淀|标准|规范|准则|原则|约定|口径|规则|红线|底线|SOP|事实源|TeamShare|Team Sharing|Knowledge Space|knowledge management|knowledge base|knowledge doc|canonical knowledge|source[- ]of[- ]truth|policy|spec|standard|principle|team rule|rule|agreed wording|wording|consensus)/i;
+  const alignmentConcern = /(对齐|对得上|对不对|有没有问题|哪里有问题|看一下|判断|确认|能不能|是否可以|是否需要|合理|对照|比一下|比较|相比|校验|检查|核对|复核|审查|审一下|符合|违背|违反|冲突|矛盾|打架|偏离|一致|差异|踩|越界|风险|diff|gap|risk|boundary|compliance|compliant|align|match|check|compare|validate|consistent|conflict|contradict|violate|violation|bypass|review|divergence)/i;
+  const writeOnlyIntent = /(导入|导出|修改|发布|设置|白名单|通知配置|复制|创建|删除|搜索|翻译|部署|npm|import|export|edit|publish|settings)/i;
+
+  assert.match(skill, /references\/knowledge-intent\.md/);
+  assert.match(skill, /共识库.*知识空间.*知识库.*知识管理.*标准.*规范.*准则.*原则.*口径.*红线/s);
+  assert.ok(positives.length >= 120, `expected at least 120 positive coverage cases, got ${positives.length}`);
+  assert.ok(negatives.length >= 20, `expected at least 20 non-trigger cases, got ${negatives.length}`);
+  for (const phrase of positives) {
+    assert.match(phrase, knowledgeTarget, `positive case should mention a Knowledge Space synonym: ${phrase}`);
+    assert.match(phrase, alignmentConcern, `positive case should mention alignment/compliance intent: ${phrase}`);
+  }
+  for (const phrase of negatives) {
+    assert.ok(!knowledgeTarget.test(phrase) || !alignmentConcern.test(phrase) || writeOnlyIntent.test(phrase), `negative case should not look like pure alignment intent: ${phrase}`);
+  }
+});
+
 test('team sharing cli installs a Codex plugin bundle without writing token into skill files', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-home-'));
@@ -3553,6 +3577,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   const askConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'ask-consensus', 'SKILL.md'), 'utf8');
   const editConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'edit-consensus', 'SKILL.md'), 'utf8');
   const alignConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
+  const alignConsensusIntent = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'references', 'knowledge-intent.md'), 'utf8');
   const exportConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'export-consensus', 'SKILL.md'), 'utf8');
   const skill = [
     setupSkill,
@@ -3570,6 +3595,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
     askConsensusSkill,
     editConsensusSkill,
     alignConsensusSkill,
+    alignConsensusIntent,
     exportConsensusSkill,
   ].join('\n');
 
@@ -3613,6 +3639,14 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.match(skill, /team-sharing edit-consensus --server <server> --workspace <workspace> --doc <docId> --file <markdown-file>/);
   assert.match(skill, /team-sharing align-consensus --server <server> --workspace <workspace> --text "<discussion text>"/);
   assert.match(skill, /team-sharing export-consensus --server <server> --workspace <workspace> --consensus-id <consensusId>/);
+  assert.match(skill, /Knowledge Alignment Intent Map/);
+  assert.match(skill, /共识库/);
+  assert.match(skill, /知识空间/);
+  assert.match(skill, /知识管理/);
+  assert.match(skill, /标准/);
+  assert.match(skill, /口径/);
+  assert.match(skill, /TeamShare/);
+  assert.match(skill, /Positive Coverage Cases/);
   assert.match(skill, /Web import UI/);
   assert.match(skill, /Web ask UI/);
   assert.match(skill, /Web draft editor UI/);

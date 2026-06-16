@@ -3289,13 +3289,35 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   });
   deps.state.cloud.workspaceMembers = [
     { workspaceId: 'ws_route', humanId: 'hum_owner', userId: 'user_owner', role: 'owner', status: 'active', email: 'owner@example.test' },
+    { workspaceId: 'ws_route', humanId: 'hum_admin', userId: 'user_admin', role: 'admin', status: 'active', email: 'admin@example.test' },
     { workspaceId: 'ws_route', humanId: 'hum_reader', userId: 'user_reader', role: 'member', status: 'active', email: 'reader@example.test' },
     { workspaceId: 'ws_other', humanId: 'hum_other', userId: 'user_other', role: 'owner', status: 'active', email: 'other@example.test' },
   ];
+  const admin = await issueTeamSharingRouteToken(deps, {
+    actor: { member: { workspaceId: 'ws_route', humanId: 'hum_admin', role: 'admin', email: 'admin@example.test' }, user: { id: 'user_admin', email: 'admin@example.test', name: 'Admin' } },
+    fingerprint: `mfp_${'3'.repeat(64)}`,
+  });
   const owner = await issueTeamSharingRouteToken(deps, {
     actor: { member: { workspaceId: 'ws_route', humanId: 'hum_owner', role: 'owner', email: 'owner@example.test' }, user: { id: 'user_owner', email: 'owner@example.test', name: 'Owner' } },
     fingerprint: `mfp_${'1'.repeat(64)}`,
   });
+
+  const adminImport = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: admin.headers },
+    adminImport,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/import'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({
+        markdown: '# Admin Attempt\n\n## Module\n\nShould be blocked.',
+        sourceName: 'Admin Attempt',
+      }),
+    },
+  ), true);
+  assert.equal(adminImport.statusCode, 403);
+  assert.equal(adminImport.data.reason, 'writer_required');
 
   const importRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -3320,6 +3342,27 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.ok(doc?.id);
   const group = deps.state.knowledgeSpace.spaces.ws_route.consensusGroups[0];
   assert.ok(group?.id);
+
+  const reader = await issueTeamSharingRouteToken(deps, {
+    actor: { member: { workspaceId: 'ws_route', humanId: 'hum_reader', role: 'member', email: 'reader@example.test' }, user: { id: 'user_reader', email: 'reader@example.test', name: 'Reader' } },
+    fingerprint: `mfp_${'4'.repeat(64)}`,
+  });
+  const readerImportBlocked = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: reader.headers },
+    readerImportBlocked,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/import'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({
+        markdown: '# Reader Attempt\n\n## Module\n\nShould be blocked.',
+        sourceName: 'Reader Attempt',
+      }),
+    },
+  ), true);
+  assert.equal(readerImportBlocked.statusCode, 403);
+  assert.equal(readerImportBlocked.data.reason, 'writer_required');
 
   const readRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
@@ -3377,6 +3420,25 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   assert.equal(editRes.data.session.status, 'draft');
   assert.equal(editRes.data.session.changes[0].docId, doc.id);
 
+  deps.state.knowledgeSpace.spaces.ws_route.settings.whitelistHumanIds = ['hum_reader'];
+  const readerEdit = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: reader.headers },
+    readerEdit,
+    new URL('https://magclaw.example/api/team-sharing/knowledge/server-route/edit'),
+    {
+      ...deps,
+      currentActor: () => null,
+      readJson: async () => ({
+        docId: doc.id,
+        markdown: 'Reader is whitelisted and can draft content changes.',
+        summary: 'Whitelisted reader edit',
+      }),
+    },
+  ), true);
+  assert.equal(readerEdit.statusCode, 201);
+  assert.equal(readerEdit.data.session.status, 'draft');
+
   const alignRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'POST', headers: owner.headers },
@@ -3414,7 +3476,13 @@ test('team sharing token can read, import, ask, edit, align, and inspect Knowled
   ), true);
   assert.equal(blocked.statusCode, 403);
   assert.equal(blocked.data.reason, 'server_membership_required');
-  assert.doesNotMatch(JSON.stringify({ read: readRes.data, blocked: blocked.data }), new RegExp(`${owner.token}|${other.token}|Bearer`));
+  assert.doesNotMatch(JSON.stringify({
+    adminImport: adminImport.data,
+    readerImportBlocked: readerImportBlocked.data,
+    readerEdit: readerEdit.data,
+    read: readRes.data,
+    blocked: blocked.data,
+  }), new RegExp(`${owner.token}|${admin.token}|${reader.token}|${other.token}|Bearer`));
 });
 
 test('team sharing context page redirects signed-in nonmembers to server join with returnTo', async () => {

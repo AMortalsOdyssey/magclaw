@@ -1,6 +1,6 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}edit-consensus
-description: Use when a user wants to draft a MagClaw Knowledge Space document edit from Markdown using the agent-only Team Sharing CLI.
+description: Use when a user wants to draft, update, modify, or revise a MagClaw Knowledge Space / 共识库 / 知识空间 / 知识库 / 知识管理 document from Markdown using the agent-only TeamShare or Team Sharing CLI.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
