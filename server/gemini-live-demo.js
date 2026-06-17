@@ -47,8 +47,10 @@ function isGeminiLiveConfigWarning(error) {
 }
 
 const SYSTEM_INSTRUCTION = `
-You are a realtime bilingual voice demo host for MagClaw's Gemini Live demo page.
-Detect Chinese or English automatically and reply in the user's language.
+You are a realtime voice demo host for MagClaw's Gemini Live demo page.
+Understand both Chinese and English, but always answer only in Simplified Chinese.
+Do not reply in English even when the user speaks English, except for unavoidable proper
+nouns, code identifiers, search keywords, or tool names.
 
 This demo must not expose local machine details. Never ask for, reveal, infer, or summarize
 the host computer name, usernames, local file paths, running processes, network addresses,
@@ -69,9 +71,9 @@ You can use these safe tools:
 8. list_demo_tasks: list mock tasks only when the user clearly asks for demo tasks.
 9. get_public_holidays: public holiday lookup by country code and optional year.
 
-Default to Mainland Mandarin Chinese unless the user is clearly speaking English. In a
-Chinese conversation, treat very short isolated English-looking fragments as possible ASR
-noise. Ask the user to repeat instead of turning an unclear word into a search query.
+Always use natural Mainland Mandarin Chinese. Treat very short isolated English-looking
+fragments as possible ASR noise. Ask the user to repeat instead of turning an unclear word
+into a search query.
 Do not call google_search for greetings, chitchat, one-word ambiguous utterances, or unclear
 transcripts. Only search when the user explicitly asks to search, look up, Google, find
 current information, or research a topic.
@@ -302,7 +304,12 @@ function enumValue(value, allowed, fallback) {
   return allowed.includes(raw) ? raw : fallback;
 }
 
+function normalizeRealtimeMode(value = '') {
+  return String(value || '').trim() === 'native_vad' ? 'native_vad' : 'manual';
+}
+
 function normalizeRealtimeTuning(value = {}) {
+  const realtimeMode = normalizeRealtimeMode(value.realtimeMode || value.mode || value.activityMode);
   const envSilenceDurationMs = numberFromEnv('GEMINI_LIVE_DEMO_SILENCE_DURATION_MS', 700, {
     min: 100,
     max: 3000,
@@ -312,6 +319,7 @@ function normalizeRealtimeTuning(value = {}) {
     max: 1000,
   });
   return {
+    realtimeMode,
     startSensitivity: enumValue(
       value.startSensitivity || process.env.GEMINI_LIVE_DEMO_START_SENSITIVITY,
       ['START_SENSITIVITY_HIGH', 'START_SENSITIVITY_LOW'],
@@ -330,7 +338,7 @@ function normalizeRealtimeTuning(value = {}) {
       min: 100,
       max: 3000,
     }),
-    manualActivity: Boolean(value.manualActivity || value.activityMode === 'manual'),
+    manualActivity: realtimeMode === 'manual',
     activityHandling: enumValue(
       value.activityHandling,
       ['START_OF_ACTIVITY_INTERRUPTS', 'NO_INTERRUPTION'],
@@ -672,7 +680,10 @@ function getToolDeclarations() {
 function makeLiveConfig(sessionOptions = {}) {
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
   const systemInstruction = normalizeSystemInstruction(sessionOptions.systemInstruction);
-  const realtimeTuning = normalizeRealtimeTuning(sessionOptions.realtimeTuning);
+  const realtimeTuning = normalizeRealtimeTuning({
+    ...(sessionOptions.realtimeTuning || {}),
+    realtimeMode: sessionOptions.realtimeMode || sessionOptions.realtimeTuning?.realtimeMode,
+  });
   return {
     responseModalities: [Modality.AUDIO],
     systemInstruction: {
@@ -722,32 +733,132 @@ function makeMicGateConfig() {
 export function calculateGeminiLiveMicGateFrame(input = {}) {
   const stats = input.stats || {};
   const tuning = input.tuning || {};
+  const noiseState = input.noiseState || {};
+  const turnStormState = input.turnStormState || {};
+  const nowMs = Number(input.nowMs) || 0;
   const frameMs = Number(input.frameMs) || 1;
   const micSpeechFrames = Number(input.micSpeechFrames) || 0;
   const assistantAudioPlaying = Boolean(input.assistantAudioPlaying);
   const acceptedBargeIn = Boolean(input.acceptedBargeIn);
-  const rmsThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInRms : tuning.idleRms) || 0;
-  const peakThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInPeak : tuning.idlePeak) || 0;
+  const noiseGuardActive = Boolean(turnStormState.active)
+    || (Number(turnStormState.guardUntilMs) > 0 && nowMs > 0 && Number(turnStormState.guardUntilMs) > nowMs);
+  const baseRmsThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInRms : tuning.idleRms) || 0;
+  const basePeakThreshold = Number(assistantAudioPlaying && !acceptedBargeIn ? tuning.bargeInPeak : tuning.idlePeak) || 0;
+  const noiseRms = Math.max(0, Number(noiseState.rms) || 0);
+  const noisePeak = Math.max(0, Number(noiseState.peak) || 0);
+  const rmsMultiplier = Number(tuning.noiseRmsMultiplier) || (assistantAudioPlaying ? 3.4 : 2.6);
+  const peakMultiplier = Number(tuning.noisePeakMultiplier) || (assistantAudioPlaying ? 3.2 : 2.4);
+  const guardMultiplier = noiseGuardActive ? (Number(tuning.noiseGuardMultiplier) || 1.35) : 1;
+  const rmsThreshold = Math.max(baseRmsThreshold, noiseRms * rmsMultiplier) * guardMultiplier;
+  const peakThreshold = Math.max(basePeakThreshold, noisePeak * peakMultiplier) * guardMultiplier;
   const requiredStartFrames = assistantAudioPlaying && !acceptedBargeIn
     ? Math.max(1, Math.ceil((Number(tuning.bargeInMs) || 1) / frameMs))
     : Math.max(1, Number(tuning.startFrames) || 1);
-  const active = Number(stats.rms) >= rmsThreshold || Number(stats.peak) >= peakThreshold;
+  const guardedStartFrames = noiseGuardActive
+    ? Math.max(requiredStartFrames + 2, Math.ceil(requiredStartFrames * 1.6))
+    : requiredStartFrames;
+  const aboveRms = Number(stats.rms) >= rmsThreshold;
+  const abovePeak = Number(stats.peak) >= peakThreshold;
+  const active = noiseGuardActive ? aboveRms && abovePeak : aboveRms || abovePeak;
   const nextSpeechFrames = active ? micSpeechFrames + 1 : 0;
   const candidateBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames > 0;
-  const shouldDeferForBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames < requiredStartFrames;
-  const shouldAcceptBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames >= requiredStartFrames;
-  const shouldStartUserSpeech = nextSpeechFrames >= requiredStartFrames;
+  const shouldDeferForBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames < guardedStartFrames;
+  const shouldAcceptBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames >= guardedStartFrames;
+  const shouldStartUserSpeech = nextSpeechFrames >= guardedStartFrames;
   return {
     active,
     nextSpeechFrames,
-    requiredStartFrames,
+    requiredStartFrames: guardedStartFrames,
+    baseRequiredStartFrames: requiredStartFrames,
     rmsThreshold,
     peakThreshold,
+    baseRmsThreshold,
+    basePeakThreshold,
+    noiseRms,
+    noisePeak,
+    noiseGuardActive,
     candidateBargeIn,
     heardMs: Math.round(nextSpeechFrames * frameMs),
     shouldDeferForBargeIn,
     shouldAcceptBargeIn,
     shouldStartUserSpeech,
+  };
+}
+
+export function updateGeminiLiveNoiseBaseline(input = {}) {
+  const previous = input.state || {};
+  const stats = input.stats || {};
+  const canUpdate = !input.userSpeaking
+    && !input.assistantAudioPlaying
+    && !input.acceptedBargeIn
+    && !input.candidateBargeIn;
+  const sampleRms = Math.max(0, Number(stats.rms) || 0);
+  const samplePeak = Math.max(0, Number(stats.peak) || 0);
+  const initialized = Boolean(previous.initialized);
+  const currentRms = initialized ? Math.max(0, Number(previous.rms) || 0) : sampleRms;
+  const currentPeak = initialized ? Math.max(0, Number(previous.peak) || 0) : samplePeak;
+  const rise = Math.min(1, Math.max(0.01, Number(input.rise) || 0.16));
+  const fall = Math.min(1, Math.max(0.005, Number(input.fall) || 0.035));
+  const blend = (current, sample) => {
+    const alpha = sample > current ? rise : fall;
+    return current + ((sample - current) * alpha);
+  };
+  if (!canUpdate) {
+    return {
+      ...previous,
+      initialized,
+      updated: false,
+      rms: currentRms,
+      peak: currentPeak,
+    };
+  }
+  return {
+    initialized: true,
+    updated: true,
+    samples: Math.min(10_000, (Number(previous.samples) || 0) + 1),
+    rms: initialized ? blend(currentRms, sampleRms) : sampleRms,
+    peak: initialized ? blend(currentPeak, samplePeak) : samplePeak,
+  };
+}
+
+export function updateGeminiLiveTurnStorm(input = {}) {
+  const previous = input.state || {};
+  const nowMs = Math.max(0, Number(input.nowMs) || 0);
+  const windowMs = Math.max(500, Number(input.windowMs) || 3000);
+  const guardMs = Math.max(1000, Number(input.guardMs) || 8000);
+  const threshold = Math.max(1, Number(input.threshold) || 3);
+  const event = String(input.event || '').trim();
+  const existingEvents = Array.isArray(previous.events) ? previous.events : [];
+  let events = existingEvents
+    .map((value) => Number(value) || 0)
+    .filter((value) => value > 0 && nowMs - value <= windowMs);
+  let guardUntilMs = Math.max(0, Number(previous.guardUntilMs) || 0);
+  let entered = false;
+  let exited = false;
+
+  if (event === 'success') {
+    events = [];
+    exited = guardUntilMs > nowMs || Boolean(previous.active);
+    guardUntilMs = 0;
+  } else if (event === 'noise') {
+    events.push(nowMs);
+    if (events.length >= threshold && guardUntilMs <= nowMs) {
+      guardUntilMs = nowMs + guardMs;
+      entered = true;
+    } else if (events.length >= threshold) {
+      guardUntilMs = Math.max(guardUntilMs, nowMs + guardMs);
+    }
+  }
+
+  const active = guardUntilMs > nowMs;
+  if (!active && previous.active && !entered && event !== 'success') exited = true;
+  return {
+    active,
+    entered,
+    exited,
+    events,
+    guardUntilMs,
+    remainingMs: active ? Math.max(0, Math.round(guardUntilMs - nowMs)) : 0,
   };
 }
 
@@ -1424,6 +1535,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let activeClientTurnId = 0;
   const traceId = randomUUID().slice(0, 8);
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
+  const realtimeTuning = normalizeRealtimeTuning({
+    ...(sessionOptions.realtimeTuning || {}),
+    realtimeMode: sessionOptions.realtimeMode || sessionOptions.realtimeTuning?.realtimeMode,
+  });
   const sessionDemoTasks = new Map();
   const client = new GoogleGenAI({
     vertexai: true,
@@ -1495,10 +1610,16 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
 
   session = await client.live.connect({
     model: config.model,
-    config: makeLiveConfig({ ...sessionOptions, voiceName }),
+    config: makeLiveConfig({ ...sessionOptions, voiceName, realtimeMode: realtimeTuning.realtimeMode }),
     callbacks: {
       onopen: () => {
         logTrace('session_opened', { model: config.model, voiceName });
+        logTrace('realtime_mode', {
+          realtimeMode: realtimeTuning.realtimeMode,
+          manualActivity: realtimeTuning.manualActivity,
+          activityHandling: realtimeTuning.activityHandling,
+          turnCoverage: realtimeTuning.turnCoverage,
+        });
       },
       onmessage: (message) => {
         if (message.setupComplete) {
@@ -2003,6 +2124,31 @@ function makeIndexHtml(config) {
       line-height: 1.45;
     }
     .meta strong { color: var(--text); font-weight: 650; }
+    .mode-switch {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #eef2f7;
+    }
+    .mode-switch button {
+      min-height: 36px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 720;
+    }
+    .mode-switch button.active {
+      background: var(--panel);
+      color: var(--accent-strong);
+      box-shadow: 0 2px 7px rgba(23, 33, 50, 0.12);
+    }
     .field {
       margin-top: 14px;
       display: grid;
@@ -2318,6 +2464,10 @@ function makeIndexHtml(config) {
             <div><strong>输入</strong> 浏览器麦克风，16 kHz PCM 流</div>
             <div><strong>输出</strong> 实时音频播放 + 文本转写</div>
           </div>
+          <div class="mode-switch" id="realtimeModeButtons" role="group" aria-label="实时模式">
+            <button type="button" data-mode="manual">当前模式</button>
+            <button type="button" data-mode="native_vad">原生 VAD</button>
+          </div>
           <div class="field">
             <label for="voiceSelect">音色</label>
             <select id="voiceSelect"></select>
@@ -2360,6 +2510,11 @@ function makeIndexHtml(config) {
               <div class="metric"><span>端点等待</span><strong id="endpointWaitText">--</strong></div>
               <div class="metric"><span>最近延迟</span><strong id="latencyText">--</strong></div>
             </div>
+            <div class="metric-row">
+              <div class="metric"><span>噪声底 RMS</span><strong id="noiseFloorText">--</strong></div>
+              <div class="metric"><span>动态阈值</span><strong id="noiseThresholdText">--</strong></div>
+              <div class="metric"><span>抗噪保护</span><strong id="noiseGuardText">关闭</strong></div>
+            </div>
             <div class="tuning-note">
               自适应端点会根据 ASR 片段判断短句、长句和思考停顿；分级打断会过滤环境声，只有连续人声或明确打断词才停止当前回复。
             </div>
@@ -2387,6 +2542,8 @@ function makeIndexHtml(config) {
   </div>
   <script>
     const calculateGeminiLiveMicGateFrame = ${calculateGeminiLiveMicGateFrame.toString()};
+    const updateGeminiLiveNoiseBaseline = ${updateGeminiLiveNoiseBaseline.toString()};
+    const updateGeminiLiveTurnStorm = ${updateGeminiLiveTurnStorm.toString()};
     const decideGeminiLiveEndpoint = ${decideGeminiLiveEndpoint.toString()};
     const CONFIG = ${escapedConfig};
     const startButton = document.getElementById('startButton');
@@ -2400,6 +2557,7 @@ function makeIndexHtml(config) {
     const voiceSelect = document.getElementById('voiceSelect');
     const voiceList = document.getElementById('voiceList');
     const promptInput = document.getElementById('promptInput');
+    const realtimeModeButtons = document.getElementById('realtimeModeButtons');
     const turnProfileButtons = document.getElementById('turnProfileButtons');
     const profileSummary = document.getElementById('profileSummary');
     const shortPauseMsInput = document.getElementById('shortPauseMs');
@@ -2409,6 +2567,9 @@ function makeIndexHtml(config) {
     const speechStateText = document.getElementById('speechStateText');
     const endpointWaitText = document.getElementById('endpointWaitText');
     const latencyText = document.getElementById('latencyText');
+    const noiseFloorText = document.getElementById('noiseFloorText');
+    const noiseThresholdText = document.getElementById('noiseThresholdText');
+    const noiseGuardText = document.getElementById('noiseGuardText');
 
     let ws = null;
     let micStream = null;
@@ -2427,6 +2588,8 @@ function makeIndexHtml(config) {
     let pendingReadyResolve = null;
     let pendingReadyReject = null;
     let activeProfile = localStorage.getItem('gemini-live-demo-turn-profile') || 'balanced';
+    let realtimeMode = localStorage.getItem('gemini-live-demo-realtime-mode') === 'native_vad' ? 'native_vad' : 'manual';
+    let sessionRealtimeMode = realtimeMode;
     let userSpeaking = false;
     let acceptedBargeIn = false;
     let utteranceStartedAt = 0;
@@ -2445,6 +2608,11 @@ function makeIndexHtml(config) {
     let currentTurnAudioBytes = 0;
     let currentTurnSubmitted = false;
     let pendingResponseTurnId = 0;
+    let adaptiveNoiseState = { initialized: false, rms: 0, peak: 0, samples: 0 };
+    let turnStormState = { active: false, events: [], guardUntilMs: 0, remainingMs: 0 };
+    let reconnectState = { attempts: 0, firstAttemptAt: 0, pending: false, timer: null, manualStop: false };
+    let conversationMemory = [];
+    let nativeVadStreamStarted = false;
     const turnTimings = new Map();
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
@@ -2570,6 +2738,9 @@ function makeIndexHtml(config) {
         startFrames: MIC_GATE.startFrames || 3,
         holdFrames: MIC_GATE.holdFrames || 16,
         preRollFrames: MIC_GATE.preRollFrames || 4,
+        noiseRmsMultiplier: 2.6,
+        noisePeakMultiplier: 2.4,
+        noiseGuardMultiplier: 1.35,
         serverSilenceMs: defaults.serverSilenceMs,
         prefixPaddingMs: defaults.prefixPaddingMs,
         startSensitivity: defaults.startSensitivity,
@@ -2594,6 +2765,14 @@ function makeIndexHtml(config) {
       }
       profileSummary.textContent = defaults.label + ' · ' + defaults.summary;
       updateSpeechMetrics('空闲', '--');
+      updateNoiseMetrics();
+      renderRealtimeMode();
+    }
+
+    function renderRealtimeMode() {
+      for (const button of realtimeModeButtons.querySelectorAll('[data-mode]')) {
+        button.classList.toggle('active', button.dataset.mode === realtimeMode);
+      }
     }
 
     function saveTuningField(event) {
@@ -2603,25 +2782,36 @@ function makeIndexHtml(config) {
       profileSummary.textContent = readTuning().label + ' · ' + readTuning().summary;
     }
 
-    function makeRealtimeTuning() {
+    function makeRealtimeTuning(mode = realtimeMode) {
       const tuning = readTuning();
+      const nativeVad = mode === 'native_vad';
       return {
-        manualActivity: true,
-        activityMode: 'manual',
+        realtimeMode: mode,
+        manualActivity: !nativeVad,
+        activityMode: nativeVad ? 'native_vad' : 'manual',
         silenceDurationMs: tuning.serverSilenceMs,
         prefixPaddingMs: tuning.prefixPaddingMs,
         startSensitivity: tuning.startSensitivity,
         endSensitivity: tuning.endSensitivity,
         activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-        turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+        turnCoverage: nativeVad ? 'TURN_INCLUDES_ALL_INPUT' : 'TURN_INCLUDES_ONLY_ACTIVITY',
       };
     }
 
-    function selectedSessionOptions() {
+    function selectedSessionOptions(options = {}) {
+      const mode = options.mode || realtimeMode;
+      const baseInstruction = promptInput.value || CONFIG.defaultSystemInstruction;
+      const contextSuffix = options.includeReconnectContext && conversationMemory.length
+        ? '\\n\\nRecent conversation context before reconnect:\\n' + conversationMemory
+          .slice(-6)
+          .map((item) => '- ' + item.role + ': ' + item.text)
+          .join('\\n')
+        : '';
       return {
         voiceName: voiceSelect.value || CONFIG.defaultVoiceName,
-        systemInstruction: promptInput.value || CONFIG.defaultSystemInstruction,
-        realtimeTuning: makeRealtimeTuning(),
+        systemInstruction: baseInstruction + contextSuffix,
+        realtimeMode: mode,
+        realtimeTuning: makeRealtimeTuning(mode),
       };
     }
 
@@ -2639,6 +2829,17 @@ function makeIndexHtml(config) {
 
     promptInput.addEventListener('change', () => {
       localStorage.setItem('gemini-live-demo-prompt', promptInput.value);
+    });
+
+    realtimeModeButtons.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-mode]');
+      if (!button) return;
+      realtimeMode = button.dataset.mode === 'native_vad' ? 'native_vad' : 'manual';
+      localStorage.setItem('gemini-live-demo-realtime-mode', realtimeMode);
+      renderRealtimeMode();
+      if (running) {
+        addEntry('system', '模式切换', '已切换为“' + (realtimeMode === 'native_vad' ? '原生 VAD' : '当前模式') + '”，下次开始实时对话时生效。');
+      }
     });
 
     turnProfileButtons.addEventListener('click', (event) => {
@@ -2671,6 +2872,18 @@ function makeIndexHtml(config) {
     function updateSpeechMetrics(state, endpointWait) {
       speechStateText.textContent = state;
       endpointWaitText.textContent = endpointWait;
+    }
+
+    function updateNoiseMetrics(gate = null) {
+      noiseFloorText.textContent = adaptiveNoiseState.initialized
+        ? adaptiveNoiseState.rms.toFixed(4)
+        : '--';
+      noiseThresholdText.textContent = gate && Number.isFinite(Number(gate.rmsThreshold))
+        ? Number(gate.rmsThreshold).toFixed(4)
+        : '--';
+      noiseGuardText.textContent = turnStormState.active
+        ? Math.ceil((turnStormState.remainingMs || 0) / 1000) + 's'
+        : '关闭';
     }
 
     function markLatency(text) {
@@ -2842,6 +3055,42 @@ function makeIndexHtml(config) {
       updateSpeechMetrics('等待模型', reason);
     }
 
+    function notifyNoiseGuard(reason, active, state = turnStormState) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'noise_guard',
+          active: Boolean(active),
+          reason,
+          remainingMs: state.remainingMs || 0,
+          events: Array.isArray(state.events) ? state.events.length : 0,
+        }));
+      }
+    }
+
+    function recordTurnStormEvent(event, metrics = {}, reason = '') {
+      const previousActive = Boolean(turnStormState.active);
+      turnStormState = updateGeminiLiveTurnStorm({
+        state: turnStormState,
+        event,
+        nowMs: performance.now(),
+      });
+      updateNoiseMetrics();
+      if (!previousActive && turnStormState.active) {
+        addEntry('warning', '抗噪保护', '检测到连续短音频或无转写输入，已进入 ' + Math.ceil(turnStormState.remainingMs / 1000) + ' 秒抗噪保护。');
+        notifyNoiseGuard(reason || 'turn_storm', true);
+      } else if (previousActive && !turnStormState.active) {
+        addEntry('system', '抗噪保护', '已收到有效语音或模型输出，抗噪保护解除。');
+        notifyNoiseGuard(reason || 'success', false);
+      }
+    }
+
+    function rememberConversation(role, text) {
+      const normalized = String(text || '').replace(/\\s+/g, ' ').trim();
+      if (!normalized) return;
+      conversationMemory.push({ role, text: normalized.slice(0, 220) });
+      if (conversationMemory.length > 6) conversationMemory = conversationMemory.slice(-6);
+    }
+
     function addEntry(kind, label, text) {
       const entry = document.createElement('div');
       entry.className = 'entry ' + kind;
@@ -2952,7 +3201,11 @@ function makeIndexHtml(config) {
       currentTurnAudioBytes = 0;
       currentTurnSubmitted = false;
       pendingResponseTurnId = 0;
+      adaptiveNoiseState = { initialized: false, rms: 0, peak: 0, samples: 0 };
+      turnStormState = { active: false, events: [], guardUntilMs: 0, remainingMs: 0 };
+      nativeVadStreamStarted = false;
       updateSpeechMetrics('空闲', '--');
+      updateNoiseMetrics();
     }
 
     async function ensureAudioContext() {
@@ -2997,15 +3250,45 @@ function makeIndexHtml(config) {
         const pcm = float32ToInt16Pcm(downsampled);
         const assistantAudioPlaying = isAssistantAudioPlaying(context);
         const frameMs = (event.inputBuffer.length / context.sampleRate) * 1000;
+        const wasNoiseGuardActive = Boolean(turnStormState.active);
+        turnStormState = updateGeminiLiveTurnStorm({
+          state: turnStormState,
+          event: 'tick',
+          nowMs: now,
+        });
+        if (wasNoiseGuardActive && !turnStormState.active) {
+          addEntry('system', '抗噪保护', '保护窗口已结束，恢复常规收音。');
+          notifyNoiseGuard('expired', false);
+        }
+        adaptiveNoiseState = updateGeminiLiveNoiseBaseline({
+          state: adaptiveNoiseState,
+          stats,
+          userSpeaking,
+          assistantAudioPlaying,
+          acceptedBargeIn,
+        });
+        if (sessionRealtimeMode === 'native_vad') {
+          if (!nativeVadStreamStarted) {
+            nativeVadStreamStarted = true;
+            addEntry('system', '原生 VAD', '已开始持续推送 PCM，由 Gemini Live 判断说话开始和结束。');
+          }
+          ws.send(pcm);
+          updateNoiseMetrics();
+          return;
+        }
         const gate = calculateGeminiLiveMicGateFrame({
           stats,
           tuning,
+          noiseState: adaptiveNoiseState,
+          turnStormState,
+          nowMs: now,
           frameMs,
           micSpeechFrames,
           assistantAudioPlaying,
           acceptedBargeIn,
         });
         const active = gate.active;
+        updateNoiseMetrics(gate);
         const sendPcm = (buffer) => {
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
           if (!currentTurnAudioStarted) {
@@ -3115,6 +3398,10 @@ function makeIndexHtml(config) {
               filtered: 1,
               profile: activeProfile,
             });
+            recordTurnStormEvent('noise', {
+              speechDurationMs,
+              transcriptChars: latestInputTranscript.length,
+            }, 'low_confidence_audio');
             userSpeaking = false;
             acceptedBargeIn = false;
             micSpeechFrames = 0;
@@ -3136,6 +3423,14 @@ function makeIndexHtml(config) {
               transcriptAgeMs,
               profile: activeProfile,
             });
+            recordTurnStormEvent(
+              latestInputTranscript.length > 0 ? 'success' : 'noise',
+              {
+                speechDurationMs,
+                transcriptChars: latestInputTranscript.length,
+              },
+              reason,
+            );
             userSpeaking = false;
             acceptedBargeIn = false;
             micSpeechFrames = 0;
@@ -3228,13 +3523,23 @@ function makeIndexHtml(config) {
       } else if (message.type === 'starting') {
         setStatus('连接 Gemini Live', false);
       } else if (message.type === 'input_transcript') {
-        const turnId = message.turnId || currentTurnId;
+        let turnId = message.turnId || currentTurnId;
         if (!message.turnId || message.turnId === currentTurnId) {
           latestInputTranscript = message.text || latestInputTranscript;
+        }
+        if (sessionRealtimeMode === 'native_vad' && !currentTurnId) {
+          observedTurnCounter += 1;
+          currentTurnId = observedTurnCounter;
+          turnId = currentTurnId;
+          turnTimings.set(currentTurnId, { turnId: currentTurnId, detectedAt: performance.now() });
         }
         const now = performance.now();
         if (!message.turnId || message.turnId === currentTurnId) {
           latestInputTranscriptAt = now;
+        }
+        if (message.text) {
+          rememberConversation('user', message.text);
+          recordTurnStormEvent('success', { transcriptChars: String(message.text).length }, 'input_transcription');
         }
         markTurnStage(turnId, 'inputTranscriptAt', now);
         addEntry('user', 'Gemini inputTranscription', turnLabel(turnId) + ' ' + message.text + '。' + timingText(turnId, [
@@ -3250,6 +3555,7 @@ function makeIndexHtml(config) {
         const now = performance.now();
         const turnId = message.turnId || pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt', now);
+        rememberConversation('assistant', message.text);
         addEntry('assistant', message.type === 'output_transcript' ? 'Gemini outputTranscription' : 'Gemini text', message.text + '。' + timingText(turnId, [
           ['端点→输出文本', 'endpointSentAt', message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt'],
           ['首音频→输出文本', 'firstAudioAt', message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt'],
@@ -3268,6 +3574,7 @@ function makeIndexHtml(config) {
           firstAudioRequestedAt = 0;
         }
         assistantSpeakingAt = performance.now();
+        recordTurnStormEvent('success', {}, 'first_audio');
         void playPcm(message.audio, message.sampleRate);
       } else if (message.type === 'response_latency') {
         markLatency(latencyLabel(message));
@@ -3308,6 +3615,7 @@ function makeIndexHtml(config) {
           ['端点→工具结果', 'endpointSentAt', 'toolResultAt'],
         ]));
       } else if (message.type === 'tool_summary') {
+        rememberConversation('assistant', message.text);
         addEntry('assistant', '确认', message.text);
       } else if (message.type === 'interrupted') {
         clearPlayback();
@@ -3317,6 +3625,7 @@ function makeIndexHtml(config) {
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
         pendingResponseTurnId = 0;
+        if (sessionRealtimeMode === 'native_vad') currentTurnId = 0;
       } else if (message.type === 'endpoint') {
         const turnId = message.metrics?.turnId || pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, 'serverAckAt', performance.now());
@@ -3342,20 +3651,82 @@ function makeIndexHtml(config) {
         pendingReadyResolve = null;
         pendingReadyReject = null;
       } else if (message.type === 'closed') {
+        if (shouldReconnectClosed(message) && scheduleReconnect(message)) return;
         addEntry('system', '系统', '连接已关闭。');
         void stopConversation();
       }
     }
 
-    async function startConversation() {
+    function resetReconnectState() {
+      if (reconnectState.timer) clearTimeout(reconnectState.timer);
+      reconnectState = { attempts: 0, firstAttemptAt: 0, pending: false, timer: null, manualStop: false };
+    }
+
+    function shouldReconnectClosed(message = {}) {
+      if (reconnectState.manualStop || reconnectState.pending) return false;
+      const code = Number(message.code);
+      const reason = String(message.reason || '');
+      return code === 1011 || code === 1006 || /internal error|encountered|abnormal/i.test(reason);
+    }
+
+    function scheduleReconnect(message = {}) {
+      if (!running || reconnectState.manualStop) return false;
+      const now = performance.now();
+      if (!reconnectState.firstAttemptAt) reconnectState.firstAttemptAt = now;
+      if (reconnectState.attempts >= 2 || now - reconnectState.firstAttemptAt > 60000) {
+        addEntry('error', '重连失败', 'Gemini Live 会话连续关闭，已停止自动恢复。请重新点击开始。');
+        if (ws && ws.readyState === WebSocket.OPEN) ws.close(1011, 'reconnect exhausted');
+        stopMic();
+        clearPlayback();
+        setRunning(false);
+        setStatus('已断开', false);
+        ws = null;
+        return false;
+      }
+      const delay = reconnectState.attempts === 0 ? 500 : 1500;
+      reconnectState.attempts += 1;
+      reconnectState.pending = true;
+      setStatus('会话重连中', false);
+      addEntry('warning', '会话重连', 'Gemini Live 会话关闭（' + (message.code || 'unknown') + ' ' + (message.reason || '') + '），' + delay + 'ms 后自动重连。');
+      const oldWs = ws;
+      ws = null;
+      if (oldWs && oldWs.readyState === WebSocket.OPEN) {
+        oldWs.onclose = null;
+        oldWs.send(JSON.stringify({ type: 'reconnect_event', status: 'requested', reason: message.reason || '', code: message.code || null }));
+        oldWs.close(1012, 'client reconnecting');
+      }
+      stopMic();
+      clearPlayback();
+      setRunning(false);
+      reconnectState.timer = setTimeout(() => {
+        reconnectState.timer = null;
+        void startConversation({ reconnect: true }).catch((error) => {
+          reconnectState.pending = false;
+          addEntry('error', '重连失败', error.message || String(error));
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'reconnect_event', status: 'failed', reason: error.message || String(error) }));
+          }
+          stopMic();
+          clearPlayback();
+          setRunning(false);
+          setStatus('已断开', false);
+        });
+      }, delay);
+      return true;
+    }
+
+    async function startConversation(options = {}) {
       startButton.disabled = true;
-      setStatus('连接中', false);
+      if (!options.reconnect) resetReconnectState();
+      reconnectState.manualStop = false;
+      sessionRealtimeMode = options.reconnect ? sessionRealtimeMode : realtimeMode;
+      setStatus(options.reconnect ? '会话重连中' : '连接中', false);
       await ensureAudioContext();
       ws = new WebSocket(makeWsUrl());
       ws.binaryType = 'arraybuffer';
       ws.onmessage = handleMessage;
       ws.onclose = () => {
-        setStatus('已断开', false);
+        if (!reconnectState.pending) setStatus('已断开', false);
         stopMic();
         clearPlayback();
         setRunning(false);
@@ -3368,21 +3739,40 @@ function makeIndexHtml(config) {
       localStorage.setItem('gemini-live-demo-voice', voiceSelect.value);
       localStorage.setItem('gemini-live-demo-prompt', promptInput.value);
       const tuning = readTuning();
-      addEntry('system', '调节', '本轮使用“' + tuning.label + '”节奏：短句 ' + tuning.shortPauseMs + 'ms，思考 ' + tuning.thinkingPauseMs + 'ms，打断 ' + tuning.bargeInMs + 'ms。');
+      addEntry(
+        'system',
+        options.reconnect ? '重连配置' : '调节',
+        '本轮使用“' + tuning.label + '”节奏，实时模式：' + (sessionRealtimeMode === 'native_vad' ? '原生 VAD' : '当前模式') + '。短句 ' + tuning.shortPauseMs + 'ms，思考 ' + tuning.thinkingPauseMs + 'ms，打断 ' + tuning.bargeInMs + 'ms。',
+      );
       const readyPromise = new Promise((resolve, reject) => {
         pendingReadyResolve = resolve;
         pendingReadyReject = reject;
         setTimeout(() => reject(new Error('Gemini Live 会话启动超时。')), 20000);
       });
-      ws.send(JSON.stringify({ type: 'start', ...selectedSessionOptions() }));
+      ws.send(JSON.stringify({
+        type: 'start',
+        ...selectedSessionOptions({
+          includeReconnectContext: Boolean(options.reconnect),
+          mode: sessionRealtimeMode,
+        }),
+      }));
       await readyPromise;
       await startMic();
       setRunning(true);
       setStatus('正在听', true);
+      if (options.reconnect) {
+        reconnectState.pending = false;
+        reconnectState.attempts = 0;
+        reconnectState.firstAttemptAt = 0;
+        addEntry('system', '重连成功', '已恢复 Gemini Live 会话，并保留最近几轮文本上下文。');
+      }
     }
 
     async function stopConversation() {
       if (!running && !ws) return;
+      reconnectState.manualStop = true;
+      if (reconnectState.timer) clearTimeout(reconnectState.timer);
+      reconnectState.pending = false;
       setStatus('正在停止', false);
       stopMic();
       clearPlayback();
@@ -3489,6 +3879,7 @@ function createServer(config) {
             live = await createGeminiSession(ws, config, {
               voiceName: message.voiceName,
               systemInstruction: message.systemInstruction,
+              realtimeMode: message.realtimeMode,
               realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
@@ -3540,6 +3931,19 @@ function createServer(config) {
           reason,
           metrics,
         });
+      }
+      if (message.type === 'noise_guard') {
+        console.info(`[GeminiLiveDemo] ${message.active ? 'noise_guard_entered' : 'noise_guard_exited'} ${JSON.stringify({
+          reason: String(message.reason || '').slice(0, 80),
+          remainingMs: Number(message.remainingMs) || 0,
+          events: Number(message.events) || 0,
+        })}`);
+      }
+      if (message.type === 'reconnect_event') {
+        console.info(`[GeminiLiveDemo] ${message.status === 'failed' ? 'session_reconnect_failed' : 'session_reconnect_requested'} ${JSON.stringify({
+          code: message.code ?? null,
+          reason: String(message.reason || '').slice(0, 120),
+        })}`);
       }
     });
 
@@ -3727,6 +4131,7 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
             live = await createGeminiSession(ws, config, {
               voiceName: message.voiceName,
               systemInstruction: message.systemInstruction,
+              realtimeMode: message.realtimeMode,
               realtimeTuning: message.realtimeTuning,
             });
           } catch (error) {
@@ -3778,6 +4183,19 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
           reason,
           metrics,
         });
+      }
+      if (message.type === 'noise_guard') {
+        console.info(`[GeminiLiveDemo] ${message.active ? 'noise_guard_entered' : 'noise_guard_exited'} ${JSON.stringify({
+          reason: String(message.reason || '').slice(0, 80),
+          remainingMs: Number(message.remainingMs) || 0,
+          events: Number(message.events) || 0,
+        })}`);
+      }
+      if (message.type === 'reconnect_event') {
+        console.info(`[GeminiLiveDemo] ${message.status === 'failed' ? 'session_reconnect_failed' : 'session_reconnect_requested'} ${JSON.stringify({
+          code: message.code ?? null,
+          reason: String(message.reason || '').slice(0, 120),
+        })}`);
       }
     });
 

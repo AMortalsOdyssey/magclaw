@@ -13,6 +13,8 @@ import {
   resolveGeminiLiveDemoConfig,
   resolveCredentialsPath,
   shouldBlockDemoToolCall,
+  updateGeminiLiveNoiseBaseline,
+  updateGeminiLiveTurnStorm,
 } from '../server/gemini-live-demo.js';
 
 function makeResponse() {
@@ -85,16 +87,30 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.equal(res.statusCode, 200);
       assert.match(res.body, /id="voiceSelect"/);
       assert.match(res.body, /id="promptInput"/);
+      assert.match(res.body, /always answer only in Simplified Chinese/);
+      assert.doesNotMatch(res.body, /reply in the user's language/);
       assert.match(res.body, /id="turnProfileButtons"/);
       assert.match(res.body, /data-profile="responsive"/);
       assert.match(res.body, /data-profile="patient"/);
+      assert.match(res.body, /id="realtimeModeButtons"/);
+      assert.match(res.body, /data-mode="manual"/);
+      assert.match(res.body, /data-mode="native_vad"/);
+      assert.match(res.body, /gemini-live-demo-realtime-mode/);
       assert.match(res.body, /activity_start/);
       assert.match(res.body, /activity_end/);
-      assert.match(res.body, /manualActivity: true/);
+      assert.match(res.body, /manualActivity: !nativeVad/);
+      assert.match(res.body, /activityMode: nativeVad \? 'native_vad' : 'manual'/);
+      assert.match(res.body, /sessionRealtimeMode = options\.reconnect \? sessionRealtimeMode : realtimeMode/);
+      assert.match(res.body, /mode: sessionRealtimeMode/);
       assert.match(res.body, /decideGeminiLiveEndpoint/);
+      assert.match(res.body, /updateGeminiLiveNoiseBaseline/);
+      assert.match(res.body, /updateGeminiLiveTurnStorm/);
       assert.match(res.body, /音频流/);
       assert.match(res.body, /提交给 Gemini/);
       assert.match(res.body, /低置信语音/);
+      assert.match(res.body, /抗噪保护/);
+      assert.match(res.body, /原生 VAD/);
+      assert.match(res.body, /会话重连/);
       assert.match(res.body, /Gemini inputTranscription/);
       assert.match(res.body, /Gemini 暂无输入转写/);
       assert.match(res.body, /服务端确认/);
@@ -348,6 +364,113 @@ test('Gemini Live mic gate ignores short background noise but accepts sustained 
   });
   assert.equal(idleStart.shouldStartUserSpeech, true);
   assert.equal(idleStart.requiredStartFrames, 3);
+});
+
+test('Gemini Live adaptive noise gate raises thresholds from the ambient floor', () => {
+  let noiseState = updateGeminiLiveNoiseBaseline({
+    state: {},
+    stats: { rms: 0.018, peak: 0.07 },
+    userSpeaking: false,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+  });
+  assert.equal(noiseState.initialized, true);
+  assert.equal(noiseState.updated, true);
+
+  noiseState = updateGeminiLiveNoiseBaseline({
+    state: noiseState,
+    stats: { rms: 0.02, peak: 0.075 },
+    userSpeaking: false,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+  });
+
+  const gate = calculateGeminiLiveMicGateFrame({
+    stats: { rms: 0.025, peak: 0.08 },
+    tuning: {
+      idleRms: 0.01,
+      idlePeak: 0.045,
+      startFrames: 3,
+      noiseRmsMultiplier: 2.6,
+      noisePeakMultiplier: 2.4,
+    },
+    noiseState,
+    frameMs: 42,
+    micSpeechFrames: 0,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+  });
+
+  assert.equal(gate.active, false);
+  assert.ok(gate.rmsThreshold > 0.01);
+  assert.ok(gate.peakThreshold > 0.045);
+
+  const speakingGate = calculateGeminiLiveMicGateFrame({
+    stats: { rms: gate.rmsThreshold * 1.2, peak: gate.peakThreshold * 1.2 },
+    tuning: {
+      idleRms: 0.01,
+      idlePeak: 0.045,
+      startFrames: 3,
+      noiseRmsMultiplier: 2.6,
+      noisePeakMultiplier: 2.4,
+    },
+    noiseState,
+    frameMs: 42,
+    micSpeechFrames: 2,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+  });
+  assert.equal(speakingGate.shouldStartUserSpeech, true);
+});
+
+test('Gemini Live turn storm guard activates on repeated low-confidence turns and releases on success', () => {
+  let state = {};
+  state = updateGeminiLiveTurnStorm({ state, event: 'noise', nowMs: 1000 });
+  assert.equal(state.active, false);
+  state = updateGeminiLiveTurnStorm({ state, event: 'noise', nowMs: 1800 });
+  assert.equal(state.active, false);
+  state = updateGeminiLiveTurnStorm({ state, event: 'noise', nowMs: 2400 });
+  assert.equal(state.active, true);
+  assert.equal(state.entered, true);
+  assert.ok(state.remainingMs > 7000);
+
+  const guardedGate = calculateGeminiLiveMicGateFrame({
+    stats: { rms: 0.06, peak: 0.2 },
+    tuning: {
+      idleRms: 0.01,
+      idlePeak: 0.045,
+      startFrames: 3,
+      noiseGuardMultiplier: 1.35,
+    },
+    turnStormState: state,
+    nowMs: 2500,
+    frameMs: 42,
+    micSpeechFrames: 3,
+  });
+  assert.equal(guardedGate.noiseGuardActive, true);
+  assert.ok(guardedGate.requiredStartFrames > guardedGate.baseRequiredStartFrames);
+
+  const noiseSpikeGate = calculateGeminiLiveMicGateFrame({
+    stats: { rms: 0.008, peak: 0.3 },
+    tuning: {
+      idleRms: 0.01,
+      idlePeak: 0.045,
+      startFrames: 3,
+      noiseGuardMultiplier: 1.35,
+    },
+    turnStormState: state,
+    nowMs: 2500,
+    frameMs: 42,
+    micSpeechFrames: 0,
+  });
+  assert.equal(noiseSpikeGate.noiseGuardActive, true);
+  assert.equal(noiseSpikeGate.active, false);
+  assert.equal(noiseSpikeGate.shouldStartUserSpeech, false);
+
+  state = updateGeminiLiveTurnStorm({ state, event: 'success', nowMs: 2600 });
+  assert.equal(state.active, false);
+  assert.equal(state.exited, true);
+  assert.deepEqual(state.events, []);
 });
 
 test('Gemini Live endpoint decision drops short noise before sending an empty turn', () => {
