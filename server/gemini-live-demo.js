@@ -387,7 +387,17 @@ function sendWsJson(ws, payload) {
 
 function sanitizeEndpointMetrics(value) {
   if (!value || typeof value !== 'object') return null;
-  const numericKeys = ['waitMs', 'silenceMs', 'speechDurationMs', 'transcriptChars', 'transcriptAgeMs'];
+  const numericKeys = [
+    'turnId',
+    'waitMs',
+    'silenceMs',
+    'speechDurationMs',
+    'transcriptChars',
+    'transcriptAgeMs',
+    'audioFrames',
+    'audioBytes',
+    'audioStreamed',
+  ];
   const metrics = {};
   for (const key of numericKeys) {
     if (value[key] === null) {
@@ -2402,6 +2412,13 @@ function makeIndexHtml(config) {
     let assistantSpeakingAt = 0;
     let lastBargeInNoticeAt = 0;
     let lastNoiseNoticeAt = 0;
+    let observedTurnCounter = 0;
+    let currentTurnId = 0;
+    let currentTurnAudioStarted = false;
+    let currentTurnAudioFrames = 0;
+    let currentTurnAudioBytes = 0;
+    let currentTurnSubmitted = false;
+    let pendingResponseTurnId = 0;
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
     // supporting "only follow the primary speaker" in mixed-room conversations.
@@ -2631,6 +2648,47 @@ function makeIndexHtml(config) {
       latencyText.textContent = text;
     }
 
+    function formatBytes(bytes) {
+      const number = Number(bytes) || 0;
+      if (number >= 1024 * 1024) return (number / 1024 / 1024).toFixed(1) + ' MB';
+      if (number >= 1024) return Math.round(number / 1024) + ' KB';
+      return Math.round(number) + ' B';
+    }
+
+    function turnLabel(turnId = currentTurnId) {
+      return turnId ? '#' + turnId : '#?';
+    }
+
+    function endpointSummary(metrics = {}) {
+      const parts = [];
+      if (Number.isFinite(Number(metrics.audioBytes))) parts.push('音频 ' + formatBytes(metrics.audioBytes));
+      if (Number.isFinite(Number(metrics.speechDurationMs))) parts.push('语音 ' + Math.round(metrics.speechDurationMs) + 'ms');
+      if (Number.isFinite(Number(metrics.transcriptChars))) parts.push('转写字符 ' + Math.round(metrics.transcriptChars));
+      return parts.join('，') || '暂无 metrics';
+    }
+
+    function beginObservedTurn(now, source) {
+      observedTurnCounter += 1;
+      currentTurnId = observedTurnCounter;
+      currentTurnAudioStarted = false;
+      currentTurnAudioFrames = 0;
+      currentTurnAudioBytes = 0;
+      currentTurnSubmitted = false;
+      latestInputTranscript = '';
+      latestInputTranscriptAt = 0;
+      addEntry('system', '实时输入', turnLabel() + ' 本地检测到' + source + '，接下来 PCM 音频会边说边流式发送到 Gemini。');
+    }
+
+    function currentEndpointMetrics(metrics = {}) {
+      return {
+        ...metrics,
+        turnId: currentTurnId,
+        audioFrames: currentTurnAudioFrames,
+        audioBytes: currentTurnAudioBytes,
+        audioStreamed: currentTurnAudioStarted ? 1 : 0,
+      };
+    }
+
     function latencyLabel(message) {
       const endpointMs = Number(message?.endpointToAudioMs);
       const toolMs = Number(message?.toolResponseToAudioMs);
@@ -2675,7 +2733,15 @@ function makeIndexHtml(config) {
       if (now - lastEndpointAt < 600) return;
       lastEndpointAt = now;
       firstAudioRequestedAt = now;
-      ws.send(JSON.stringify({ type: 'audio_stream_end', reason, metrics }));
+      const enrichedMetrics = currentEndpointMetrics(metrics);
+      currentTurnSubmitted = true;
+      pendingResponseTurnId = currentTurnId;
+      ws.send(JSON.stringify({ type: 'audio_stream_end', reason, metrics: enrichedMetrics }));
+      addEntry(
+        'system',
+        '提交给 Gemini',
+        turnLabel() + ' 已发送 audioStreamEnd；' + endpointSummary(enrichedMetrics) + '。等待 Gemini 输出。',
+      );
       updateSpeechMetrics('等待模型', reason);
     }
 
@@ -2780,6 +2846,12 @@ function makeIndexHtml(config) {
       latestInputTranscriptAt = 0;
       firstAudioRequestedAt = 0;
       assistantSpeakingAt = 0;
+      currentTurnId = 0;
+      currentTurnAudioStarted = false;
+      currentTurnAudioFrames = 0;
+      currentTurnAudioBytes = 0;
+      currentTurnSubmitted = false;
+      pendingResponseTurnId = 0;
       updateSpeechMetrics('空闲', '--');
     }
 
@@ -2835,7 +2907,18 @@ function makeIndexHtml(config) {
         });
         const active = gate.active;
         const sendPcm = (buffer) => {
-          if (ws && ws.readyState === WebSocket.OPEN) ws.send(buffer);
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          if (!currentTurnAudioStarted) {
+            currentTurnAudioStarted = true;
+            addEntry(
+              'system',
+              '音频流',
+              turnLabel() + ' 首段 PCM 已通过服务端实时转发给 Gemini；Gemini 若识别到内容，会返回 inputTranscription。',
+            );
+          }
+          currentTurnAudioFrames += 1;
+          currentTurnAudioBytes += buffer?.byteLength || 0;
+          ws.send(buffer);
         };
 
         micSpeechFrames = gate.nextSpeechFrames;
@@ -2851,6 +2934,7 @@ function makeIndexHtml(config) {
         }
 
         if (gate.shouldAcceptBargeIn) {
+          if (!userSpeaking) beginObservedTurn(now, '打断语音');
           acceptedBargeIn = true;
           userSpeaking = true;
           utteranceStartedAt = now - (gate.requiredStartFrames * frameMs);
@@ -2863,10 +2947,10 @@ function makeIndexHtml(config) {
         }
 
         if (!userSpeaking && gate.shouldStartUserSpeech) {
+          beginObservedTurn(now, '人声');
           userSpeaking = true;
           utteranceStartedAt = now;
           lastEndpointAt = 0;
-          latestInputTranscript = '';
           updateSpeechMetrics('正在听你说', '--');
         }
 
@@ -2907,7 +2991,11 @@ function makeIndexHtml(config) {
             }
           } else if (endpointDecision.action === 'drop') {
             if (now - lastNoiseNoticeAt > 1800) {
-              addEntry('system', '环境音过滤', '检测到短音频但没有形成有效转写，已丢弃这段输入。');
+              addEntry(
+                'system',
+                '本地过滤',
+                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。',
+              );
               lastNoiseNoticeAt = now;
             }
             userSpeaking = false;
@@ -2917,6 +3005,7 @@ function makeIndexHtml(config) {
             micPreRoll = [];
             latestInputTranscript = '';
             latestInputTranscriptAt = 0;
+            currentTurnSubmitted = false;
             updateSpeechMetrics('过滤环境音', '--');
             return;
           } else if (endpointDecision.action === 'send') {
@@ -3025,16 +3114,17 @@ function makeIndexHtml(config) {
       } else if (message.type === 'input_transcript') {
         latestInputTranscript = message.text || latestInputTranscript;
         latestInputTranscriptAt = performance.now();
-        addEntry('user', '你', message.text);
+        addEntry('user', 'Gemini inputTranscription', turnLabel() + ' ' + message.text);
         if (containsInterruptionPhrase(message.text) && isAssistantAudioPlaying(audioContext || { currentTime: 0 })) {
           clearPlayback();
           addEntry('system', '明确打断词', '识别到“等一下/停一下”这类打断意图，已立即停止当前播放。');
         }
       } else if (message.type === 'output_transcript' || message.type === 'text') {
-        addEntry('assistant', 'Gemini', message.text);
+        addEntry('assistant', message.type === 'output_transcript' ? 'Gemini outputTranscription' : 'Gemini text', message.text);
       } else if (message.type === 'audio') {
         if (firstAudioRequestedAt > 0) {
           markLatency(Math.round(performance.now() - firstAudioRequestedAt) + 'ms');
+          addEntry('assistant', 'Gemini 音频', turnLabel(pendingResponseTurnId) + ' 首段音频已返回并开始播放。');
           firstAudioRequestedAt = 0;
         }
         assistantSpeakingAt = performance.now();
@@ -3046,7 +3136,11 @@ function makeIndexHtml(config) {
         const endpointMetrics = message.endpointMetrics || {};
         const transcriptChars = Number(endpointMetrics.transcriptChars);
         if (Number.isFinite(transcriptChars) && transcriptChars === 0) {
-          addEntry('warning', '等待有效语音', '这段输入还没有形成有效转写，可能是环境音或过短语音；页面会继续监听。');
+          addEntry(
+            'warning',
+            'Gemini 暂无输入转写',
+            turnLabel(endpointMetrics.turnId) + ' 已提交给 Gemini，但暂未收到 inputTranscription 或首段音频；' + endpointSummary(endpointMetrics) + '。继续说话会作为新一轮实时输入。',
+          );
         } else {
           addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。');
         }
@@ -3063,7 +3157,11 @@ function makeIndexHtml(config) {
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
       } else if (message.type === 'endpoint') {
-        addEntry('system', '端点刷新', '已按' + message.reason + '刷新输入流，等待模型响应。');
+        addEntry(
+          'system',
+          '服务端确认',
+          turnLabel(message.metrics?.turnId) + ' 服务端已收到 audioStreamEnd：' + message.reason + '；' + endpointSummary(message.metrics || {}) + '。',
+        );
       } else if (message.type === 'error') {
         addEntry('error', '错误', message.message);
         pendingReadyReject?.(new Error(message.message));
@@ -3246,13 +3344,16 @@ function createServer(config) {
         live?.close();
       }
       if (message.type === 'audio_stream_end') {
+        const reason = String(message.reason || 'client_silence').slice(0, 80);
+        const metrics = sanitizeEndpointMetrics(message.metrics);
         live?.flushAudioStream({
-          reason: String(message.reason || 'client_silence').slice(0, 80),
-          metrics: sanitizeEndpointMetrics(message.metrics),
+          reason,
+          metrics,
         });
         sendWsJson(ws, {
           type: 'endpoint',
-          reason: String(message.reason || 'client_silence').slice(0, 80),
+          reason,
+          metrics,
         });
       }
       if (message.type === 'activity_start') {
@@ -3261,13 +3362,16 @@ function createServer(config) {
         });
       }
       if (message.type === 'activity_end') {
+        const reason = String(message.reason || 'manual_activity').slice(0, 80);
+        const metrics = sanitizeEndpointMetrics(message.metrics);
         live?.activityEnd({
-          reason: String(message.reason || 'manual_activity').slice(0, 80),
-          metrics: sanitizeEndpointMetrics(message.metrics),
+          reason,
+          metrics,
         });
         sendWsJson(ws, {
           type: 'endpoint',
-          reason: String(message.reason || 'manual_activity').slice(0, 80),
+          reason,
+          metrics,
         });
       }
     });
@@ -3477,13 +3581,16 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
         live?.close();
       }
       if (message.type === 'audio_stream_end') {
+        const reason = String(message.reason || 'client_silence').slice(0, 80);
+        const metrics = sanitizeEndpointMetrics(message.metrics);
         live?.flushAudioStream({
-          reason: String(message.reason || 'client_silence').slice(0, 80),
-          metrics: sanitizeEndpointMetrics(message.metrics),
+          reason,
+          metrics,
         });
         sendWsJson(ws, {
           type: 'endpoint',
-          reason: String(message.reason || 'client_silence').slice(0, 80),
+          reason,
+          metrics,
         });
       }
       if (message.type === 'activity_start') {
@@ -3492,13 +3599,16 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
         });
       }
       if (message.type === 'activity_end') {
+        const reason = String(message.reason || 'manual_activity').slice(0, 80);
+        const metrics = sanitizeEndpointMetrics(message.metrics);
         live?.activityEnd({
-          reason: String(message.reason || 'manual_activity').slice(0, 80),
-          metrics: sanitizeEndpointMetrics(message.metrics),
+          reason,
+          metrics,
         });
         sendWsJson(ws, {
           type: 'endpoint',
-          reason: String(message.reason || 'manual_activity').slice(0, 80),
+          reason,
+          metrics,
         });
       }
     });
