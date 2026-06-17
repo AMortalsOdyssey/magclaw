@@ -1,6 +1,6 @@
 {
   "name": "magclaw-team-sharing",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "Team Sharing skills for searching, reading, sharing, editing, and controlling MagClaw team context from agent sessions.",
   "author": {
     "name": "MagClaw",

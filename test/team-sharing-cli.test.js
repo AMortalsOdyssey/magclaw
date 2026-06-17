@@ -713,7 +713,9 @@ test('team sharing hook sync ignores AGENTS and quoted opt-out examples for sess
 
     assert.equal(result.ok, true);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].body.events.map((event) => event.role), ['user', 'user']);
+    assert.deepEqual(calls[0].body.events.map((event) => event.role), ['user']);
+    assert.match(calls[0].body.events[0].text, /这类分析文本不是当前 session 的停报命令/);
+    assert.doesNotMatch(JSON.stringify(calls[0].body.events), /AGENTS\.md|Codex 全局协作规则/);
     assert.equal(reporting.report, true);
     assert.equal(reporting.matched, false);
   } finally {
@@ -1990,6 +1992,67 @@ test('team sharing cli sync resolves current Codex session title from session in
   assert.equal(result.sessionId, sessionId);
   assert.equal(result.title, '确认 Zilliz BM25 支持 renamed');
   assert.equal(result.eventCount, 1);
+});
+
+test('team sharing cli sync retries Codex Stop title lookup until session index catches up', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-title-race-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-codex-title-race-home-'));
+  const codexHome = path.join(home, '.codex');
+  const env = {
+    HOME: home,
+    CODEX_HOME: codexHome,
+    MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon'),
+  };
+  await mkdir(path.join(codexHome, 'sessions', '2026', '06', '01'), { recursive: true });
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const sessionId = '019ed4d0-6815-7f80-9189-6aea3b3867cc';
+  const transcript = path.join(codexHome, 'sessions', '2026', '06', '01', `rollout-2026-06-01T12-00-00-${sessionId}.jsonl`);
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: sessionId, cwd } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:01.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '1' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: '请补充你要我执行的具体任务。' }] } }),
+  ].join('\n'));
+  const indexFile = path.join(codexHome, 'session_index.jsonl');
+  let sleepCalls = 0;
+
+  const result = await syncTeamSharingTranscript({
+    cwd,
+    transcript,
+    runtime: 'codex',
+    hookEvent: 'Stop',
+    dryRun: true,
+    sessionTitleRetryAttempts: 3,
+    sessionTitleRetryIntervalMs: 1,
+    sleep: async () => {
+      sleepCalls += 1;
+      if (sleepCalls === 1) {
+        await writeFile(indexFile, `${JSON.stringify({
+          id: sessionId,
+          thread_name: 'Investigate 1',
+          updated_at: '2026-06-01T12:00:02.500000Z',
+        })}\n`);
+      }
+    },
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.dryRun, true);
+  assert.equal(result.sessionId, sessionId);
+  assert.equal(result.title, 'Investigate 1');
+  assert.equal(result.eventCount, 2);
+  assert.equal(sleepCalls, 1);
 });
 
 test('team sharing cli sync reads Codex hook stdin transcript_path when env transcript is empty', async () => {

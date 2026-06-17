@@ -592,6 +592,56 @@ test('team sharing hook parser accepts Codex session names from session metadata
   assert.equal(parsed.title, '确认 Zilliz BM25 支持');
 });
 
+test('team sharing hook parser drops Codex Desktop AGENTS bootstrap context', () => {
+  const transcript = [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-agents-bootstrap', cwd: '/repo/magclaw' } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: [
+              '# AGENTS.md instructions',
+              '',
+              '<INSTRUCTIONS>',
+              '# Codex 全局协作规则',
+              '这里是启动时注入的全局规则。',
+              '</INSTRUCTIONS>',
+            ].join('\n'),
+          },
+          {
+            type: 'input_text',
+            text: '<environment_context>\n  <cwd>/repo/magclaw</cwd>\n</environment_context>',
+          },
+        ],
+      },
+    }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:02.000Z', type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '1' }] } }),
+    JSON.stringify({ timestamp: '2026-06-01T12:00:03.000Z', type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: '请补充你要我执行的具体任务。' }] } }),
+  ].join('\n');
+
+  const parsed = parseTeamSharingTranscript(transcript, { runtime: 'codex' });
+  const bootstrapOnlyTranscript = transcript.split('\n').slice(0, 2).join('\n');
+  const sessionStartPackage = buildTeamSharingSyncPackageFromTranscript(bootstrapOnlyTranscript, {
+    runtime: 'codex',
+    projectKey: 'magclaw',
+    channelId: 'chan_team',
+    hookEvent: 'SessionStart',
+  });
+
+  assert.deepEqual(parsed.events.map((event) => event.text), [
+    '1',
+    '请补充你要我执行的具体任务。',
+  ]);
+  assert.doesNotMatch(JSON.stringify(parsed.events), /AGENTS\.md|environment_context|Codex 全局协作规则/);
+  assert.equal(sessionStartPackage.empty, true);
+  assert.equal(sessionStartPackage.reason, 'empty_session_start');
+});
+
 test('team sharing sync package skips empty SessionStart uploads for privacy', () => {
   const transcript = [
     JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess-start', cwd: '/repo/magclaw' } }),

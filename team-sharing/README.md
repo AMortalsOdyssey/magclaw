@@ -44,6 +44,13 @@ a short, direct command such as "这个 session 不上报" or "恢复这个 sess
 bootstrap instructions, AGENTS.md content, quoted examples, questions, and
 long analysis text must not change the session reporting state.
 
+Codex Desktop bootstrap context such as `# AGENTS.md instructions` and
+`<environment_context>` is filtered before upload. If a Codex `Stop` hook starts
+just before the desktop app writes the generated thread title to
+`session_index.jsonl`, Team Sharing briefly retries that local lookup so the
+channel thread uses the real Codex title instead of a generated session-id
+fallback.
+
 `MAGCLAW_TEAM_SHARING_HOME` is an advanced override for tests or intentionally
 isolated environments. If it is set, both the CLI and hooks must inherit the
 same value; setting it only in one terminal affects only that shell and its

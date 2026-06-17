@@ -46,7 +46,7 @@ function parseJsonOrJsonl(text = '') {
 
 function isInjectedCodexContext(text = '') {
   const clean = String(text || '').trim();
-  return clean.startsWith('# AGENTS.md instructions for ')
+  return clean.startsWith('# AGENTS.md instructions')
     || clean.startsWith('<environment_context>')
     || clean.startsWith('<permissions instructions>')
     || clean.startsWith('<skills_instructions>')

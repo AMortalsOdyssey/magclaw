@@ -1,5 +1,11 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.2.12 - 2026-06-17 - Codex bootstrap filtering and title race fix
+### bug fix
+- Codex Desktop `# AGENTS.md instructions` bootstrap blocks are now filtered from Team Sharing uploads, including paired environment context blocks.
+- Codex `SessionStart` uploads with only bootstrap context now stay empty instead of creating a channel thread.
+- Codex `Stop`/`PreCompact` sync briefly retries local `session_index.jsonl` title lookup for real Codex transcript files, avoiding session-id channel titles when the Codex thread title is written just after the hook starts.
+
 ## 0.2.11 - 2026-06-17 - Strict session reporting controls
 ### bug fix
 - Session reporting opt-out/on detection now requires a short, direct current-session command.

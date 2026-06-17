@@ -556,6 +556,30 @@ function normalizeRuntime(value = '') {
   return runtime || 'codex';
 }
 
+function maskSessionIdForTitle(value = '') {
+  const clean = String(value || '').trim();
+  if (!clean) return '****';
+  if (clean.length <= 8) return clean.length <= 4 ? '****' : `${clean.slice(0, 2)}****${clean.slice(-2)}`;
+  const visibleStart = 8;
+  const visibleEnd = 6;
+  if (clean.length <= visibleStart + visibleEnd) return `${clean.slice(0, 3)}****${clean.slice(-3)}`;
+  return `${clean.slice(0, visibleStart)}****${clean.slice(-visibleEnd)}`;
+}
+
+function generatedRuntimeSessionTitle(value = '', { runtime = 'codex', sessionId = '' } = {}) {
+  const title = String(value || '').trim().toLowerCase();
+  const id = String(sessionId || '').trim().toLowerCase();
+  if (!title || !id) return false;
+  const maskedId = maskSessionIdForTitle(id).toLowerCase();
+  const normalizedRuntime = normalizeRuntime(runtime).toLowerCase();
+  const runtimeVariants = [
+    normalizedRuntime,
+    normalizedRuntime.replace(/[_-]+/g, ' '),
+    normalizedRuntime.replace(/[_-]+/g, ''),
+  ].filter(Boolean);
+  return runtimeVariants.some((item) => title === `${item} session ${id}` || title === `${item} session ${maskedId}`);
+}
+
 function boolFlag(value, fallback = true) {
   if (value === undefined || value === null || value === '') return fallback;
   return !['0', 'false', 'no', 'off'].includes(String(value).trim().toLowerCase());
@@ -1861,6 +1885,18 @@ function normalizedPathValue(value = '') {
   }
 }
 
+function normalizedComparablePath(value = '') {
+  return normalizedPathValue(value).replace(/\\/g, '/');
+}
+
+function isCodexSessionTranscriptPath(transcriptPath = '', env = process.env) {
+  const cleanTranscriptPath = normalizedComparablePath(transcriptPath);
+  if (!cleanTranscriptPath) return false;
+  const cleanCodexHome = normalizedComparablePath(codexHomeDir(env));
+  return cleanTranscriptPath.includes('/.codex/sessions/')
+    || (cleanCodexHome && cleanTranscriptPath.startsWith(`${cleanCodexHome}/sessions/`));
+}
+
 function codexSessionIndexRecordMatches(record = {}, { sessionId = '', transcriptPath = '' } = {}) {
   if (!record || typeof record !== 'object') return false;
   const cleanSessionId = stringFlagValue(sessionId);
@@ -1923,6 +1959,40 @@ async function resolveCodexSessionTitleFromIndex({ sessionId = '', transcriptPat
 async function resolveRuntimeSessionTitle({ runtime = 'codex', sessionId = '', transcriptPath = '' } = {}, env = process.env) {
   if (normalizeRuntime(runtime) === 'codex') {
     return resolveCodexSessionTitleFromIndex({ sessionId, transcriptPath }, env);
+  }
+  return '';
+}
+
+function shouldRetryRuntimeSessionTitle({ runtime = 'codex', hookEvent = '', explicitSessionTitle = '', currentSessionTitle = '', sessionId = '', transcriptPath = '' } = {}, env = process.env) {
+  if (explicitSessionTitle) return false;
+  if (normalizeRuntime(runtime) !== 'codex') return false;
+  if (!['Stop', 'PreCompact'].includes(String(hookEvent || '').trim())) return false;
+  if (!isCodexSessionTranscriptPath(transcriptPath, env)) return false;
+  return generatedRuntimeSessionTitle(currentSessionTitle, { runtime, sessionId });
+}
+
+function runtimeSessionTitleRetryAttempts(flags = {}, env = process.env) {
+  const explicit = flags.sessionTitleRetryAttempts
+    ?? flags.titleRetryAttempts
+    ?? env.MAGCLAW_TEAM_SHARING_TITLE_RETRY_ATTEMPTS;
+  return Math.max(1, Math.min(20, Math.trunc(numberFlag(explicit, 8))));
+}
+
+function runtimeSessionTitleRetryIntervalMs(flags = {}, env = process.env) {
+  const explicit = flags.sessionTitleRetryIntervalMs
+    ?? flags.titleRetryIntervalMs
+    ?? env.MAGCLAW_TEAM_SHARING_TITLE_RETRY_INTERVAL_MS;
+  return Math.max(0, Math.min(2_000, Math.trunc(numberFlag(explicit, 250))));
+}
+
+async function resolveRuntimeSessionTitleWithRetry({ runtime = 'codex', sessionId = '', transcriptPath = '' } = {}, env = process.env, options = {}) {
+  const attempts = runtimeSessionTitleRetryAttempts(options.flags || {}, env);
+  const intervalMs = runtimeSessionTitleRetryIntervalMs(options.flags || {}, env);
+  const sleepFn = typeof options.sleep === 'function' ? options.sleep : sleep;
+  for (let attempt = 1; attempt < attempts; attempt += 1) {
+    if (intervalMs > 0) await sleepFn(intervalMs);
+    const title = await resolveRuntimeSessionTitle({ runtime, sessionId, transcriptPath }, env);
+    if (title) return title;
   }
   return '';
 }
@@ -2317,7 +2387,7 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     projectDir: flags.cwd || process.cwd(),
   });
   sessionReportingTarget.sessionId = parsed.sessionId;
-  const currentSessionTitle = explicitSessionTitle
+  let currentSessionTitle = explicitSessionTitle
     || await resolveRuntimeSessionTitle({
       runtime: parsed.runtime,
       sessionId: parsed.sessionId,
@@ -2325,6 +2395,23 @@ export async function syncTeamSharingTranscript(flags = {}, env = process.env) {
     }, env)
     || parsed.title
     || path.basename(transcriptPath);
+  if (shouldRetryRuntimeSessionTitle({
+    runtime: parsed.runtime,
+    hookEvent,
+    explicitSessionTitle,
+    currentSessionTitle,
+    sessionId: parsed.sessionId,
+    transcriptPath,
+  }, env)) {
+    currentSessionTitle = await resolveRuntimeSessionTitleWithRetry({
+      runtime: parsed.runtime,
+      sessionId: parsed.sessionId,
+      transcriptPath,
+    }, env, {
+      flags,
+      sleep: flags.sleep,
+    }) || currentSessionTitle;
+  }
   baseAudit.session = {
     runtime: parsed.runtime,
     sessionId: parsed.sessionId,
