@@ -88,11 +88,13 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.match(res.body, /id="turnProfileButtons"/);
       assert.match(res.body, /data-profile="responsive"/);
       assert.match(res.body, /data-profile="patient"/);
-      assert.match(res.body, /audio_stream_end/);
+      assert.match(res.body, /activity_start/);
+      assert.match(res.body, /activity_end/);
+      assert.match(res.body, /manualActivity: true/);
       assert.match(res.body, /decideGeminiLiveEndpoint/);
       assert.match(res.body, /音频流/);
       assert.match(res.body, /提交给 Gemini/);
-      assert.match(res.body, /本地过滤/);
+      assert.match(res.body, /低置信语音/);
       assert.match(res.body, /Gemini inputTranscription/);
       assert.match(res.body, /Gemini 暂无输入转写/);
       assert.match(res.body, /服务端确认/);

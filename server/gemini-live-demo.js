@@ -1421,6 +1421,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let loggedFirstInputTranscript = false;
   let loggedFirstOutputAudioAfterFlush = false;
   let clientAudioTurnOpen = false;
+  let activeClientTurnId = 0;
   const traceId = randomUUID().slice(0, 8);
   const voiceName = normalizeVoiceName(sessionOptions.voiceName);
   const sessionDemoTasks = new Map();
@@ -1518,9 +1519,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         if (message.serverContent?.inputTranscription?.text) {
           latestInputTranscript = message.serverContent.inputTranscription.text;
           latestInputTranscriptAt = Date.now();
+          const turnId = activeClientTurnId || lastEndpointMetrics?.turnId || null;
           if (!loggedFirstInputTranscript) {
             loggedFirstInputTranscript = true;
             logTrace('first_input_transcript', {
+              turnId,
               chars: message.serverContent.inputTranscription.text.length,
               fromFirstClientAudioMs: firstClientAudioAt ? Date.now() - firstClientAudioAt : null,
               fromEndpointMs: lastFlushAt ? Date.now() - lastFlushAt : null,
@@ -1528,6 +1531,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           }
           sendWsJson(ws, {
             type: 'input_transcript',
+            turnId,
             text: message.serverContent.inputTranscription.text,
             finished: Boolean(message.serverContent.inputTranscription.finished),
           });
@@ -1535,6 +1539,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         if (message.serverContent?.outputTranscription?.text) {
           sendWsJson(ws, {
             type: 'output_transcript',
+            turnId: lastEndpointMetrics?.turnId || activeClientTurnId || null,
             text: normalizeChineseDisplayText(message.serverContent.outputTranscription.text),
           });
         }
@@ -1561,7 +1566,11 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         }
 
         for (const text of extractTextParts(message)) {
-          sendWsJson(ws, { type: 'text', text: normalizeChineseDisplayText(text) });
+          sendWsJson(ws, {
+            type: 'text',
+            turnId: lastEndpointMetrics?.turnId || activeClientTurnId || null,
+            text: normalizeChineseDisplayText(text),
+          });
         }
         for (const audio of extractAudioParts(message)) {
           if (lastFlushAt && !loggedFirstOutputAudioAfterFlush) {
@@ -1579,7 +1588,12 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
             });
             clearResponseDelayTimer();
           }
-          sendWsJson(ws, { type: 'audio', audio, sampleRate: OUTPUT_SAMPLE_RATE });
+          sendWsJson(ws, {
+            type: 'audio',
+            turnId: lastEndpointMetrics?.turnId || activeClientTurnId || null,
+            audio,
+            sampleRate: OUTPUT_SAMPLE_RATE,
+          });
         }
 
         const calls = message.toolCall?.functionCalls || [];
@@ -1750,9 +1764,12 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     activityStart(meta = {}) {
       if (closed || !session) return;
       clientAudioTurnOpen = true;
+      const metrics = meta.metrics || {};
+      activeClientTurnId = Number(metrics.turnId) || 0;
       resetInputTranscriptForClientTurn();
       logTrace('client_activity_start', {
         reason: String(meta.reason || 'manual_activity').slice(0, 80),
+        metrics,
       });
       session.sendRealtimeInput({ activityStart: {} });
     },
@@ -2589,6 +2606,8 @@ function makeIndexHtml(config) {
     function makeRealtimeTuning() {
       const tuning = readTuning();
       return {
+        manualActivity: true,
+        activityMode: 'manual',
         silenceDurationMs: tuning.serverSilenceMs,
         prefixPaddingMs: tuning.prefixPaddingMs,
         startSensitivity: tuning.startSensitivity,
@@ -2745,6 +2764,14 @@ function makeIndexHtml(config) {
         turnTimings.delete(turnTimings.keys().next().value);
       }
       addEntry('system', '实时输入', turnLabel() + ' 本地检测到' + source + '，接下来 PCM 音频会边说边流式发送到 Gemini。');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'activity_start',
+          reason: source,
+          metrics: { turnId: currentTurnId },
+        }));
+        addEntry('system', '活动开始', turnLabel() + ' 已发送 activityStart；Gemini 将把后续 PCM 视为这一轮用户语音。');
+      }
     }
 
     function currentEndpointMetrics(metrics = {}) {
@@ -2806,11 +2833,11 @@ function makeIndexHtml(config) {
       currentTurnSubmitted = true;
       pendingResponseTurnId = currentTurnId;
       markTurnStage(currentTurnId, 'endpointSentAt', now);
-      ws.send(JSON.stringify({ type: 'audio_stream_end', reason, metrics: enrichedMetrics }));
+      ws.send(JSON.stringify({ type: 'activity_end', reason, metrics: enrichedMetrics }));
       addEntry(
         'system',
         '提交给 Gemini',
-        turnLabel() + ' 已发送 audioStreamEnd；' + endpointSummary(enrichedMetrics) + '。' + endpointTimingText(currentTurnId) + '等待 Gemini 输出。',
+        turnLabel() + ' 已发送 activityEnd；' + endpointSummary(enrichedMetrics) + '。' + endpointTimingText(currentTurnId) + '等待 Gemini 输出。',
       );
       updateSpeechMetrics('等待模型', reason);
     }
@@ -3070,15 +3097,24 @@ function makeIndexHtml(config) {
             markTurnStage(currentTurnId, 'filterAt', now);
             if (now - lastNoiseNoticeAt > 1800) {
               addEntry(
-                'system',
-                '本地过滤',
-                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' / 约 ' + Math.round(currentAudioDurationMs()) + 'ms 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。' + timingText(currentTurnId, [
+                'warning',
+                '低置信语音',
+                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' / 约 ' + Math.round(currentAudioDurationMs()) + 'ms 音频，但 Gemini 暂未返回 inputTranscription；手动活动模式会发送 activityEnd 关闭这一轮，避免后续输入被卡住。' + timingText(currentTurnId, [
                   ['检测→过滤', 'detectedAt', 'filterAt'],
                   ['首帧→过滤', 'firstPcmAt', 'filterAt'],
                 ]),
               );
               lastNoiseNoticeAt = now;
             }
+            sendEndpoint('low_confidence_audio:' + Math.round(waitMs) + 'ms', {
+              waitMs: Math.round(waitMs),
+              silenceMs: Math.round(silenceMs),
+              speechDurationMs: Math.round(speechDurationMs),
+              transcriptChars: latestInputTranscript.length,
+              transcriptAgeMs,
+              filtered: 1,
+              profile: activeProfile,
+            });
             userSpeaking = false;
             acceptedBargeIn = false;
             micSpeechFrames = 0;
@@ -3086,8 +3122,7 @@ function makeIndexHtml(config) {
             micPreRoll = [];
             latestInputTranscript = '';
             latestInputTranscriptAt = 0;
-            currentTurnSubmitted = false;
-            updateSpeechMetrics('过滤环境音', '--');
+            updateSpeechMetrics('低置信已提交', '等待模型');
             return;
           } else if (endpointDecision.action === 'send') {
             const reason = endpointDecision.reason === 'audio_without_transcript_fallback'
@@ -3193,11 +3228,16 @@ function makeIndexHtml(config) {
       } else if (message.type === 'starting') {
         setStatus('连接 Gemini Live', false);
       } else if (message.type === 'input_transcript') {
-        latestInputTranscript = message.text || latestInputTranscript;
+        const turnId = message.turnId || currentTurnId;
+        if (!message.turnId || message.turnId === currentTurnId) {
+          latestInputTranscript = message.text || latestInputTranscript;
+        }
         const now = performance.now();
-        latestInputTranscriptAt = now;
-        markTurnStage(currentTurnId, 'inputTranscriptAt', now);
-        addEntry('user', 'Gemini inputTranscription', turnLabel() + ' ' + message.text + '。' + timingText(currentTurnId, [
+        if (!message.turnId || message.turnId === currentTurnId) {
+          latestInputTranscriptAt = now;
+        }
+        markTurnStage(turnId, 'inputTranscriptAt', now);
+        addEntry('user', 'Gemini inputTranscription', turnLabel(turnId) + ' ' + message.text + '。' + timingText(turnId, [
           ['检测→转写', 'detectedAt', 'inputTranscriptAt'],
           ['首帧→转写', 'firstPcmAt', 'inputTranscriptAt'],
           ['端点→转写', 'endpointSentAt', 'inputTranscriptAt'],
@@ -3208,7 +3248,7 @@ function makeIndexHtml(config) {
         }
       } else if (message.type === 'output_transcript' || message.type === 'text') {
         const now = performance.now();
-        const turnId = pendingResponseTurnId || currentTurnId;
+        const turnId = message.turnId || pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt', now);
         addEntry('assistant', message.type === 'output_transcript' ? 'Gemini outputTranscription' : 'Gemini text', message.text + '。' + timingText(turnId, [
           ['端点→输出文本', 'endpointSentAt', message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt'],
@@ -3217,7 +3257,7 @@ function makeIndexHtml(config) {
       } else if (message.type === 'audio') {
         if (firstAudioRequestedAt > 0) {
           const now = performance.now();
-          const turnId = pendingResponseTurnId || currentTurnId;
+          const turnId = message.turnId || pendingResponseTurnId || currentTurnId;
           markLatency(Math.round(now - firstAudioRequestedAt) + 'ms');
           markTurnStage(turnId, 'firstAudioAt', now);
           addEntry('assistant', 'Gemini 音频', turnLabel(turnId) + ' 首段音频已返回并开始播放。' + timingText(turnId, [
@@ -3272,16 +3312,18 @@ function makeIndexHtml(config) {
       } else if (message.type === 'interrupted') {
         clearPlayback();
         acceptedBargeIn = false;
+        pendingResponseTurnId = 0;
         addEntry('system', '打断', '已停止当前回复音频，继续听你说。');
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
+        pendingResponseTurnId = 0;
       } else if (message.type === 'endpoint') {
         const turnId = message.metrics?.turnId || pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, 'serverAckAt', performance.now());
         addEntry(
           'system',
           '服务端确认',
-          turnLabel(turnId) + ' 服务端已收到 audioStreamEnd：' + message.reason + '；' + endpointSummary(message.metrics || {}) + '。' + timingText(turnId, [
+          turnLabel(turnId) + ' 服务端已收到 activityEnd：' + message.reason + '；' + endpointSummary(message.metrics || {}) + '。' + timingText(turnId, [
             ['端点→服务端确认', 'endpointSentAt', 'serverAckAt'],
             ['检测→服务端确认', 'detectedAt', 'serverAckAt'],
           ]),
@@ -3483,6 +3525,7 @@ function createServer(config) {
       if (message.type === 'activity_start') {
         live?.activityStart({
           reason: String(message.reason || 'manual_activity').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
         });
       }
       if (message.type === 'activity_end') {
@@ -3720,6 +3763,7 @@ function attachGeminiLiveConnectionHandlers(wss, deps = {}) {
       if (message.type === 'activity_start') {
         live?.activityStart({
           reason: String(message.reason || 'manual_activity').slice(0, 80),
+          metrics: sanitizeEndpointMetrics(message.metrics),
         });
       }
       if (message.type === 'activity_end') {
