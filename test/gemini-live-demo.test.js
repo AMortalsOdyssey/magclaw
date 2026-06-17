@@ -318,6 +318,7 @@ test('Gemini Live endpoint decision drops short noise before sending an empty tu
   const earlySilence = decideGeminiLiveEndpoint({
     transcript: '',
     speechDurationMs: 360,
+    audioDurationMs: 360,
     silenceMs: 460,
     waitMs: 460,
     minNoTranscriptSpeechMs: 1000,
@@ -329,6 +330,7 @@ test('Gemini Live endpoint decision drops short noise before sending an empty tu
   const noise = decideGeminiLiveEndpoint({
     transcript: '',
     speechDurationMs: 360,
+    audioDurationMs: 360,
     silenceMs: 1500,
     waitMs: 460,
     minNoTranscriptSpeechMs: 1000,
@@ -340,6 +342,7 @@ test('Gemini Live endpoint decision drops short noise before sending an empty tu
   const realSpeech = decideGeminiLiveEndpoint({
     transcript: '帮我查一下杭州天气',
     speechDurationMs: 520,
+    audioDurationMs: 520,
     silenceMs: 470,
     waitMs: 460,
     minNoTranscriptSpeechMs: 1000,
@@ -351,6 +354,7 @@ test('Gemini Live endpoint decision drops short noise before sending an empty tu
   const fallbackSpeech = decideGeminiLiveEndpoint({
     transcript: '',
     speechDurationMs: 1600,
+    audioDurationMs: 1600,
     silenceMs: 1500,
     waitMs: 460,
     minNoTranscriptSpeechMs: 1000,
@@ -358,6 +362,18 @@ test('Gemini Live endpoint decision drops short noise before sending an empty tu
   });
   assert.equal(fallbackSpeech.action, 'send');
   assert.equal(fallbackSpeech.reason, 'audio_without_transcript_fallback');
+
+  const streamedBrowserSpeech = decideGeminiLiveEndpoint({
+    transcript: '',
+    speechDurationMs: 420,
+    audioDurationMs: 47_000 / 32,
+    silenceMs: 470,
+    waitMs: 460,
+    minNoTranscriptSpeechMs: 750,
+    noTranscriptGraceMs: 1400,
+  });
+  assert.equal(streamedBrowserSpeech.action, 'send');
+  assert.equal(streamedBrowserSpeech.reason, 'audio_without_transcript_fallback');
 });
 
 test('Gemini Live demo normalizes Chinese output transcript for display', () => {

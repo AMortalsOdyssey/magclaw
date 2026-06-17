@@ -396,6 +396,7 @@ function sanitizeEndpointMetrics(value) {
     'transcriptAgeMs',
     'audioFrames',
     'audioBytes',
+    'audioDurationMs',
     'audioStreamed',
   ];
   const metrics = {};
@@ -753,6 +754,8 @@ export function calculateGeminiLiveMicGateFrame(input = {}) {
 export function decideGeminiLiveEndpoint(input = {}) {
   const transcript = String(input.transcript || '').trim();
   const speechDurationMs = Math.max(0, Number(input.speechDurationMs) || 0);
+  const audioDurationMs = Math.max(0, Number(input.audioDurationMs) || 0);
+  const effectiveSpeechMs = Math.max(speechDurationMs, audioDurationMs);
   const silenceMs = Math.max(0, Number(input.silenceMs) || 0);
   const waitMs = Math.max(0, Number(input.waitMs) || 0);
   const minNoTranscriptSpeechMs = Math.max(0, Number(input.minNoTranscriptSpeechMs) || 1000);
@@ -772,6 +775,13 @@ export function decideGeminiLiveEndpoint(input = {}) {
       remainingMs: 0,
     };
   }
+  if (effectiveSpeechMs >= minNoTranscriptSpeechMs) {
+    return {
+      action: 'send',
+      reason: 'audio_without_transcript_fallback',
+      remainingMs: 0,
+    };
+  }
   if (silenceMs < noTranscriptGraceMs) {
     return {
       action: 'hold',
@@ -779,16 +789,9 @@ export function decideGeminiLiveEndpoint(input = {}) {
       remainingMs: Math.max(0, Math.round(noTranscriptGraceMs - silenceMs)),
     };
   }
-  if (speechDurationMs < minNoTranscriptSpeechMs) {
-    return {
-      action: 'drop',
-      reason: 'short_audio_without_transcript',
-      remainingMs: 0,
-    };
-  }
   return {
-    action: 'send',
-    reason: 'audio_without_transcript_fallback',
+    action: 'drop',
+    reason: 'short_audio_without_transcript',
     remainingMs: 0,
   };
 }
@@ -2433,7 +2436,7 @@ function makeIndexHtml(config) {
         idlePeak: 0.045,
         bargeInRms: 0.038,
         bargeInPeak: 0.145,
-        minNoTranscriptSpeechMs: 900,
+        minNoTranscriptSpeechMs: 650,
         noTranscriptGraceMs: 1100,
         serverSilenceMs: 450,
         prefixPaddingMs: 140,
@@ -2450,7 +2453,7 @@ function makeIndexHtml(config) {
         idlePeak: 0.045,
         bargeInRms: 0.042,
         bargeInPeak: 0.16,
-        minNoTranscriptSpeechMs: 1000,
+        minNoTranscriptSpeechMs: 750,
         noTranscriptGraceMs: 1400,
         serverSilenceMs: 650,
         prefixPaddingMs: 180,
@@ -2467,7 +2470,7 @@ function makeIndexHtml(config) {
         idlePeak: 0.05,
         bargeInRms: 0.048,
         bargeInPeak: 0.18,
-        minNoTranscriptSpeechMs: 1200,
+        minNoTranscriptSpeechMs: 900,
         noTranscriptGraceMs: 1700,
         serverSilenceMs: 950,
         prefixPaddingMs: 220,
@@ -2662,9 +2665,15 @@ function makeIndexHtml(config) {
     function endpointSummary(metrics = {}) {
       const parts = [];
       if (Number.isFinite(Number(metrics.audioBytes))) parts.push('音频 ' + formatBytes(metrics.audioBytes));
+      if (Number.isFinite(Number(metrics.audioDurationMs))) parts.push('音频约 ' + Math.round(metrics.audioDurationMs) + 'ms');
       if (Number.isFinite(Number(metrics.speechDurationMs))) parts.push('语音 ' + Math.round(metrics.speechDurationMs) + 'ms');
       if (Number.isFinite(Number(metrics.transcriptChars))) parts.push('转写字符 ' + Math.round(metrics.transcriptChars));
       return parts.join('，') || '暂无 metrics';
+    }
+
+    function currentAudioDurationMs() {
+      const bytesPerSecond = Number(CONFIG.inputSampleRate || 16000) * 2;
+      return bytesPerSecond > 0 ? (currentTurnAudioBytes / bytesPerSecond) * 1000 : 0;
     }
 
     function beginObservedTurn(now, source) {
@@ -2685,6 +2694,7 @@ function makeIndexHtml(config) {
         turnId: currentTurnId,
         audioFrames: currentTurnAudioFrames,
         audioBytes: currentTurnAudioBytes,
+        audioDurationMs: currentAudioDurationMs(),
         audioStreamed: currentTurnAudioStarted ? 1 : 0,
       };
     }
@@ -2979,6 +2989,7 @@ function makeIndexHtml(config) {
           const endpointDecision = decideGeminiLiveEndpoint({
             transcript: latestInputTranscript,
             speechDurationMs,
+            audioDurationMs: currentAudioDurationMs(),
             silenceMs,
             waitMs,
             minNoTranscriptSpeechMs: tuning.minNoTranscriptSpeechMs,
@@ -2994,7 +3005,7 @@ function makeIndexHtml(config) {
               addEntry(
                 'system',
                 '本地过滤',
-                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。',
+                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' / 约 ' + Math.round(currentAudioDurationMs()) + 'ms 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。',
               );
               lastNoiseNoticeAt = now;
             }
