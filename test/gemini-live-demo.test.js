@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   calculateGeminiLiveMicGateFrame,
   createGeminiSession,
+  decideGeminiLiveEndpoint,
   handleGeminiLiveDemoHttp,
   normalizeChineseDisplayText,
   resolveGeminiLiveDemoConfig,
@@ -88,6 +89,9 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.match(res.body, /data-profile="responsive"/);
       assert.match(res.body, /data-profile="patient"/);
       assert.match(res.body, /audio_stream_end/);
+      assert.match(res.body, /decideGeminiLiveEndpoint/);
+      assert.match(res.body, /环境音过滤/);
+      assert.match(res.body, /等待有效语音/);
       assert.match(res.body, /responseDelayWarningMs/);
       assert.match(res.body, /response_delay_warning/);
       assert.match(res.body, /response_latency/);
@@ -304,6 +308,52 @@ test('Gemini Live mic gate ignores short background noise but accepts sustained 
   });
   assert.equal(idleStart.shouldStartUserSpeech, true);
   assert.equal(idleStart.requiredStartFrames, 3);
+});
+
+test('Gemini Live endpoint decision drops short noise before sending an empty turn', () => {
+  const earlySilence = decideGeminiLiveEndpoint({
+    transcript: '',
+    speechDurationMs: 360,
+    silenceMs: 460,
+    waitMs: 460,
+    minNoTranscriptSpeechMs: 1000,
+    noTranscriptGraceMs: 1400,
+  });
+  assert.equal(earlySilence.action, 'hold');
+  assert.equal(earlySilence.reason, 'waiting_for_transcript');
+
+  const noise = decideGeminiLiveEndpoint({
+    transcript: '',
+    speechDurationMs: 360,
+    silenceMs: 1500,
+    waitMs: 460,
+    minNoTranscriptSpeechMs: 1000,
+    noTranscriptGraceMs: 1400,
+  });
+  assert.equal(noise.action, 'drop');
+  assert.equal(noise.reason, 'short_audio_without_transcript');
+
+  const realSpeech = decideGeminiLiveEndpoint({
+    transcript: '帮我查一下杭州天气',
+    speechDurationMs: 520,
+    silenceMs: 470,
+    waitMs: 460,
+    minNoTranscriptSpeechMs: 1000,
+    noTranscriptGraceMs: 1400,
+  });
+  assert.equal(realSpeech.action, 'send');
+  assert.equal(realSpeech.reason, 'speech_with_transcript');
+
+  const fallbackSpeech = decideGeminiLiveEndpoint({
+    transcript: '',
+    speechDurationMs: 1600,
+    silenceMs: 1500,
+    waitMs: 460,
+    minNoTranscriptSpeechMs: 1000,
+    noTranscriptGraceMs: 1400,
+  });
+  assert.equal(fallbackSpeech.action, 'send');
+  assert.equal(fallbackSpeech.reason, 'audio_without_transcript_fallback');
 });
 
 test('Gemini Live demo normalizes Chinese output transcript for display', () => {

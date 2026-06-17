@@ -740,6 +740,49 @@ export function calculateGeminiLiveMicGateFrame(input = {}) {
   };
 }
 
+export function decideGeminiLiveEndpoint(input = {}) {
+  const transcript = String(input.transcript || '').trim();
+  const speechDurationMs = Math.max(0, Number(input.speechDurationMs) || 0);
+  const silenceMs = Math.max(0, Number(input.silenceMs) || 0);
+  const waitMs = Math.max(0, Number(input.waitMs) || 0);
+  const minNoTranscriptSpeechMs = Math.max(0, Number(input.minNoTranscriptSpeechMs) || 1000);
+  const noTranscriptGraceMs = Math.max(waitMs, Number(input.noTranscriptGraceMs) || 1400);
+
+  if (silenceMs < waitMs) {
+    return {
+      action: 'hold',
+      reason: 'waiting_for_silence',
+      remainingMs: Math.max(0, Math.round(waitMs - silenceMs)),
+    };
+  }
+  if (transcript.length > 0) {
+    return {
+      action: 'send',
+      reason: 'speech_with_transcript',
+      remainingMs: 0,
+    };
+  }
+  if (silenceMs < noTranscriptGraceMs) {
+    return {
+      action: 'hold',
+      reason: 'waiting_for_transcript',
+      remainingMs: Math.max(0, Math.round(noTranscriptGraceMs - silenceMs)),
+    };
+  }
+  if (speechDurationMs < minNoTranscriptSpeechMs) {
+    return {
+      action: 'drop',
+      reason: 'short_audio_without_transcript',
+      remainingMs: 0,
+    };
+  }
+  return {
+    action: 'send',
+    reason: 'audio_without_transcript_fallback',
+    remainingMs: 0,
+  };
+}
+
 function responseDelayWarningMs() {
   return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2000, {
     min: 500,
@@ -1354,6 +1397,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let firstClientAudioAt = 0;
   let lastFlushAt = 0;
   let lastFlushReason = '';
+  let lastEndpointMetrics = null;
   let lastToolResponseSentAt = 0;
   let lastNonBlockedToolResponseSentAt = 0;
   let lastToolNames = [];
@@ -1385,6 +1429,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     endpointToAudioMs: lastFlushAt ? Date.now() - lastFlushAt : null,
     toolResponseToAudioMs: lastToolResponseSentAt ? Date.now() - lastToolResponseSentAt : null,
     reason: lastFlushReason || null,
+    endpointMetrics: lastEndpointMetrics,
     toolNames: lastToolNames,
   });
   const scheduleResponseDelayWarning = (trigger) => {
@@ -1676,6 +1721,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       clientAudioTurnOpen = false;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'client_silence').slice(0, 80);
+      lastEndpointMetrics = meta.metrics || null;
       lastToolResponseSentAt = 0;
       lastNonBlockedToolResponseSentAt = 0;
       lastToolNames = [];
@@ -1702,6 +1748,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       clientAudioTurnOpen = false;
       lastFlushAt = Date.now();
       lastFlushReason = String(meta.reason || 'manual_activity').slice(0, 80);
+      lastEndpointMetrics = meta.metrics || null;
       lastToolResponseSentAt = 0;
       lastNonBlockedToolResponseSentAt = 0;
       lastToolNames = [];
@@ -2304,6 +2351,7 @@ function makeIndexHtml(config) {
   </div>
   <script>
     const calculateGeminiLiveMicGateFrame = ${calculateGeminiLiveMicGateFrame.toString()};
+    const decideGeminiLiveEndpoint = ${decideGeminiLiveEndpoint.toString()};
     const CONFIG = ${escapedConfig};
     const startButton = document.getElementById('startButton');
     const buttonText = document.getElementById('buttonText');
@@ -2353,6 +2401,7 @@ function makeIndexHtml(config) {
     let firstAudioRequestedAt = 0;
     let assistantSpeakingAt = 0;
     let lastBargeInNoticeAt = 0;
+    let lastNoiseNoticeAt = 0;
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
     // supporting "only follow the primary speaker" in mixed-room conversations.
@@ -2367,6 +2416,8 @@ function makeIndexHtml(config) {
         idlePeak: 0.045,
         bargeInRms: 0.038,
         bargeInPeak: 0.145,
+        minNoTranscriptSpeechMs: 900,
+        noTranscriptGraceMs: 1100,
         serverSilenceMs: 450,
         prefixPaddingMs: 140,
         startSensitivity: 'START_SENSITIVITY_LOW',
@@ -2382,6 +2433,8 @@ function makeIndexHtml(config) {
         idlePeak: 0.045,
         bargeInRms: 0.042,
         bargeInPeak: 0.16,
+        minNoTranscriptSpeechMs: 1000,
+        noTranscriptGraceMs: 1400,
         serverSilenceMs: 650,
         prefixPaddingMs: 180,
         startSensitivity: 'START_SENSITIVITY_LOW',
@@ -2397,6 +2450,8 @@ function makeIndexHtml(config) {
         idlePeak: 0.05,
         bargeInRms: 0.048,
         bargeInPeak: 0.18,
+        minNoTranscriptSpeechMs: 1200,
+        noTranscriptGraceMs: 1700,
         serverSilenceMs: 950,
         prefixPaddingMs: 220,
         startSensitivity: 'START_SENSITIVITY_LOW',
@@ -2466,6 +2521,8 @@ function makeIndexHtml(config) {
         idlePeak: defaults.idlePeak ?? MIC_GATE.idlePeak ?? 0.045,
         bargeInRms: clamp(bargeInRmsInput.value, 0.015, 0.09, defaults.bargeInRms),
         bargeInPeak: defaults.bargeInPeak ?? MIC_GATE.bargeInPeak ?? 0.16,
+        minNoTranscriptSpeechMs: defaults.minNoTranscriptSpeechMs ?? 1000,
+        noTranscriptGraceMs: defaults.noTranscriptGraceMs ?? 1400,
         startFrames: MIC_GATE.startFrames || 3,
         holdFrames: MIC_GATE.holdFrames || 16,
         preRollFrames: MIC_GATE.preRollFrames || 4,
@@ -2832,17 +2889,46 @@ function makeIndexHtml(config) {
           const speechDurationMs = Math.max(0, lastVoiceAt - utteranceStartedAt);
           const waitMs = endpointWaitForTranscript(latestInputTranscript, speechDurationMs);
           const silenceMs = now - lastVoiceAt;
-          endpointWaitText.textContent = Math.max(0, Math.round(waitMs - silenceMs)) + 'ms';
-          if (silenceMs >= waitMs) {
-            const reason = waitMs > tuning.shortPauseMs ? 'thinking_pause' : 'short_pause';
+          const transcriptAgeMs = latestInputTranscriptAt > 0
+            ? Math.round(now - latestInputTranscriptAt)
+            : null;
+          const endpointDecision = decideGeminiLiveEndpoint({
+            transcript: latestInputTranscript,
+            speechDurationMs,
+            silenceMs,
+            waitMs,
+            minNoTranscriptSpeechMs: tuning.minNoTranscriptSpeechMs,
+            noTranscriptGraceMs: tuning.noTranscriptGraceMs,
+          });
+          endpointWaitText.textContent = endpointDecision.remainingMs + 'ms';
+          if (endpointDecision.action === 'hold') {
+            if (endpointDecision.reason === 'waiting_for_transcript') {
+              updateSpeechMetrics('等待有效转写', endpointDecision.remainingMs + 'ms');
+            }
+          } else if (endpointDecision.action === 'drop') {
+            if (now - lastNoiseNoticeAt > 1800) {
+              addEntry('system', '环境音过滤', '检测到短音频但没有形成有效转写，已丢弃这段输入。');
+              lastNoiseNoticeAt = now;
+            }
+            userSpeaking = false;
+            acceptedBargeIn = false;
+            micSpeechFrames = 0;
+            micHoldFrames = 0;
+            micPreRoll = [];
+            latestInputTranscript = '';
+            latestInputTranscriptAt = 0;
+            updateSpeechMetrics('过滤环境音', '--');
+            return;
+          } else if (endpointDecision.action === 'send') {
+            const reason = endpointDecision.reason === 'audio_without_transcript_fallback'
+              ? 'audio_fallback'
+              : (waitMs > tuning.shortPauseMs ? 'thinking_pause' : 'short_pause');
             sendEndpoint(reason + ':' + Math.round(waitMs) + 'ms', {
               waitMs: Math.round(waitMs),
               silenceMs: Math.round(silenceMs),
               speechDurationMs: Math.round(speechDurationMs),
               transcriptChars: latestInputTranscript.length,
-              transcriptAgeMs: latestInputTranscriptAt > 0
-                ? Math.round(now - latestInputTranscriptAt)
-                : null,
+              transcriptAgeMs,
               profile: activeProfile,
             });
             userSpeaking = false;
@@ -2957,7 +3043,13 @@ function makeIndexHtml(config) {
         markLatency(latencyLabel(message));
       } else if (message.type === 'response_delay_warning') {
         markLatency(delayWarningLabel(message));
-        addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。');
+        const endpointMetrics = message.endpointMetrics || {};
+        const transcriptChars = Number(endpointMetrics.transcriptChars);
+        if (Number.isFinite(transcriptChars) && transcriptChars === 0) {
+          addEntry('warning', '等待有效语音', '这段输入还没有形成有效转写，可能是环境音或过短语音；页面会继续监听。');
+        } else {
+          addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。');
+        }
       } else if (message.type === 'tool_call') {
         addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')');
       } else if (message.type === 'tool_result') {
