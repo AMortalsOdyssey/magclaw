@@ -110,6 +110,8 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.match(res.body, /低置信语音/);
       assert.match(res.body, /抗噪保护/);
       assert.match(res.body, /原生 VAD/);
+      assert.match(res.body, /原生 VAD 音频门控/);
+      assert.match(res.body, /sendActivityStart: false/);
       assert.match(res.body, /会话重连/);
       assert.match(res.body, /Gemini inputTranscription/);
       assert.match(res.body, /Gemini 暂无输入转写/);

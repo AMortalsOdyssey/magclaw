@@ -1592,6 +1592,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     };
   };
   const resetInputTranscriptForClientTurn = () => {
+    firstClientAudioAt = 0;
     latestInputTranscript = '';
     latestInputTranscriptAt = 0;
     loggedFirstInputTranscript = false;
@@ -2613,6 +2614,7 @@ function makeIndexHtml(config) {
     let reconnectState = { attempts: 0, firstAttemptAt: 0, pending: false, timer: null, manualStop: false };
     let conversationMemory = [];
     let nativeVadStreamStarted = false;
+    let nativeVadTailFrames = 0;
     const turnTimings = new Map();
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
@@ -2963,7 +2965,8 @@ function makeIndexHtml(config) {
       ]);
     }
 
-    function beginObservedTurn(now, source) {
+    function beginObservedTurn(now, source, options = {}) {
+      const sendActivityStart = options.sendActivityStart !== false;
       observedTurnCounter += 1;
       currentTurnId = observedTurnCounter;
       currentTurnAudioStarted = false;
@@ -2977,7 +2980,7 @@ function makeIndexHtml(config) {
         turnTimings.delete(turnTimings.keys().next().value);
       }
       addEntry('system', '实时输入', turnLabel() + ' 本地检测到' + source + '，接下来 PCM 音频会边说边流式发送到 Gemini。');
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (sendActivityStart && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'activity_start',
           reason: source,
@@ -3204,6 +3207,7 @@ function makeIndexHtml(config) {
       adaptiveNoiseState = { initialized: false, rms: 0, peak: 0, samples: 0 };
       turnStormState = { active: false, events: [], guardUntilMs: 0, remainingMs: 0 };
       nativeVadStreamStarted = false;
+      nativeVadTailFrames = 0;
       updateSpeechMetrics('空闲', '--');
       updateNoiseMetrics();
     }
@@ -3267,15 +3271,6 @@ function makeIndexHtml(config) {
           assistantAudioPlaying,
           acceptedBargeIn,
         });
-        if (sessionRealtimeMode === 'native_vad') {
-          if (!nativeVadStreamStarted) {
-            nativeVadStreamStarted = true;
-            addEntry('system', '原生 VAD', '已开始持续推送 PCM，由 Gemini Live 判断说话开始和结束。');
-          }
-          ws.send(pcm);
-          updateNoiseMetrics();
-          return;
-        }
         const gate = calculateGeminiLiveMicGateFrame({
           stats,
           tuning,
@@ -3289,6 +3284,55 @@ function makeIndexHtml(config) {
         });
         const active = gate.active;
         updateNoiseMetrics(gate);
+        if (sessionRealtimeMode === 'native_vad') {
+          const tailFrames = Math.max(
+            tuning.holdFrames,
+            Math.ceil((tuning.serverSilenceMs + 350) / frameMs),
+          );
+          if (!nativeVadStreamStarted) {
+            nativeVadStreamStarted = true;
+            addEntry('system', '原生 VAD', '已启用本地噪声门控；只把高置信人声交给 Gemini Live，由 Gemini 判断说话开始和结束。');
+          }
+          micSpeechFrames = gate.nextSpeechFrames;
+          if (!userSpeaking && gate.shouldStartUserSpeech) {
+            beginObservedTurn(now, '原生 VAD 人声', { sendActivityStart: false });
+            userSpeaking = true;
+            utteranceStartedAt = now - (gate.requiredStartFrames * frameMs);
+            lastVoiceAt = now;
+            nativeVadTailFrames = tailFrames;
+            if (micPreRoll.length > 0) {
+              for (const frame of micPreRoll) ws.send(frame);
+              micPreRoll = [];
+            }
+            addEntry('system', '原生 VAD 音频门控', '检测到连续人声，开始向 Gemini Live 发送真实音频。');
+          }
+          if (active && userSpeaking) {
+            lastVoiceAt = now;
+            nativeVadTailFrames = tailFrames;
+            updateSpeechMetrics('原生 VAD 收音中', '--');
+          }
+          if (userSpeaking) {
+            if (active) {
+              ws.send(pcm);
+            } else if (nativeVadTailFrames > 0) {
+              ws.send(new ArrayBuffer(pcm.byteLength));
+              nativeVadTailFrames -= 1;
+              updateSpeechMetrics('原生 VAD 静音收尾', Math.round(nativeVadTailFrames * frameMs) + 'ms');
+            } else {
+              userSpeaking = false;
+              acceptedBargeIn = false;
+              micSpeechFrames = 0;
+              nativeVadTailFrames = 0;
+              micPreRoll = [];
+              updateSpeechMetrics('等待 Gemini 原生 VAD', '--');
+              addEntry('system', '原生 VAD 音频门控', '已停止发送环境音，等待 Gemini Live 判定本轮结束并回复。');
+            }
+          } else {
+            micPreRoll.push(pcm);
+            while (micPreRoll.length > tuning.preRollFrames) micPreRoll.shift();
+          }
+          return;
+        }
         const sendPcm = (buffer) => {
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
           if (!currentTurnAudioStarted) {
