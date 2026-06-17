@@ -96,6 +96,11 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.match(res.body, /Gemini inputTranscription/);
       assert.match(res.body, /Gemini 暂无输入转写/);
       assert.match(res.body, /服务端确认/);
+      assert.match(res.body, /timestampLabel/);
+      assert.match(res.body, /endpointTimingText/);
+      assert.match(res.body, /检测→首帧/);
+      assert.match(res.body, /端点→首音频/);
+      assert.match(res.body, /服务端延迟汇总/);
       assert.match(res.body, /responseDelayWarningMs/);
       assert.match(res.body, /response_delay_warning/);
       assert.match(res.body, /response_latency/);

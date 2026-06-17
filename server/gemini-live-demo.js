@@ -2237,6 +2237,12 @@ function makeIndexHtml(config) {
       margin-bottom: 4px;
       font-weight: 700;
     }
+    .entry .timestamp {
+      color: #667085;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 600;
+      margin-right: 6px;
+    }
     .bottom {
       border-top: 1px solid var(--line);
       padding: 12px 16px;
@@ -2422,6 +2428,7 @@ function makeIndexHtml(config) {
     let currentTurnAudioBytes = 0;
     let currentTurnSubmitted = false;
     let pendingResponseTurnId = 0;
+    const turnTimings = new Map();
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
     // supporting "only follow the primary speaker" in mixed-room conversations.
@@ -2651,6 +2658,20 @@ function makeIndexHtml(config) {
       latencyText.textContent = text;
     }
 
+    function timestampLabel(date = new Date()) {
+      const pad = (value, length = 2) => String(value).padStart(length, '0');
+      return [
+        pad(date.getHours()),
+        pad(date.getMinutes()),
+        pad(date.getSeconds()),
+      ].join(':') + '.' + pad(date.getMilliseconds(), 3);
+    }
+
+    function formatMs(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? Math.max(0, Math.round(number)) + 'ms' : '--';
+    }
+
     function formatBytes(bytes) {
       const number = Number(bytes) || 0;
       if (number >= 1024 * 1024) return (number / 1024 / 1024).toFixed(1) + ' MB';
@@ -2676,6 +2697,40 @@ function makeIndexHtml(config) {
       return bytesPerSecond > 0 ? (currentTurnAudioBytes / bytesPerSecond) * 1000 : 0;
     }
 
+    function ensureTurnTiming(turnId = currentTurnId) {
+      const id = Number(turnId);
+      if (!Number.isFinite(id) || id <= 0) return null;
+      if (!turnTimings.has(id)) turnTimings.set(id, { turnId: id });
+      return turnTimings.get(id);
+    }
+
+    function markTurnStage(turnId, stage, now = performance.now()) {
+      const timing = ensureTurnTiming(turnId);
+      if (!timing) return null;
+      if (!Number.isFinite(timing[stage])) timing[stage] = now;
+      return timing;
+    }
+
+    function timingText(turnId, segments = []) {
+      const timing = ensureTurnTiming(turnId);
+      if (!timing) return '';
+      const parts = [];
+      for (const [label, from, to] of segments) {
+        if (Number.isFinite(timing[from]) && Number.isFinite(timing[to])) {
+          parts.push(label + ' ' + formatMs(timing[to] - timing[from]));
+        }
+      }
+      return parts.length ? '耗时：' + parts.join('，') + '。' : '';
+    }
+
+    function endpointTimingText(turnId) {
+      return timingText(turnId, [
+        ['检测→首帧', 'detectedAt', 'firstPcmAt'],
+        ['首帧→端点', 'firstPcmAt', 'endpointSentAt'],
+        ['检测→端点', 'detectedAt', 'endpointSentAt'],
+      ]);
+    }
+
     function beginObservedTurn(now, source) {
       observedTurnCounter += 1;
       currentTurnId = observedTurnCounter;
@@ -2685,6 +2740,10 @@ function makeIndexHtml(config) {
       currentTurnSubmitted = false;
       latestInputTranscript = '';
       latestInputTranscriptAt = 0;
+      turnTimings.set(currentTurnId, { turnId: currentTurnId, detectedAt: now });
+      while (turnTimings.size > MAX_LOG_ENTRIES) {
+        turnTimings.delete(turnTimings.keys().next().value);
+      }
       addEntry('system', '实时输入', turnLabel() + ' 本地检测到' + source + '，接下来 PCM 音频会边说边流式发送到 Gemini。');
     }
 
@@ -2746,11 +2805,12 @@ function makeIndexHtml(config) {
       const enrichedMetrics = currentEndpointMetrics(metrics);
       currentTurnSubmitted = true;
       pendingResponseTurnId = currentTurnId;
+      markTurnStage(currentTurnId, 'endpointSentAt', now);
       ws.send(JSON.stringify({ type: 'audio_stream_end', reason, metrics: enrichedMetrics }));
       addEntry(
         'system',
         '提交给 Gemini',
-        turnLabel() + ' 已发送 audioStreamEnd；' + endpointSummary(enrichedMetrics) + '。等待 Gemini 输出。',
+        turnLabel() + ' 已发送 audioStreamEnd；' + endpointSummary(enrichedMetrics) + '。' + endpointTimingText(currentTurnId) + '等待 Gemini 输出。',
       );
       updateSpeechMetrics('等待模型', reason);
     }
@@ -2760,7 +2820,10 @@ function makeIndexHtml(config) {
       entry.className = 'entry ' + kind;
       const labelEl = document.createElement('span');
       labelEl.className = 'label';
-      labelEl.textContent = label;
+      const timestampEl = document.createElement('span');
+      timestampEl.className = 'timestamp';
+      timestampEl.textContent = timestampLabel();
+      labelEl.append(timestampEl, document.createTextNode(label));
       entry.append(labelEl, document.createTextNode(text));
       logEl.prepend(entry);
       while (logEl.children.length > MAX_LOG_ENTRIES) {
@@ -2920,10 +2983,13 @@ function makeIndexHtml(config) {
           if (!ws || ws.readyState !== WebSocket.OPEN) return;
           if (!currentTurnAudioStarted) {
             currentTurnAudioStarted = true;
+            markTurnStage(currentTurnId, 'firstPcmAt', now);
             addEntry(
               'system',
               '音频流',
-              turnLabel() + ' 首段 PCM 已通过服务端实时转发给 Gemini；Gemini 若识别到内容，会返回 inputTranscription。',
+              turnLabel() + ' 首段 PCM 已通过服务端实时转发给 Gemini；' + timingText(currentTurnId, [
+                ['检测→首帧', 'detectedAt', 'firstPcmAt'],
+              ]) + 'Gemini 若识别到内容，会返回 inputTranscription。',
             );
           }
           currentTurnAudioFrames += 1;
@@ -3001,11 +3067,15 @@ function makeIndexHtml(config) {
               updateSpeechMetrics('等待有效转写', endpointDecision.remainingMs + 'ms');
             }
           } else if (endpointDecision.action === 'drop') {
+            markTurnStage(currentTurnId, 'filterAt', now);
             if (now - lastNoiseNoticeAt > 1800) {
               addEntry(
                 'system',
                 '本地过滤',
-                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' / 约 ' + Math.round(currentAudioDurationMs()) + 'ms 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。',
+                turnLabel() + ' 已流式发送 ' + formatBytes(currentTurnAudioBytes) + ' / 约 ' + Math.round(currentAudioDurationMs()) + 'ms 音频，但 Gemini 没返回 inputTranscription；未发送 audioStreamEnd，不要求模型回复。' + timingText(currentTurnId, [
+                  ['检测→过滤', 'detectedAt', 'filterAt'],
+                  ['首帧→过滤', 'firstPcmAt', 'filterAt'],
+                ]),
               );
               lastNoiseNoticeAt = now;
             }
@@ -3124,41 +3194,79 @@ function makeIndexHtml(config) {
         setStatus('连接 Gemini Live', false);
       } else if (message.type === 'input_transcript') {
         latestInputTranscript = message.text || latestInputTranscript;
-        latestInputTranscriptAt = performance.now();
-        addEntry('user', 'Gemini inputTranscription', turnLabel() + ' ' + message.text);
+        const now = performance.now();
+        latestInputTranscriptAt = now;
+        markTurnStage(currentTurnId, 'inputTranscriptAt', now);
+        addEntry('user', 'Gemini inputTranscription', turnLabel() + ' ' + message.text + '。' + timingText(currentTurnId, [
+          ['检测→转写', 'detectedAt', 'inputTranscriptAt'],
+          ['首帧→转写', 'firstPcmAt', 'inputTranscriptAt'],
+          ['端点→转写', 'endpointSentAt', 'inputTranscriptAt'],
+        ]));
         if (containsInterruptionPhrase(message.text) && isAssistantAudioPlaying(audioContext || { currentTime: 0 })) {
           clearPlayback();
           addEntry('system', '明确打断词', '识别到“等一下/停一下”这类打断意图，已立即停止当前播放。');
         }
       } else if (message.type === 'output_transcript' || message.type === 'text') {
-        addEntry('assistant', message.type === 'output_transcript' ? 'Gemini outputTranscription' : 'Gemini text', message.text);
+        const now = performance.now();
+        const turnId = pendingResponseTurnId || currentTurnId;
+        markTurnStage(turnId, message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt', now);
+        addEntry('assistant', message.type === 'output_transcript' ? 'Gemini outputTranscription' : 'Gemini text', message.text + '。' + timingText(turnId, [
+          ['端点→输出文本', 'endpointSentAt', message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt'],
+          ['首音频→输出文本', 'firstAudioAt', message.type === 'output_transcript' ? 'outputTranscriptAt' : 'textAt'],
+        ]));
       } else if (message.type === 'audio') {
         if (firstAudioRequestedAt > 0) {
-          markLatency(Math.round(performance.now() - firstAudioRequestedAt) + 'ms');
-          addEntry('assistant', 'Gemini 音频', turnLabel(pendingResponseTurnId) + ' 首段音频已返回并开始播放。');
+          const now = performance.now();
+          const turnId = pendingResponseTurnId || currentTurnId;
+          markLatency(Math.round(now - firstAudioRequestedAt) + 'ms');
+          markTurnStage(turnId, 'firstAudioAt', now);
+          addEntry('assistant', 'Gemini 音频', turnLabel(turnId) + ' 首段音频已返回并开始播放。' + timingText(turnId, [
+            ['端点→首音频', 'endpointSentAt', 'firstAudioAt'],
+            ['输入转写→首音频', 'inputTranscriptAt', 'firstAudioAt'],
+            ['服务端确认→首音频', 'serverAckAt', 'firstAudioAt'],
+          ]));
           firstAudioRequestedAt = 0;
         }
         assistantSpeakingAt = performance.now();
         void playPcm(message.audio, message.sampleRate);
       } else if (message.type === 'response_latency') {
         markLatency(latencyLabel(message));
+        const turnId = message.endpointMetrics?.turnId || pendingResponseTurnId || currentTurnId;
+        addEntry('system', '服务端延迟汇总', turnLabel(turnId) + ' ' + latencyLabel(message) + '；reason=' + (message.reason || '--') + '。');
       } else if (message.type === 'response_delay_warning') {
         markLatency(delayWarningLabel(message));
         const endpointMetrics = message.endpointMetrics || {};
         const transcriptChars = Number(endpointMetrics.transcriptChars);
+        const turnId = endpointMetrics.turnId || pendingResponseTurnId || currentTurnId;
+        markTurnStage(turnId, 'delayWarningAt', performance.now());
         if (Number.isFinite(transcriptChars) && transcriptChars === 0) {
           addEntry(
             'warning',
             'Gemini 暂无输入转写',
-            turnLabel(endpointMetrics.turnId) + ' 已提交给 Gemini，但暂未收到 inputTranscription 或首段音频；' + endpointSummary(endpointMetrics) + '。继续说话会作为新一轮实时输入。',
+            turnLabel(turnId) + ' 已提交给 Gemini，但暂未收到 inputTranscription 或首段音频；' + endpointSummary(endpointMetrics) + '。' + timingText(turnId, [
+              ['端点→当前', 'endpointSentAt', 'delayWarningAt'],
+              ['首帧→当前', 'firstPcmAt', 'delayWarningAt'],
+            ]) + '继续说话会作为新一轮实时输入。',
           );
         } else {
-          addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。');
+          addEntry('warning', '模型响应偏慢', '已等待 ' + latencyLabel(message) + '，仍在等待首段音频。' + timingText(turnId, [
+            ['端点→当前', 'endpointSentAt', 'delayWarningAt'],
+          ]));
         }
       } else if (message.type === 'tool_call') {
-        addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')');
+        const turnId = pendingResponseTurnId || currentTurnId;
+        markTurnStage(turnId, 'toolCallAt', performance.now());
+        addEntry('tool', 'Function Call', message.name + '(' + JSON.stringify(message.args) + ')。' + timingText(turnId, [
+          ['端点→工具调用', 'endpointSentAt', 'toolCallAt'],
+          ['输入转写→工具调用', 'inputTranscriptAt', 'toolCallAt'],
+        ]));
       } else if (message.type === 'tool_result') {
-        addEntry('tool', 'Tool Result', message.name + ' → ' + JSON.stringify(message.result));
+        const turnId = pendingResponseTurnId || currentTurnId;
+        markTurnStage(turnId, 'toolResultAt', performance.now());
+        addEntry('tool', 'Tool Result', message.name + ' → ' + JSON.stringify(message.result) + '。' + timingText(turnId, [
+          ['工具调用→工具结果', 'toolCallAt', 'toolResultAt'],
+          ['端点→工具结果', 'endpointSentAt', 'toolResultAt'],
+        ]));
       } else if (message.type === 'tool_summary') {
         addEntry('assistant', '确认', message.text);
       } else if (message.type === 'interrupted') {
@@ -3168,10 +3276,15 @@ function makeIndexHtml(config) {
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
       } else if (message.type === 'endpoint') {
+        const turnId = message.metrics?.turnId || pendingResponseTurnId || currentTurnId;
+        markTurnStage(turnId, 'serverAckAt', performance.now());
         addEntry(
           'system',
           '服务端确认',
-          turnLabel(message.metrics?.turnId) + ' 服务端已收到 audioStreamEnd：' + message.reason + '；' + endpointSummary(message.metrics || {}) + '。',
+          turnLabel(turnId) + ' 服务端已收到 audioStreamEnd：' + message.reason + '；' + endpointSummary(message.metrics || {}) + '。' + timingText(turnId, [
+            ['端点→服务端确认', 'endpointSentAt', 'serverAckAt'],
+            ['检测→服务端确认', 'detectedAt', 'serverAckAt'],
+          ]),
         );
       } else if (message.type === 'error') {
         addEntry('error', '错误', message.message);
