@@ -1,5 +1,10 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.2.11 - 2026-06-17 - Strict session reporting controls
+### bug fix
+- Session reporting opt-out/on detection now requires a short, direct current-session command.
+- AGENTS.md/bootstrap instructions, quoted examples, questions, and long analysis text no longer create local reporting overrides.
+
 ## 0.1.67 - 2026-06-09 - Server-wide hybrid recall
 ### new
 - Team Sharing search now defaults to server-wide hybrid recall: current channel plus other channels in the same server/workspace, fused and reranked together.

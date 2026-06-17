@@ -628,6 +628,99 @@ test('team sharing hook sync understands natural-language session opt-out before
   }
 });
 
+test('team sharing hook sync ignores AGENTS and quoted opt-out examples for session reporting', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-agents-reporting-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-agents-reporting-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+  await loginTeamSharingProfile({
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    token: 'team-sharing-token-secret',
+  }, env);
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_team',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_team',
+    projectKey: 'magclaw',
+    enabledSince: '2026-06-01T00:00:00.000Z',
+  }, env);
+  const transcript = path.join(cwd, 'session.jsonl');
+  await writeFile(transcript, [
+    JSON.stringify({ timestamp: '2026-06-01T12:00:00.000Z', type: 'session_meta', payload: { id: 'sess_agents_default_report', cwd } }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:01.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: [
+            '# AGENTS.md instructions',
+            '<INSTRUCTIONS>',
+            '# Codex 全局协作规则',
+            '默认只加载本文件。不要把所有规则预先塞进上下文。',
+            '一个新 Session 开启时一定是默认上报的，只有明确停报命令才停止同步。',
+            '</INSTRUCTIONS>',
+          ].join('\n'),
+        }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: '2026-06-01T12:00:02.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: [
+            '按理说流程应该是这样：用户在 Session 当中主动提出“这个 Session 不上报”。',
+            '我们不能因为读到一些记忆或者上下文里模棱两可的信息，就判定为停报。',
+            '这类分析文本不是当前 session 的停报命令。',
+          ].join('\n'),
+        }],
+      },
+    }),
+  ].join('\n'));
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url, init, body: JSON.parse(init.body || '{}') });
+    return {
+      ok: true,
+      status: 202,
+      statusText: 'Accepted',
+      json: async () => ({ ok: true, appendedEventCount: calls[calls.length - 1].body.events.length }),
+    };
+  };
+  try {
+    const result = await syncTeamSharingTranscript({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      hookEvent: 'Stop',
+      integration: 'team-sharing',
+    }, env);
+    const reporting = await getTeamSharingSessionReporting({
+      cwd,
+      transcript,
+      runtime: 'codex',
+      sessionId: 'sess_agents_default_report',
+    }, env);
+
+    assert.equal(result.ok, true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].body.events.map((event) => event.role), ['user', 'user']);
+    assert.equal(reporting.report, true);
+    assert.equal(reporting.matched, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('team sharing hook sync resumes from natural-language report-on message only', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-report-on-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-natural-report-on-home-'));

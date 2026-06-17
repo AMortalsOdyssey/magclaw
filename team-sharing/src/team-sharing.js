@@ -2042,17 +2042,47 @@ function compactSessionIntentText(value = '') {
     .toLowerCase();
 }
 
-function detectTeamSharingSessionReportingIntent(text = '') {
+const SESSION_REPORTING_INTENT_MAX_CHARS = 180;
+const SESSION_REPORTING_INSTRUCTION_MARKER_RE = /(^|\n)\s*#\s*agents\.md instructions\b|<instructions>|<environment_context>|#\s*codex\s+全局协作规则|##\s*常驻规则|##\s*按需读取/i;
+const SESSION_REPORTING_SESSION_REF = '(?:(?:这个|这次|本次|当前|本轮|这轮|该|此)\\s*(?:session|会话|对话|线程|thread)?|(?:session|会话|对话|线程|thread)\\s*(?:这个|这次|本次|当前|本轮|这轮)?)';
+const SESSION_REPORTING_TARGET = '(?:(?:magclaw|team\\s*sharing|团队共享)\\s*(?:上报|同步|reporting|report|upload|sync)?|(?:上报|同步|reporting|report|upload|sync)(?:\\s*(?:to|into)\\s*(?:magclaw|team\\s*sharing))?)';
+const SESSION_REPORTING_DISABLE = "(?:不进行|不再|不要|不用|别|停止|暂停|关闭|禁用|不|do\\s+not|don\\s*'?t|dont|disable|skip|mute|turn\\s+off|stop)";
+const SESSION_REPORTING_ENABLE = '(?:开始|恢复|继续|可以|允许|打开|开启|启用|enable|resume|start|turn\\s+on|allow)';
+const SESSION_REPORTING_PREFIX = '(?:请|麻烦|帮我|帮忙|please)?\\s*';
+const SESSION_REPORTING_END = '(?:\\s*(?:了|啦|吧|就可以了|即可|哈))?\\s*(?:。|！|!|\\.)?\\s*$';
+
+function standaloneSessionReportingCommand(text = '') {
   const clean = compactSessionIntentText(text);
+  if (!clean) return '';
+  if (SESSION_REPORTING_INSTRUCTION_MARKER_RE.test(clean)) return '';
+  const oneLine = clean.replace(/\s+/g, ' ').trim();
+  if (!oneLine || oneLine.length > SESSION_REPORTING_INTENT_MAX_CHARS) return '';
+  if (/[?？"“”‘’`]/.test(oneLine)) return '';
+  return oneLine;
+}
+
+function matchesAnySessionReportingPattern(text = '', patterns = []) {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function detectTeamSharingSessionReportingIntent(text = '') {
+  const clean = standaloneSessionReportingCommand(text);
   if (!clean) return null;
-  const mentionsSession = /(session|会话|本轮|本次|当前|这个|这次)/i.test(clean);
-  const mentionsReporting = /(magclaw|team sharing|上报|同步|report|reporting|upload|sync)/i.test(clean);
-  if (!mentionsSession || !mentionsReporting) return null;
-  const disable = /(?:不进行|不再|不要|别|停止|暂停|关闭|禁用|不|no|do not|don't|dont|disable|skip|mute|turn off)/i.test(clean)
-    && /(上报|同步|report|reporting|upload|sync|magclaw|team sharing)/i.test(clean);
+  const disable = matchesAnySessionReportingPattern(clean, [
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_DISABLE}\\s*(?:进行|继续|再)?\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_DISABLE}\\s*(?:进行|继续|再)?\\s*${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}(?:把|将)\\s*${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_TARGET}\\s*${SESSION_REPORTING_DISABLE}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_DISABLE}\\s*${SESSION_REPORTING_TARGET}\\s*(?:for|of)?\\s*(?:this|current)\\s*(?:session|conversation|thread)${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}(?:this|current)\\s*(?:session|conversation|thread)\\s*(?:should\\s*)?(?:not|never)\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+  ]);
   if (disable) return { report: false, intent: 'disable', reason: 'user_disabled' };
-  const enable = /(?:开始|恢复|继续|可以|允许|打开|开启|启用|enable|resume|start|turn on|allow|report on)/i.test(clean)
-    && /(上报|同步|report|reporting|upload|sync|magclaw|team sharing)/i.test(clean);
+  const enable = matchesAnySessionReportingPattern(clean, [
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_ENABLE}\\s*(?:进行|继续|再)?\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_ENABLE}\\s*(?:进行|继续|再)?\\s*${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}(?:把|将)\\s*${SESSION_REPORTING_SESSION_REF}\\s*(?:的)?\\s*${SESSION_REPORTING_TARGET}\\s*${SESSION_REPORTING_ENABLE}${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}${SESSION_REPORTING_ENABLE}\\s*${SESSION_REPORTING_TARGET}\\s*(?:for|of)?\\s*(?:this|current)\\s*(?:session|conversation|thread)${SESSION_REPORTING_END}`, 'i'),
+    new RegExp(`^${SESSION_REPORTING_PREFIX}(?:this|current)\\s*(?:session|conversation|thread)\\s*(?:can|may|should)\\s*${SESSION_REPORTING_TARGET}${SESSION_REPORTING_END}`, 'i'),
+  ]);
   if (enable) return { report: true, intent: 'enable', reason: 'user_enabled' };
   return null;
 }

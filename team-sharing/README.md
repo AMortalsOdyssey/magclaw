@@ -39,6 +39,11 @@ active Team Sharing profile, CLI login state, and project registration, so
 deleting and re-adding a Codex or Claude Code project does not remove the
 override.
 
+Hooks default to reporting a new session. A hook may only infer an override from
+a short, direct command such as "这个 session 不上报" or "恢复这个 session 上报";
+bootstrap instructions, AGENTS.md content, quoted examples, questions, and
+long analysis text must not change the session reporting state.
+
 `MAGCLAW_TEAM_SHARING_HOME` is an advanced override for tests or intentionally
 isolated environments. If it is set, both the CLI and hooks must inherit the
 same value; setting it only in one terminal affects only that shell and its
