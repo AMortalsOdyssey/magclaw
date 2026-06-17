@@ -3264,13 +3264,6 @@ function makeIndexHtml(config) {
           addEntry('system', '抗噪保护', '保护窗口已结束，恢复常规收音。');
           notifyNoiseGuard('expired', false);
         }
-        adaptiveNoiseState = updateGeminiLiveNoiseBaseline({
-          state: adaptiveNoiseState,
-          stats,
-          userSpeaking,
-          assistantAudioPlaying,
-          acceptedBargeIn,
-        });
         const gate = calculateGeminiLiveMicGateFrame({
           stats,
           tuning,
@@ -3283,6 +3276,14 @@ function makeIndexHtml(config) {
           acceptedBargeIn,
         });
         const active = gate.active;
+        adaptiveNoiseState = updateGeminiLiveNoiseBaseline({
+          state: adaptiveNoiseState,
+          stats,
+          userSpeaking,
+          assistantAudioPlaying,
+          acceptedBargeIn,
+          candidateBargeIn: gate.candidateBargeIn || gate.active,
+        });
         updateNoiseMetrics(gate);
         if (sessionRealtimeMode === 'native_vad') {
           const tailFrames = Math.max(

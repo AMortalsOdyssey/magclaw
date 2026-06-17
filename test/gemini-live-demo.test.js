@@ -423,6 +423,17 @@ test('Gemini Live adaptive noise gate raises thresholds from the ambient floor',
     acceptedBargeIn: false,
   });
   assert.equal(speakingGate.shouldStartUserSpeech, true);
+
+  const heldNoiseState = updateGeminiLiveNoiseBaseline({
+    state: noiseState,
+    stats: { rms: 0.08, peak: 0.3 },
+    userSpeaking: false,
+    assistantAudioPlaying: false,
+    acceptedBargeIn: false,
+    candidateBargeIn: speakingGate.active,
+  });
+  assert.equal(heldNoiseState.updated, false);
+  assert.equal(heldNoiseState.rms, noiseState.rms);
 });
 
 test('Gemini Live turn storm guard activates on repeated low-confidence turns and releases on success', () => {
