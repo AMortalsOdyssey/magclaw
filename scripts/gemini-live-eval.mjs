@@ -225,6 +225,9 @@ Options:
   --chunk-ms <n>       Streaming chunk duration, default ${DEFAULT_CHUNK_MS}.
   --input-field <name> Send audio through "audio" or "media", default audio.
   --activity-mode <m>  "auto" uses Live VAD; "manual" sends activityStart/activityEnd. Default manual.
+  --mode <m>           Realtime mode: manual | native_vad | passthrough. Overrides --activity-mode.
+  --sweep              Run every mode (manual, native_vad, passthrough) and print an A/B comparison.
+  --modes <a,b>        Run a comma-separated subset of modes for comparison.
   --timeout-ms <n>     Per-case timeout, default ${DEFAULT_TIMEOUT_MS}.
   --keep-audio         Keep synthesized audio files. Default on for --dry-run, off otherwise.
   --list-cases         Print cases and exit.
@@ -269,6 +272,9 @@ function parseArgs(argv) {
     else if (arg === '--chunk-ms') args.chunkMs = Number(next());
     else if (arg === '--input-field') args.inputField = next();
     else if (arg === '--activity-mode') args.activityMode = next();
+    else if (arg === '--mode') args.mode = next();
+    else if (arg === '--sweep') args.sweep = true;
+    else if (arg === '--modes') args.modes = next().split(',').map((value) => value.trim()).filter(Boolean);
     else if (arg === '--timeout-ms') args.timeoutMs = Number(next());
     else if (arg === '--keep-audio') args.keepAudio = true;
     else if (arg === '--list-cases') args.listCases = true;
@@ -638,7 +644,7 @@ function shouldBlockEvalToolCall(name, args = {}, latestInputTranscript = '') {
 }
 
 function makeLiveConfig(args) {
-  const manualActivity = args.activityMode === 'manual';
+  const tuning = realtimeTuningForMode(args.realtimeMode || resolveRealtimeMode(args));
   return {
     responseModalities: [Modality.AUDIO],
     systemInstruction: {
@@ -649,14 +655,14 @@ function makeLiveConfig(args) {
     outputAudioTranscription: {},
     realtimeInputConfig: {
       automaticActivityDetection: {
-        disabled: manualActivity,
-        startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
-        endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
-        prefixPaddingMs: 140,
-        silenceDurationMs: 420,
+        disabled: tuning.manualActivity,
+        startOfSpeechSensitivity: tuning.startSensitivity,
+        endOfSpeechSensitivity: tuning.endSensitivity,
+        prefixPaddingMs: tuning.prefixPaddingMs,
+        silenceDurationMs: tuning.silenceDurationMs,
       },
-      activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-      turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
+      activityHandling: tuning.activityHandling,
+      turnCoverage: tuning.turnCoverage,
     },
     tools: [{ functionDeclarations: getToolDeclarations() }],
   };
@@ -793,6 +799,32 @@ function makeEvalMetrics(testCase, target, startedAt) {
     outputTranscript: '',
     text: '',
     audioBytes: 0,
+  };
+}
+
+// Resolve the realtime/activity behaviour for a run. `--mode` is the new three-way switch
+// (manual | native_vad | passthrough); falls back to the legacy `--activity-mode`.
+function resolveRealtimeMode(args) {
+  if (args.mode) return args.mode;
+  return args.activityMode === 'manual' ? 'manual' : 'native_vad';
+}
+
+function realtimeTuningForMode(mode) {
+  const serverVad = mode === 'native_vad' || mode === 'passthrough';
+  const passthrough = mode === 'passthrough';
+  return {
+    realtimeMode: mode,
+    manualActivity: !serverVad,
+    activityMode: mode,
+    // Server-VAD modes need a more tolerant silence window so a mid-utterance thinking pause
+    // does not get cut into two turns; this mirrors the browser client's default serverSilenceMs
+    // (balanced profile = 650ms). Manual mode ignores Gemini VAD, so the value is harmless there.
+    silenceDurationMs: serverVad ? 650 : 420,
+    prefixPaddingMs: 140,
+    startSensitivity: passthrough ? 'START_SENSITIVITY_HIGH' : 'START_SENSITIVITY_LOW',
+    endSensitivity: 'END_SENSITIVITY_LOW',
+    activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+    turnCoverage: serverVad ? 'TURN_INCLUDES_ALL_INPUT' : 'TURN_INCLUDES_ONLY_ACTIVITY',
   };
 }
 
@@ -1266,16 +1298,8 @@ async function runWebSocketCase(testCase, audio, args) {
         type: 'start',
         voiceName: 'Puck',
         systemInstruction: SYSTEM_INSTRUCTION,
-        realtimeTuning: {
-          manualActivity: args.activityMode === 'manual',
-          activityMode: args.activityMode,
-          silenceDurationMs: 420,
-          prefixPaddingMs: 140,
-          startSensitivity: 'START_SENSITIVITY_HIGH',
-          endSensitivity: 'END_SENSITIVITY_HIGH',
-          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
-        },
+        realtimeMode: args.realtimeMode,
+        realtimeTuning: realtimeTuningForMode(args.realtimeMode),
       });
       return;
     }
@@ -1522,16 +1546,8 @@ async function runWebSocketMultiTurnCase(testCase, audio, args) {
         type: 'start',
         voiceName: 'Puck',
         systemInstruction: SYSTEM_INSTRUCTION,
-        realtimeTuning: {
-          manualActivity: args.activityMode === 'manual',
-          activityMode: args.activityMode,
-          silenceDurationMs: 420,
-          prefixPaddingMs: 140,
-          startSensitivity: 'START_SENSITIVITY_HIGH',
-          endSensitivity: 'END_SENSITIVITY_HIGH',
-          activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-          turnCoverage: 'TURN_INCLUDES_ONLY_ACTIVITY',
-        },
+        realtimeMode: args.realtimeMode,
+        realtimeTuning: realtimeTuningForMode(args.realtimeMode),
       });
       return;
     }
@@ -1829,6 +1845,10 @@ function scoreCase(testCase, metrics) {
   metrics.normalizedModelOutputText = modelOutputText;
   metrics.normalizedOutputText = outputText;
   metrics.qualityChecks = [];
+  // Silence = the model produced no spoken audio at all for this turn. This is the core
+  // "卡住 / 不回消息" symptom we are tuning against, tracked separately from hard pass/fail.
+  metrics.silent = !metrics.firstAudioMs;
+  metrics.fullySilent = !metrics.firstAudioMs && !metrics.firstTextMs && !metrics.firstOutputTranscriptMs;
   if (!metrics.firstAudioMs && !metrics.firstTextMs) {
     if (testCase.allowNoModelResponse) warnings.push('no_model_response_allowed');
     else failures.push('no_model_response');
@@ -1993,14 +2013,19 @@ function summarizeResults(results) {
       qualityPassCount: qualityRuns.filter((result) =>
         (result.qualityChecks || []).every((check) => check.pass),
       ).length,
+      silentCount: group.filter((result) => result.silent).length,
+      fullySilentCount: group.filter((result) => result.fullySilent).length,
       failures: [...new Set(group.flatMap((result) => result.failures || []))],
       warnings: [...new Set(group.flatMap((result) => result.warnings || []))],
     });
   }
+  const silentTotal = results.filter((result) => result.silent).length;
   return {
     total: results.length,
     passed: results.filter((result) => result.pass).length,
     failed: results.filter((result) => !result.pass && !(result.warnings || []).includes('manual_review_only_multi_speaker_case')).length,
+    silentTotal,
+    silenceRate: results.length ? Number((silentTotal / results.length).toFixed(3)) : 0,
     cases,
   };
 }
@@ -2018,10 +2043,12 @@ function writeReports(outDir, results) {
     '',
     `Total: ${summary.total}, Passed: ${summary.passed}, Failed: ${summary.failed}`,
     '',
+    `Silence (no spoken audio): ${summary.silentTotal}/${summary.total} (${Math.round((summary.silenceRate || 0) * 100)}%)`,
+    '',
     '## Summary',
     '',
-    '| Case | Target | Pass | Quality | Delay warnings | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Findings |',
-    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
+    '| Case | Target | Pass | Quality | Silent | Delay warnings | P50 endpoint->audio | P95 endpoint->audio | Max endpoint->audio | P50 endpoint->tool | P95 tool->audio | Findings |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |',
   ];
   for (const item of summary.cases) {
     lines.push([
@@ -2029,6 +2056,7 @@ function writeReports(outDir, results) {
       item.target,
       `${item.passCount}/${item.count}`,
       item.qualityApplicableCount ? `${item.qualityPassCount}/${item.qualityApplicableCount}` : '-',
+      `${item.silentCount || 0}/${item.count}`,
       String(item.responseDelayWarningCount || 0),
       msCell(item.p50EndpointToFirstAudioMs),
       msCell(item.p95EndpointToFirstAudioMs),
@@ -2094,6 +2122,16 @@ async function main() {
   if (!['auto', 'manual'].includes(args.activityMode)) {
     throw new Error('--activity-mode must be auto or manual.');
   }
+  const VALID_MODES = ['manual', 'native_vad', 'passthrough'];
+  const sweepModes = args.sweep ? VALID_MODES.slice() : (args.modes || null);
+  if (args.mode && !VALID_MODES.includes(args.mode)) {
+    throw new Error(`--mode must be one of ${VALID_MODES.join(', ')}.`);
+  }
+  if (sweepModes) {
+    for (const mode of sweepModes) {
+      if (!VALID_MODES.includes(mode)) throw new Error(`--modes/-sweep contains invalid mode: ${mode}`);
+    }
+  }
 
   loadEnvFile(args.envFile);
   const config = getRuntimeConfig(args);
@@ -2146,33 +2184,70 @@ async function main() {
       })
     : null;
 
+  const runOneMode = async (mode) => {
+    // Configure this run's mode. activityMode is kept in sync so the legacy manual-activity
+    // code paths (sending activity_start/end) still behave correctly for non-manual modes.
+    args.realtimeMode = mode;
+    args.activityMode = mode === 'manual' ? 'manual' : 'auto';
+    const modeResults = [];
+    for (const { testCase, audio } of prepared) {
+      for (let repeatIndex = 1; repeatIndex <= args.repeat; repeatIndex += 1) {
+        evalTasks.length = 0;
+        console.log(`\n=== [${mode}] ${testCase.id}: ${testCase.label} (${repeatIndex}/${args.repeat}) ===`);
+        const result = testCase.mode === 'multi_turn'
+          ? (args.target === 'websocket'
+            ? await runWebSocketMultiTurnCase(testCase, audio, args)
+            : await runMultiTurnCase(client, config, testCase, audio, args))
+          : (args.target === 'websocket'
+            ? await runWebSocketCase(testCase, audio, args)
+            : await runSingleCase(client, config, testCase, audio, args));
+        result.repeatIndex = repeatIndex;
+        result.target = args.target;
+        result.realtimeMode = mode;
+        modeResults.push(result);
+        console.log(
+          JSON.stringify({
+            mode,
+            pass: result.pass,
+            silent: Boolean(result.silent),
+            endpointToFirstAudioMs: result.endpointToFirstAudioMs,
+            endpointToToolCallMs: result.endpointToToolCallMs,
+            toolResponseToFirstAudioMs: result.toolResponseToFirstAudioMs,
+            interruptLatencyMs: result.interruptLatencyMs,
+            tools: result.toolCalls.map((call) => call.name),
+            failures: result.failures,
+          }),
+        );
+      }
+    }
+    return modeResults;
+  };
+
   const results = [];
-  for (const { testCase, audio } of prepared) {
-    for (let repeatIndex = 1; repeatIndex <= args.repeat; repeatIndex += 1) {
-      evalTasks.length = 0;
-      console.log(`\n=== ${testCase.id}: ${testCase.label} (${repeatIndex}/${args.repeat}) ===`);
-      const result = testCase.mode === 'multi_turn'
-        ? (args.target === 'websocket'
-          ? await runWebSocketMultiTurnCase(testCase, audio, args)
-          : await runMultiTurnCase(client, config, testCase, audio, args))
-        : (args.target === 'websocket'
-          ? await runWebSocketCase(testCase, audio, args)
-          : await runSingleCase(client, config, testCase, audio, args));
-      result.repeatIndex = repeatIndex;
-      result.target = args.target;
-      results.push(result);
+  if (sweepModes) {
+    const perMode = [];
+    for (const mode of sweepModes) {
+      const modeResults = await runOneMode(mode);
+      results.push(...modeResults);
+      const summary = summarizeResults(modeResults);
+      perMode.push({ mode, summary });
+    }
+    // Print an A/B comparison table across modes: pass rate, silence rate, latency.
+    console.log('\n=== Mode comparison (A/B) ===');
+    console.log('| Mode | Pass | Silent | Silence% | P50 endpoint->audio | P95 endpoint->audio |');
+    console.log('| --- | ---: | ---: | ---: | ---: | ---: |');
+    for (const { mode, summary } of perMode) {
+      const endpointToAudio = results
+        .filter((r) => r.realtimeMode === mode)
+        .map((r) => r.endpointToFirstAudioMs);
       console.log(
-        JSON.stringify({
-          pass: result.pass,
-          endpointToFirstAudioMs: result.endpointToFirstAudioMs,
-          endpointToToolCallMs: result.endpointToToolCallMs,
-          toolResponseToFirstAudioMs: result.toolResponseToFirstAudioMs,
-          interruptLatencyMs: result.interruptLatencyMs,
-          tools: result.toolCalls.map((call) => call.name),
-          failures: result.failures,
-        }),
+        `| ${mode} | ${summary.passed}/${summary.total} | ${summary.silentTotal}/${summary.total} | ${Math.round((summary.silenceRate || 0) * 100)}% | ${msCell(percentile(endpointToAudio, 0.5))} | ${msCell(percentile(endpointToAudio, 0.95))} |`,
       );
     }
+  } else {
+    const mode = resolveRealtimeMode(args);
+    console.log(`Gemini Live eval: realtime mode=${mode}`);
+    results.push(...(await runOneMode(mode)));
   }
 
   const reports = writeReports(runDir, results);

@@ -48,52 +48,31 @@ function isGeminiLiveConfigWarning(error) {
 
 const SYSTEM_INSTRUCTION = `
 You are a realtime voice demo host for MagClaw's Gemini Live demo page.
-Understand both Chinese and English, but always answer only in Simplified Chinese.
-Do not reply in English even when the user speaks English, except for unavoidable proper
-nouns, code identifiers, search keywords, or tool names.
+Understand Chinese and English, and always answer in short, natural Simplified Chinese
+(spoken Mainland Mandarin), except for unavoidable proper nouns or tool names.
 
-This demo must not expose local machine details. Never ask for, reveal, infer, or summarize
-the host computer name, usernames, local file paths, running processes, network addresses,
-secrets, tokens, browser tabs, or local app state. If the user asks for local-machine data,
-explain briefly that this demo only exposes safe sample tools.
+Always respond. Even if the input is short, noisy, or unclear, reply briefly in Chinese
+(for example ask a quick clarifying question). Never stay silent and never wait for a clearer
+input before answering.
 
-You can use these safe tools:
-1. get_weather: weather lookup by city. If the city is missing, ask which city.
-2. google_search: online Google search. Use it when the user asks to search, look up,
-   research, or find current information. Summarize the top results in two or three short
-   spoken sentences and mention that it is a web summary.
-3. lookup_demo_ticket: deterministic mock ticket data. Use it for testing structured
-   business-function calls without touching real systems.
-4. calculate_expression: safe arithmetic for explicit math requests.
-5. convert_units: safe unit conversion for explicit conversion requests.
-6. random_choice: pick one option when the user asks you to choose from a short list.
-7. create_demo_task: create a mock task for explicit task-creation requests.
-8. list_demo_tasks: list mock tasks only when the user clearly asks for demo tasks.
-9. get_public_holidays: public holiday lookup by country code and optional year.
+Safe tools you may call only when the user clearly asks for that action:
+- get_weather (city weather; ask which city if missing)
+- google_search (only on an explicit search/look-up request; summarize the top results in two
+  or three short spoken sentences)
+- lookup_demo_ticket, calculate_expression, convert_units, random_choice,
+  create_demo_task, list_demo_tasks, get_public_holidays
 
-Always use natural Mainland Mandarin Chinese. Treat very short isolated English-looking
-fragments as possible ASR noise. Ask the user to repeat instead of turning an unclear word
-into a search query.
-Do not call google_search for greetings, chitchat, one-word ambiguous utterances, or unclear
-transcripts. Only search when the user explicitly asks to search, look up, Google, find
-current information, or research a topic.
-Only call tools when the user explicitly asks for that tool-like action. Do not call tools
-for interruption/control phrases such as "等一下", "停一下", "wait", or "stop", and do not
-call tools for casual chat, explanations, advice, or long-form speaking requests.
+For greetings, chitchat, advice, explanations, or control phrases like "等一下"/"停一下"/"wait"/"stop",
+just talk normally and do not call any tool.
+For short follow-ups that mention a new city or entity but omit the verb, inherit the previous tool intent and call the same relevant tool with the newly mentioned city/entity instead of asking what the user means.
 
-Voice style: relaxed, concise, and conversational. Do not sound like a scripted support bot.
-For Chinese output, use natural Mainland Mandarin phrasing, Simplified Chinese characters in
-transcripts, and short sentences. After using a tool, report only the useful result, not the raw JSON.
-After receiving a tool result, start the spoken answer immediately with one short sentence.
-Do not restate the request, explain the tool, or add filler before the result.
+After a tool result, start the spoken answer immediately with one short useful sentence; do not restate the request, explain the tool, or read raw JSON.
 If a function response contains spoken_summary, say that spoken_summary verbatim as the first sentence.
 For create_demo_task, the first sentence must include the created task title and priority.
-For short follow-ups that mention a new city or entity but omit the verb, inherit the previous
-tool intent and call the same relevant tool with the newly mentioned city/entity instead of
-asking what the user means. Treat any placeholder examples in these instructions as examples,
-not as user requests.
-For task follow-ups asking to list, show, or query tasks that were just created in this demo
-session, call list_demo_tasks immediately instead of asking for clarification.
+
+Privacy: never reveal or infer host machine details (computer name, usernames, file paths,
+processes, network addresses, secrets, tokens, local app state). If asked, briefly say this demo
+only exposes safe sample tools.
 `.trim();
 
 const GEMINI_LIVE_VOICES = [
@@ -305,7 +284,10 @@ function enumValue(value, allowed, fallback) {
 }
 
 function normalizeRealtimeMode(value = '') {
-  return String(value || '').trim() === 'native_vad' ? 'native_vad' : 'manual';
+  const raw = String(value || '').trim();
+  if (raw === 'native_vad') return 'native_vad';
+  if (raw === 'passthrough') return 'passthrough';
+  return 'manual';
 }
 
 function normalizeRealtimeTuning(value = {}) {
@@ -757,8 +739,18 @@ export function calculateGeminiLiveMicGateFrame(input = {}) {
   const guardedStartFrames = noiseGuardActive
     ? Math.max(requiredStartFrames + 2, Math.ceil(requiredStartFrames * 1.6))
     : requiredStartFrames;
-  const aboveRms = Number(stats.rms) >= rmsThreshold;
-  const abovePeak = Number(stats.peak) >= peakThreshold;
+  // Hysteresis: once the user is already speaking, hold the turn open against a lower
+  // "maintain" threshold so trailing quiet syllables are not clipped mid-sentence. Only
+  // applies when explicitly speaking and not under the noise guard; default ratio of 1
+  // keeps the original behavior for callers that do not opt in.
+  const userSpeaking = Boolean(input.userSpeaking);
+  const maintainRatio = userSpeaking && !noiseGuardActive
+    ? Math.min(1, Math.max(0.2, Number(tuning.maintainThresholdRatio) || 1))
+    : 1;
+  const effectiveRmsThreshold = rmsThreshold * maintainRatio;
+  const effectivePeakThreshold = peakThreshold * maintainRatio;
+  const aboveRms = Number(stats.rms) >= effectiveRmsThreshold;
+  const abovePeak = Number(stats.peak) >= effectivePeakThreshold;
   const active = noiseGuardActive ? aboveRms && abovePeak : aboveRms || abovePeak;
   const nextSpeechFrames = active ? micSpeechFrames + 1 : 0;
   const candidateBargeIn = assistantAudioPlaying && !acceptedBargeIn && nextSpeechFrames > 0;
@@ -911,6 +903,13 @@ function responseDelayWarningMs() {
   return numberFromEnv('GEMINI_LIVE_DEMO_RESPONSE_DELAY_WARNING_MS', 2000, {
     min: 500,
     max: 15000,
+  });
+}
+
+function turnStallRecoveryMs() {
+  return numberFromEnv('GEMINI_LIVE_DEMO_TURN_STALL_MS', 6000, {
+    min: 1500,
+    max: 30000,
   });
 }
 
@@ -1527,10 +1526,13 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
   let lastToolNames = [];
   let responseWaitSequence = 0;
   let responseDelayTimer = null;
+  let turnStallTimer = null;
   let latestInputTranscript = '';
   let latestInputTranscriptAt = 0;
   let loggedFirstInputTranscript = false;
   let loggedFirstOutputAudioAfterFlush = false;
+  let anyModelOutputSinceFlush = false;
+  let stallRecoveryAttempts = 0;
   let clientAudioTurnOpen = false;
   let activeClientTurnId = 0;
   const traceId = randomUUID().slice(0, 8);
@@ -1552,6 +1554,10 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
     if (responseDelayTimer) {
       clearTimeout(responseDelayTimer);
       responseDelayTimer = null;
+    }
+    if (turnStallTimer) {
+      clearTimeout(turnStallTimer);
+      turnStallTimer = null;
     }
   };
   const responseLatencyPayload = () => ({
@@ -1579,6 +1585,55 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       sendWsJson(ws, payload);
     }, thresholdMs);
     responseDelayTimer.unref?.();
+  };
+  const scheduleTurnStallRecovery = () => {
+    if (turnStallTimer) {
+      clearTimeout(turnStallTimer);
+      turnStallTimer = null;
+    }
+    if (!lastFlushAt) return;
+    const sequence = responseWaitSequence;
+    const stallMs = turnStallRecoveryMs();
+    turnStallTimer = setTimeout(() => {
+      turnStallTimer = null;
+      // Recover only if this is still the same pending turn and the model produced
+      // nothing at all (no audio, text, transcript, or tool call) since the endpoint.
+      if (closed || sequence !== responseWaitSequence) return;
+      if (loggedFirstOutputAudioAfterFlush || anyModelOutputSinceFlush) return;
+      if (stallRecoveryAttempts >= 1) {
+        // Already nudged once with no result: surface the stall and release the wait
+        // so the next user utterance is not blocked behind a dead turn.
+        console.warn(`[GeminiLiveDemo] trace=${traceId} turn_stall_giving_up ${JSON.stringify({ stallMs, reason: lastFlushReason || null })}`);
+        sendWsJson(ws, {
+          type: 'turn_stalled',
+          recovered: false,
+          stallMs,
+          reason: lastFlushReason || null,
+        });
+        responseWaitSequence += 1;
+        stallRecoveryAttempts = 0;
+        return;
+      }
+      stallRecoveryAttempts += 1;
+      console.warn(`[GeminiLiveDemo] trace=${traceId} turn_stall_recovery ${JSON.stringify({ stallMs, reason: lastFlushReason || null })}`);
+      sendWsJson(ws, { type: 'turn_stalled', recovered: true, stallMs, reason: lastFlushReason || null });
+      try {
+        // Nudge the model to emit a spoken reply for the turn it went silent on.
+        session.sendClientContent({
+          turns: [
+            {
+              role: 'user',
+              parts: [{ text: '（用户在等待你的语音回应，请用简短中文立刻回应一句。）' }],
+            },
+          ],
+          turnComplete: true,
+        });
+        scheduleTurnStallRecovery();
+      } catch (error) {
+        console.error('[GeminiLiveDemo] turn stall nudge failed:', error?.message || error);
+      }
+    }, stallMs);
+    turnStallTimer.unref?.();
   };
   const waitForGuardTranscript = async () => {
     const startedAt = Date.now();
@@ -1659,6 +1714,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           });
         }
         if (message.serverContent?.outputTranscription?.text) {
+          anyModelOutputSinceFlush = true;
           sendWsJson(ws, {
             type: 'output_transcript',
             turnId: lastEndpointMetrics?.turnId || activeClientTurnId || null,
@@ -1666,12 +1722,15 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           });
         }
         if (message.serverContent?.interrupted) {
+          anyModelOutputSinceFlush = true;
           sendWsJson(ws, { type: 'interrupted' });
         }
         if (message.serverContent?.generationComplete) {
+          anyModelOutputSinceFlush = true;
           sendWsJson(ws, { type: 'generation_complete' });
         }
         if (message.serverContent?.turnComplete) {
+          anyModelOutputSinceFlush = true;
           if (!loggedFirstOutputAudioAfterFlush && !lastNonBlockedToolResponseSentAt) {
             clearResponseDelayTimer();
           }
@@ -1688,6 +1747,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
         }
 
         for (const text of extractTextParts(message)) {
+          anyModelOutputSinceFlush = true;
           sendWsJson(ws, {
             type: 'text',
             turnId: lastEndpointMetrics?.turnId || activeClientTurnId || null,
@@ -1695,6 +1755,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
           });
         }
         for (const audio of extractAudioParts(message)) {
+          anyModelOutputSinceFlush = true;
           if (lastFlushAt && !loggedFirstOutputAudioAfterFlush) {
             loggedFirstOutputAudioAfterFlush = true;
             logTrace('first_output_audio_after_endpoint', {
@@ -1720,6 +1781,7 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
 
         const calls = message.toolCall?.functionCalls || [];
         for (const call of calls) {
+          anyModelOutputSinceFlush = true;
           const name = call.name || 'unknown';
           const callArgs = call.args || {};
           void (async () => {
@@ -1734,10 +1796,13 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
               reason: guard.blocked ? guard.reason : undefined,
             });
             if (guard.blocked) {
+              // Non-blocking guard: instead of returning an error (which makes the model
+              // apologize/re-plan and often go silent), return a neutral instruction so the
+              // model keeps talking and just answers the user directly without the tool.
               const output = {
-                error: 'blocked_tool_call',
+                status: 'no_tool_needed',
                 reason: guard.reason,
-                message: 'The tool call was blocked because the latest user utterance did not clearly request it.',
+                instruction: 'No tool is needed for this turn. Reply to the user directly in short spoken Chinese.',
               };
               const toolStartedAt = Date.now();
               sendWsJson(ws, {
@@ -1876,11 +1941,14 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       lastToolNames = [];
       responseWaitSequence += 1;
       loggedFirstOutputAudioAfterFlush = false;
+      anyModelOutputSinceFlush = false;
+      stallRecoveryAttempts = 0;
       logTrace('client_endpoint', {
         reason: lastFlushReason,
         metrics: meta.metrics || null,
       });
       scheduleResponseDelayWarning('endpoint');
+      scheduleTurnStallRecovery();
       session.sendRealtimeInput({ audioStreamEnd: true });
     },
     activityStart(meta = {}) {
@@ -1906,11 +1974,14 @@ async function createGeminiSession(ws, config, sessionOptions = {}) {
       lastToolNames = [];
       responseWaitSequence += 1;
       loggedFirstOutputAudioAfterFlush = false;
+      anyModelOutputSinceFlush = false;
+      stallRecoveryAttempts = 0;
       logTrace('client_activity_end', {
         reason: lastFlushReason,
         metrics: meta.metrics || null,
       });
       scheduleResponseDelayWarning('endpoint');
+      scheduleTurnStallRecovery();
       session.sendRealtimeInput({ activityEnd: {} });
     },
     close,
@@ -1975,6 +2046,35 @@ function publicToolCards() {
     },
   ];
 }
+
+const MIC_CAPTURE_FRAME_SAMPLES = 1024;
+const MIC_CAPTURE_WORKLET_SOURCE = `
+class MicCaptureProcessor extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    const opts = (options && options.processorOptions) || {};
+    this.frameSize = Math.max(128, Number(opts.frameSize) || 1024);
+    this.buffer = new Float32Array(this.frameSize);
+    this.offset = 0;
+  }
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0]) {
+      const channel = input[0];
+      for (let i = 0; i < channel.length; i += 1) {
+        this.buffer[this.offset] = channel[i];
+        this.offset += 1;
+        if (this.offset >= this.frameSize) {
+          this.port.postMessage(this.buffer.slice(0, this.frameSize));
+          this.offset = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('mic-capture-processor', MicCaptureProcessor);
+`.trim();
 
 function makeIndexHtml(config) {
   const cards = publicToolCards();
@@ -2466,8 +2566,9 @@ function makeIndexHtml(config) {
             <div><strong>输出</strong> 实时音频播放 + 文本转写</div>
           </div>
           <div class="mode-switch" id="realtimeModeButtons" role="group" aria-label="实时模式">
-            <button type="button" data-mode="manual">当前模式</button>
-            <button type="button" data-mode="native_vad">原生 VAD</button>
+            <button type="button" data-mode="manual">前端切音</button>
+            <button type="button" data-mode="native_vad">门控+VAD</button>
+            <button type="button" data-mode="passthrough">纯原生VAD</button>
           </div>
           <div class="field">
             <label for="voiceSelect">音色</label>
@@ -2547,6 +2648,8 @@ function makeIndexHtml(config) {
     const updateGeminiLiveTurnStorm = ${updateGeminiLiveTurnStorm.toString()};
     const decideGeminiLiveEndpoint = ${decideGeminiLiveEndpoint.toString()};
     const CONFIG = ${escapedConfig};
+    const MIC_FRAME_SAMPLES = ${MIC_CAPTURE_FRAME_SAMPLES};
+    const MIC_WORKLET_SOURCE = ${JSON.stringify(MIC_CAPTURE_WORKLET_SOURCE)};
     const startButton = document.getElementById('startButton');
     const buttonText = document.getElementById('buttonText');
     const buttonIcon = document.getElementById('buttonIcon');
@@ -2577,6 +2680,10 @@ function makeIndexHtml(config) {
     let audioContext = null;
     let micSource = null;
     let processor = null;
+    let workletNode = null;
+    let micWorkletModuleUrl = null;
+    let micCaptureMode = '';
+    let micCalibrationUntilMs = 0;
     let silentGain = null;
     let playbackTime = 0;
     let playingSources = [];
@@ -2589,7 +2696,12 @@ function makeIndexHtml(config) {
     let pendingReadyResolve = null;
     let pendingReadyReject = null;
     let activeProfile = localStorage.getItem('gemini-live-demo-turn-profile') || 'balanced';
-    let realtimeMode = localStorage.getItem('gemini-live-demo-realtime-mode') === 'native_vad' ? 'native_vad' : 'manual';
+    const REALTIME_MODES = ['manual', 'native_vad', 'passthrough'];
+    const REALTIME_MODE_LABELS = { manual: '前端切音', native_vad: '门控+VAD', passthrough: '纯原生VAD' };
+    function normalizeClientMode(value) {
+      return REALTIME_MODES.includes(value) ? value : 'manual';
+    }
+    let realtimeMode = normalizeClientMode(localStorage.getItem('gemini-live-demo-realtime-mode'));
     let sessionRealtimeMode = realtimeMode;
     let userSpeaking = false;
     let acceptedBargeIn = false;
@@ -2615,6 +2727,7 @@ function makeIndexHtml(config) {
     let conversationMemory = [];
     let nativeVadStreamStarted = false;
     let nativeVadTailFrames = 0;
+    let passthroughStreamStarted = false;
     const turnTimings = new Map();
 
     // TODO(phase-2): add multi-speaker diarization or voice verification before
@@ -2743,6 +2856,7 @@ function makeIndexHtml(config) {
         noiseRmsMultiplier: 2.6,
         noisePeakMultiplier: 2.4,
         noiseGuardMultiplier: 1.35,
+        maintainThresholdRatio: 0.6,
         serverSilenceMs: defaults.serverSilenceMs,
         prefixPaddingMs: defaults.prefixPaddingMs,
         startSensitivity: defaults.startSensitivity,
@@ -2786,17 +2900,21 @@ function makeIndexHtml(config) {
 
     function makeRealtimeTuning(mode = realtimeMode) {
       const tuning = readTuning();
-      const nativeVad = mode === 'native_vad';
+      const normalized = normalizeClientMode(mode);
+      // Both native_vad and passthrough hand turn detection to Gemini's server-side VAD.
+      const serverVad = normalized === 'native_vad' || normalized === 'passthrough';
+      const passthrough = normalized === 'passthrough';
       return {
-        realtimeMode: mode,
-        manualActivity: !nativeVad,
-        activityMode: nativeVad ? 'native_vad' : 'manual',
+        realtimeMode: normalized,
+        manualActivity: !serverVad,
+        activityMode: normalized,
         silenceDurationMs: tuning.serverSilenceMs,
         prefixPaddingMs: tuning.prefixPaddingMs,
-        startSensitivity: tuning.startSensitivity,
+        // Passthrough streams raw audio, so let Gemini start aggressively on any speech.
+        startSensitivity: passthrough ? 'START_SENSITIVITY_HIGH' : tuning.startSensitivity,
         endSensitivity: tuning.endSensitivity,
         activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
-        turnCoverage: nativeVad ? 'TURN_INCLUDES_ALL_INPUT' : 'TURN_INCLUDES_ONLY_ACTIVITY',
+        turnCoverage: serverVad ? 'TURN_INCLUDES_ALL_INPUT' : 'TURN_INCLUDES_ONLY_ACTIVITY',
       };
     }
 
@@ -2836,7 +2954,7 @@ function makeIndexHtml(config) {
     realtimeModeButtons.addEventListener('click', (event) => {
       const button = event.target.closest('[data-mode]');
       if (!button) return;
-      realtimeMode = button.dataset.mode === 'native_vad' ? 'native_vad' : 'manual';
+      realtimeMode = normalizeClientMode(button.dataset.mode);
       localStorage.setItem('gemini-live-demo-realtime-mode', realtimeMode);
       renderRealtimeMode();
       if (running) {
@@ -3076,6 +3194,12 @@ function makeIndexHtml(config) {
         state: turnStormState,
         event,
         nowMs: performance.now(),
+        // Gentler than the pure-function defaults: require more repeats to trigger and
+        // recover faster, so a few noisy turns no longer snowball into a stuck mic
+        // (the "越用越卡" positive-feedback loop).
+        threshold: 4,
+        windowMs: 4000,
+        guardMs: 4500,
       });
       updateNoiseMetrics();
       if (!previousActive && turnStormState.active) {
@@ -3208,6 +3332,8 @@ function makeIndexHtml(config) {
       turnStormState = { active: false, events: [], guardUntilMs: 0, remainingMs: 0 };
       nativeVadStreamStarted = false;
       nativeVadTailFrames = 0;
+      passthroughStreamStarted = false;
+      micCalibrationUntilMs = 0;
       updateSpeechMetrics('空闲', '--');
       updateNoiseMetrics();
     }
@@ -3240,20 +3366,54 @@ function makeIndexHtml(config) {
         },
       });
       micSource = context.createMediaStreamSource(micStream);
-      processor = context.createScriptProcessor(2048, 1, 1);
       silentGain = context.createGain();
       silentGain.gain.value = 0;
-      processor.onaudioprocess = (event) => {
+      // Start a short ambient-calibration window; passthrough mode skips the gate entirely
+      // so calibration only affects the manual / native_vad gated paths.
+      micCalibrationUntilMs = sessionRealtimeMode === 'passthrough' ? 0 : performance.now() + 600;
+      // Per-frame capture handler. input is a mono Float32Array frame, fed either by the
+      // AudioWorklet (preferred) or the legacy ScriptProcessor fallback.
+      const processCapturedFrame = (input) => {
         if (!running || !ws || ws.readyState !== WebSocket.OPEN) return;
         const now = performance.now();
         const tuning = readTuning();
-        const input = event.inputBuffer.getChannelData(0);
         const stats = measureAudio(input);
         meterFill.style.width = Math.min(100, Math.round(stats.peak * 140)) + '%';
         const downsampled = downsampleBuffer(input, context.sampleRate, CONFIG.inputSampleRate);
         const pcm = float32ToInt16Pcm(downsampled);
+        if (sessionRealtimeMode === 'passthrough') {
+          // True passthrough A/B baseline: no local gate at all. Stream every frame and let
+          // Gemini's server-side VAD decide start/end of turn. This is the "send everything"
+          // mode the user expected from native VAD.
+          if (!passthroughStreamStarted) {
+            passthroughStreamStarted = true;
+            updateSpeechMetrics('纯原生VAD 直通中', '--');
+            addEntry('system', '纯原生VAD', '已开启零门控直通：所有音频实时发给 Gemini，由 Gemini 判定说话开始与结束。');
+          }
+          ws.send(pcm);
+          return;
+        }
         const assistantAudioPlaying = isAssistantAudioPlaying(context);
-        const frameMs = (event.inputBuffer.length / context.sampleRate) * 1000;
+        const frameMs = (input.length / context.sampleRate) * 1000;
+        if (now < micCalibrationUntilMs) {
+          // Room calibration window right after the mic opens: quickly learn the ambient
+          // noise floor before anyone "starts speaking", so the first utterance is judged
+          // against a real per-room baseline instead of the fixed default floor. This is what
+          // makes the gate adapt across office / outdoors / home without manual tuning.
+          adaptiveNoiseState = updateGeminiLiveNoiseBaseline({
+            state: adaptiveNoiseState,
+            stats,
+            userSpeaking: false,
+            assistantAudioPlaying: false,
+            acceptedBargeIn: false,
+            candidateBargeIn: false,
+            rise: 0.5,
+            fall: 0.5,
+          });
+          updateSpeechMetrics('环境校准中', Math.max(0, Math.round(micCalibrationUntilMs - now)) + 'ms');
+          updateNoiseMetrics();
+          return;
+        }
         const wasNoiseGuardActive = Boolean(turnStormState.active);
         turnStormState = updateGeminiLiveTurnStorm({
           state: turnStormState,
@@ -3274,6 +3434,7 @@ function makeIndexHtml(config) {
           micSpeechFrames,
           assistantAudioPlaying,
           acceptedBargeIn,
+          userSpeaking,
         });
         const active = gate.active;
         adaptiveNoiseState = updateGeminiLiveNoiseBaseline({
@@ -3283,6 +3444,9 @@ function makeIndexHtml(config) {
           assistantAudioPlaying,
           acceptedBargeIn,
           candidateBargeIn: gate.candidateBargeIn || gate.active,
+          // Let the ambient floor fall back faster than it rises, so a brief noise burst
+          // does not leave the threshold stuck high and swallow the next utterance.
+          fall: 0.08,
         });
         updateNoiseMetrics(gate);
         if (sessionRealtimeMode === 'native_vad') {
@@ -3443,10 +3607,10 @@ function makeIndexHtml(config) {
               filtered: 1,
               profile: activeProfile,
             });
-            recordTurnStormEvent('noise', {
-              speechDurationMs,
-              transcriptChars: latestInputTranscript.length,
-            }, 'low_confidence_audio');
+            // Locally-filtered low-confidence audio is already suppressed by the mic gate;
+            // do NOT also escalate the turn-storm guard here, or repeated drops snowball into
+            // an ever-rising threshold that blocks real speech ("越用越卡"). Only genuinely
+            // empty turns that were actually sent to Gemini count as noise (handled below).
             userSpeaking = false;
             acceptedBargeIn = false;
             micSpeechFrames = 0;
@@ -3493,12 +3657,58 @@ function makeIndexHtml(config) {
           while (micPreRoll.length > tuning.preRollFrames) micPreRoll.shift();
         }
       };
-      micSource.connect(processor);
-      processor.connect(silentGain);
-      silentGain.connect(context.destination);
+
+      // Prefer AudioWorklet: runs capture on the audio render thread at a fixed frame size,
+      // so main-thread GC/jank can no longer drop frames and tear holes in the PCM stream
+      // (which previously confused Gemini's VAD). Fall back to the deprecated ScriptProcessor
+      // only when AudioWorklet is unavailable.
+      let workletStarted = false;
+      if (context.audioWorklet && typeof AudioWorkletNode === 'function') {
+        try {
+          if (!micWorkletModuleUrl) {
+            micWorkletModuleUrl = URL.createObjectURL(new Blob([MIC_WORKLET_SOURCE], { type: 'application/javascript' }));
+          }
+          await context.audioWorklet.addModule(micWorkletModuleUrl);
+          workletNode = new AudioWorkletNode(context, 'mic-capture-processor', {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            outputChannelCount: [1],
+            processorOptions: { frameSize: MIC_FRAME_SAMPLES },
+          });
+          workletNode.port.onmessage = (event) => {
+            const frame = event.data;
+            if (frame && frame.length) processCapturedFrame(frame);
+          };
+          micSource.connect(workletNode);
+          workletNode.connect(silentGain);
+          silentGain.connect(context.destination);
+          workletStarted = true;
+          micCaptureMode = 'worklet';
+        } catch (error) {
+          workletStarted = false;
+          if (workletNode) {
+            try { workletNode.disconnect(); } catch {}
+            workletNode = null;
+          }
+          addEntry('system', '音频采集', 'AudioWorklet 不可用，已回退到兼容采集模式（' + (error?.message || error) + '）。');
+        }
+      }
+      if (!workletStarted) {
+        processor = context.createScriptProcessor(MIC_FRAME_SAMPLES, 1, 1);
+        processor.onaudioprocess = (event) => processCapturedFrame(event.inputBuffer.getChannelData(0));
+        micSource.connect(processor);
+        processor.connect(silentGain);
+        silentGain.connect(context.destination);
+        micCaptureMode = 'scriptprocessor';
+      }
     }
 
     function stopMic() {
+      if (workletNode) {
+        try { workletNode.port.onmessage = null; } catch {}
+        try { workletNode.disconnect(); } catch {}
+        workletNode = null;
+      }
       if (processor) {
         processor.disconnect();
         processor.onaudioprocess = null;
@@ -3572,7 +3782,7 @@ function makeIndexHtml(config) {
         if (!message.turnId || message.turnId === currentTurnId) {
           latestInputTranscript = message.text || latestInputTranscript;
         }
-        if (sessionRealtimeMode === 'native_vad' && !currentTurnId) {
+        if (sessionRealtimeMode !== 'manual' && !currentTurnId) {
           observedTurnCounter += 1;
           currentTurnId = observedTurnCounter;
           turnId = currentTurnId;
@@ -3645,6 +3855,18 @@ function makeIndexHtml(config) {
             ['端点→当前', 'endpointSentAt', 'delayWarningAt'],
           ]));
         }
+      } else if (message.type === 'turn_stalled') {
+        const turnId = pendingResponseTurnId || currentTurnId;
+        if (message.recovered) {
+          addEntry('warning', '响应卡住·已自动补救', turnLabel(turnId) + ' 超过 ' + formatMs(message.stallMs) + ' 没有任何回应，已自动提示模型重新作答。');
+        } else {
+          addEntry('warning', '响应卡住·已跳过', turnLabel(turnId) + ' 自动补救后仍无回应，已结束这一轮，可以直接继续说话。');
+          // Release client-side turn state so the next utterance starts a fresh turn.
+          if (sessionRealtimeMode !== 'manual') currentTurnId = 0;
+          latestInputTranscript = '';
+          latestInputTranscriptAt = 0;
+          updateSpeechMetrics('空闲', '--');
+        }
       } else if (message.type === 'tool_call') {
         const turnId = pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, 'toolCallAt', performance.now());
@@ -3670,7 +3892,7 @@ function makeIndexHtml(config) {
       } else if (message.type === 'turn_complete') {
         setStatus('正在听', true);
         pendingResponseTurnId = 0;
-        if (sessionRealtimeMode === 'native_vad') currentTurnId = 0;
+        if (sessionRealtimeMode !== 'manual') currentTurnId = 0;
       } else if (message.type === 'endpoint') {
         const turnId = message.metrics?.turnId || pendingResponseTurnId || currentTurnId;
         markTurnStage(turnId, 'serverAckAt', performance.now());
@@ -3787,7 +4009,7 @@ function makeIndexHtml(config) {
       addEntry(
         'system',
         options.reconnect ? '重连配置' : '调节',
-        '本轮使用“' + tuning.label + '”节奏，实时模式：' + (sessionRealtimeMode === 'native_vad' ? '原生 VAD' : '当前模式') + '。短句 ' + tuning.shortPauseMs + 'ms，思考 ' + tuning.thinkingPauseMs + 'ms，打断 ' + tuning.bargeInMs + 'ms。',
+        '本轮使用“' + tuning.label + '”节奏，实时模式：' + (REALTIME_MODE_LABELS[sessionRealtimeMode] || '前端切音') + '。短句 ' + tuning.shortPauseMs + 'ms，思考 ' + tuning.thinkingPauseMs + 'ms，打断 ' + tuning.bargeInMs + 'ms。',
       );
       const readyPromise = new Promise((resolve, reject) => {
         pendingReadyResolve = resolve;

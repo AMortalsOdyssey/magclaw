@@ -87,19 +87,24 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       assert.equal(res.statusCode, 200);
       assert.match(res.body, /id="voiceSelect"/);
       assert.match(res.body, /id="promptInput"/);
-      assert.match(res.body, /always answer only in Simplified Chinese/);
+      assert.match(res.body, /always answer in short, natural Simplified Chinese/);
+      assert.match(res.body, /Always respond\. Even if the input is short, noisy, or unclear/);
       assert.doesNotMatch(res.body, /reply in the user's language/);
+      assert.doesNotMatch(res.body, /Treat very short isolated English-looking/);
       assert.match(res.body, /id="turnProfileButtons"/);
       assert.match(res.body, /data-profile="responsive"/);
       assert.match(res.body, /data-profile="patient"/);
       assert.match(res.body, /id="realtimeModeButtons"/);
       assert.match(res.body, /data-mode="manual"/);
       assert.match(res.body, /data-mode="native_vad"/);
+      assert.match(res.body, /data-mode="passthrough"/);
       assert.match(res.body, /gemini-live-demo-realtime-mode/);
       assert.match(res.body, /activity_start/);
       assert.match(res.body, /activity_end/);
-      assert.match(res.body, /manualActivity: !nativeVad/);
-      assert.match(res.body, /activityMode: nativeVad \? 'native_vad' : 'manual'/);
+      assert.match(res.body, /manualActivity: !serverVad/);
+      assert.match(res.body, /activityMode: normalized/);
+      assert.match(res.body, /sessionRealtimeMode === 'passthrough'/);
+      assert.match(res.body, /turn_stalled/);
       assert.match(res.body, /sessionRealtimeMode = options\.reconnect \? sessionRealtimeMode : realtimeMode/);
       assert.match(res.body, /mode: sessionRealtimeMode/);
       assert.match(res.body, /decideGeminiLiveEndpoint/);
@@ -366,6 +371,47 @@ test('Gemini Live mic gate ignores short background noise but accepts sustained 
   });
   assert.equal(idleStart.shouldStartUserSpeech, true);
   assert.equal(idleStart.requiredStartFrames, 3);
+});
+
+test('Gemini Live mic gate applies maintain-threshold hysteresis only while speaking', () => {
+  const tuning = {
+    idleRms: 0.01,
+    idlePeak: 0.045,
+    startFrames: 3,
+    maintainThresholdRatio: 0.6,
+  };
+  // A quiet trailing syllable just below the idle threshold.
+  const quiet = { rms: 0.007, peak: 0.03 };
+
+  // Not yet speaking: hysteresis must NOT apply, so a quiet frame stays inactive.
+  const idleFrame = calculateGeminiLiveMicGateFrame({
+    stats: quiet,
+    tuning,
+    frameMs: 42,
+    micSpeechFrames: 5,
+    userSpeaking: false,
+  });
+  assert.equal(idleFrame.active, false);
+
+  // Already speaking: the lower maintain threshold keeps the turn open on the same quiet frame.
+  const speakingFrame = calculateGeminiLiveMicGateFrame({
+    stats: quiet,
+    tuning,
+    frameMs: 42,
+    micSpeechFrames: 5,
+    userSpeaking: true,
+  });
+  assert.equal(speakingFrame.active, true);
+
+  // Without opting in (no ratio, default 1), behavior is unchanged even while speaking.
+  const noHysteresis = calculateGeminiLiveMicGateFrame({
+    stats: quiet,
+    tuning: { idleRms: 0.01, idlePeak: 0.045, startFrames: 3 },
+    frameMs: 42,
+    micSpeechFrames: 5,
+    userSpeaking: true,
+  });
+  assert.equal(noHysteresis.active, false);
 });
 
 test('Gemini Live adaptive noise gate raises thresholds from the ambient floor', () => {
