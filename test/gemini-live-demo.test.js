@@ -74,7 +74,7 @@ test('Gemini Live demo page uses mounted Vertex secret without sandboxing microp
       const handled = await handleGeminiLiveDemoHttp(
         { method: 'GET', headers: { host: 'magclaw.example' } },
         res,
-        new URL('https://magclaw.example/s/demo/gemini-live'),
+        new URL('https://magclaw.example/s/gemini-live/channels/chan_c7452e995b/gemini-live'),
         {
           cloudAuth: { isLoginRequired: () => false },
           host: '127.0.0.1',
@@ -159,7 +159,7 @@ test('Gemini Live demo degrades to warning when Vertex secret is missing', async
       assert.equal(await handleGeminiLiveDemoHttp(
         { method: 'GET', headers: { host: 'magclaw.example' } },
         res,
-        new URL('https://magclaw.example/gemini-live'),
+        new URL('https://magclaw.example/s/gemini-live/channels/chan_c7452e995b/gemini-live'),
         {
           cloudAuth: { isLoginRequired: () => false },
           host: '127.0.0.1',
@@ -207,6 +207,35 @@ test('Gemini Live demo degrades to warning when Vertex secret is missing', async
     });
   } finally {
     await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Gemini Live demo page is only mounted under shared channel routes', async () => {
+  const deps = {
+    cloudAuth: { isLoginRequired: () => false },
+    host: '127.0.0.1',
+    port: 6543,
+  };
+
+  const sharedChannelRes = makeResponse();
+  assert.equal(await handleGeminiLiveDemoHttp(
+    { method: 'GET', headers: { host: 'magclaw.example' } },
+    sharedChannelRes,
+    new URL('https://magclaw.example/s/gemini-live/channels/chan_c7452e995b/gemini-live'),
+    deps,
+  ), true);
+  assert.equal(sharedChannelRes.statusCode, 200);
+  assert.match(sharedChannelRes.body, /Gemini Live 实时语音 Demo/);
+
+  for (const oldPath of ['/gemini-live', '/gemini-live/', '/s/gemini-live/gemini-live']) {
+    const res = makeResponse();
+    assert.equal(await handleGeminiLiveDemoHttp(
+      { method: 'GET', headers: { host: 'magclaw.example' } },
+      res,
+      new URL(`https://magclaw.example${oldPath}`),
+      deps,
+    ), false);
+    assert.equal(res.statusCode, null);
   }
 });
 

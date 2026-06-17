@@ -3553,9 +3553,7 @@ function createServer(config) {
 }
 
 function geminiLivePagePath(pathname = '') {
-  return pathname === '/gemini-live'
-    || pathname === '/gemini-live/'
-    || /^\/s\/[^/]+\/gemini-live\/?$/.test(pathname);
+  return /^\/s\/[^/]+\/channels\/[^/]+\/gemini-live\/?$/.test(pathname);
 }
 
 function geminiLiveApiPath(pathname = '') {
@@ -3574,7 +3572,9 @@ function geminiLiveUser(req, deps = {}) {
 
 function safeReturnTo(url) {
   const target = `${url?.pathname || '/'}${url?.search || ''}`;
-  return target.startsWith('/') && !target.startsWith('//') ? target : '/gemini-live';
+  return target.startsWith('/') && !target.startsWith('//')
+    ? target
+    : '/s/gemini-live/channels/chan_c7452e995b/gemini-live';
 }
 
 function redirectToLogin(req, res, url) {
