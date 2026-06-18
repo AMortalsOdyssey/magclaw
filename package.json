@@ -25,6 +25,8 @@
     "web:docker:build": "docker build -f web/Dockerfile -t magclaw-web .",
     "packages:publish": "node scripts/publish-magclaw-packages.mjs",
     "packages:publish:dry-run": "node scripts/publish-magclaw-packages.mjs --dry-run",
+    "skyengine:realtime": "node scripts/skyengine-realtime-agent.mjs",
+    "gemini-live:web": "node scripts/gemini-live-web-demo.mjs",
     "cli-core:pack": "npm pack --dry-run --json ./cli-core",
     "daemon:pack": "npm pack --dry-run --json ./daemon",
     "computer:pack": "npm pack --dry-run --json ./computer",

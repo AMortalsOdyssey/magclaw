@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Modality, Type } from '@google/genai';
@@ -20,11 +20,31 @@ const DEFAULT_ENV_FILE = path.join(__dirname, 'gemini-live.env.local');
 const DEFAULT_MODEL = 'gemini-live-2.5-flash-native-audio';
 const INPUT_SAMPLE_RATE = 16_000;
 const OUTPUT_SAMPLE_RATE = 24_000;
+const DEFAULT_SYSTEM_INSTRUCTION = `
+You are a realtime bilingual Chinese/English voice operator for phase-one testing.
+Detect the user's language automatically on every turn. If the user speaks Chinese,
+reply in Chinese; if the user speaks English, reply in English. If the user mixes
+languages, keep the main reply in the dominant language and preserve technical terms.
+
+Voice style: sound like a real person in a quick voice chat, not a narrator,
+customer-service script, audiobook, or formal assistant. Use short spoken sentences.
+Avoid canned phrases and do not read long lists unless the user asks for detail.
+
+For Chinese output, use standard Mainland Mandarin Putonghua with native Chinese
+prosody, tones, rhythm, and pauses. It should sound like a Chinese person chatting
+normally, not like a foreign-accented speaker reading Chinese with English prosody.
+
+Personality: warm, attentive, lightly flattering, and fast to execute. When the
+user asks for an action and a tool is available, call the tool immediately. After
+a tool finishes, report the result casually in one or two sentences.
+Never claim that a local action is complete until you have received the tool result.
+`.trim();
 
 function usage() {
   console.log(`Usage:
   node scripts/gemini-live-dialog.mjs --text "你好，用中文简单介绍你自己"
-  node scripts/gemini-live-dialog.mjs --text "查一下北京现在几点" --tool-demo
+  node scripts/gemini-live-dialog.mjs --text "查一下北京现在几点"
+  node scripts/gemini-live-dialog.mjs --mic
   node scripts/gemini-live-dialog.mjs --mic --seconds 12
   node scripts/gemini-live-dialog.mjs --audio input.wav --out tmp/gemini-live-reply.wav
 
@@ -34,17 +54,22 @@ Setup:
 
 Options:
   --text <text>        Send text into a Live session. Defaults to text response unless --audio-response is set.
-  --mic                Capture microphone audio with ffmpeg avfoundation and stream it live.
+  --mic                Start a long-running realtime microphone conversation.
   --audio <path>       Convert an audio file to 16 kHz mono PCM and stream it in realtime.
   --pcm <path>         Raw 16 kHz, mono, signed 16-bit little-endian PCM input.
-  --seconds <n>        Microphone capture duration, default: 8.
+  --seconds <n>        Microphone capture duration for one-shot testing. Omit for continuous --mic.
   --mic-device <dev>   ffmpeg avfoundation input, default: :0. Use --list-devices to inspect.
   --list-devices       List macOS avfoundation audio devices and exit.
-  --tool-demo          Enable local demo functions: get_current_time, get_weather, lookup_order_status.
+  --no-tools           Disable local functions.
+  --tool-demo          Also enable mock demo functions: get_weather, lookup_order_status.
   --audio-response     Ask Gemini Live for audio output.
   --text-response      Ask Gemini Live for text output.
   --play               Play returned 24 kHz PCM while receiving it. Default for --mic/--audio/--pcm audio response.
   --no-play            Disable playback.
+  --wait-playback      Wait for audio playback to drain before printing Listening. Default on.
+  --no-wait-playback   Print Listening as soon as Gemini completes a turn.
+  --pause-mic-during-tools
+                       Temporarily pause mic upload while a tool-backed reply is playing. Default off.
   --out <path>         Output WAV for model speech, default: tmp/gemini-live-reply.wav.
   --model <id>         Model id, default: ${DEFAULT_MODEL}.
   --project <id>       Google Cloud project id. Overrides GOOGLE_CLOUD_PROJECT.
@@ -52,7 +77,7 @@ Options:
   --credentials <path> Service account JSON path. Overrides GOOGLE_APPLICATION_CREDENTIALS.
   --env <path>         Env file, default: scripts/gemini-live.env.local.
   --timeout-ms <n>     Overall receive timeout, default: 45000.
-  --tail-timeout-ms <n>Stop after this idle time once reply audio starts, default: 1800.
+  --tail-timeout-ms <n>Stop after this idle time once reply audio starts, default: 6000.
   --chunk-ms <n>       Audio packet duration, default: 40.
   --input-field <name> Send audio through "audio" or "media", default: audio.
   --dry-run            Validate config and local dependencies without calling Google.
@@ -65,11 +90,14 @@ function parseArgs(argv) {
     envFile: DEFAULT_ENV_FILE,
     out: path.join(process.cwd(), 'tmp', 'gemini-live-reply.wav'),
     timeoutMs: 45_000,
-    tailTimeoutMs: 1800,
+    tailTimeoutMs: 6000,
     chunkMs: 40,
-    seconds: 8,
+    seconds: null,
     micDevice: ':0',
     inputField: 'audio',
+    tools: true,
+    waitPlayback: true,
+    pauseMicDuringTools: false,
     keepTemp: false,
     dryRun: false,
   };
@@ -90,11 +118,18 @@ function parseArgs(argv) {
     else if (arg === '--seconds') args.seconds = Number(next());
     else if (arg === '--mic-device') args.micDevice = next();
     else if (arg === '--list-devices') args.listDevices = true;
-    else if (arg === '--tool-demo') args.toolDemo = true;
+    else if (arg === '--no-tools') args.tools = false;
+    else if (arg === '--tool-demo') {
+      args.tools = true;
+      args.toolDemo = true;
+    }
     else if (arg === '--audio-response') args.response = 'audio';
     else if (arg === '--text-response') args.response = 'text';
     else if (arg === '--play') args.play = true;
     else if (arg === '--no-play') args.play = false;
+    else if (arg === '--wait-playback') args.waitPlayback = true;
+    else if (arg === '--no-wait-playback') args.waitPlayback = false;
+    else if (arg === '--pause-mic-during-tools') args.pauseMicDuringTools = true;
     else if (arg === '--out') args.out = next();
     else if (arg === '--model') args.model = next();
     else if (arg === '--project') args.project = next();
@@ -166,6 +201,19 @@ function run(command, args, label) {
   return result;
 }
 
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    timeout: options.timeoutMs || 8_000,
+  });
+  return {
+    status: result.status,
+    stdout: (result.stdout || '').trim(),
+    stderr: (result.stderr || '').trim(),
+    error: result.error?.message,
+  };
+}
+
 function listDevices() {
   if (!commandExists('ffmpeg')) throw new Error('--list-devices requires ffmpeg');
   const result = spawnSync(
@@ -218,6 +266,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function cleanProcessLog(data) {
+  return String(data)
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '')
+    .trim();
+}
+
+function isExpectedPipeCloseError(error) {
+  return ['EPIPE', 'ERR_STREAM_DESTROYED', 'ECONNRESET'].includes(error?.code);
+}
+
+function warnUnexpectedPlaybackError(error) {
+  if (!error || isExpectedPipeCloseError(error)) return;
+  console.warn(`[Playback] ${error.message || error}`);
+}
+
 function isNativeAudioModel(model) {
   return /native-audio/.test(model || '');
 }
@@ -255,6 +319,7 @@ async function sendPcmFile(session, filePath, args) {
 
 async function streamMicrophone(session, args) {
   if (!commandExists('ffmpeg')) throw new Error('--mic requires ffmpeg');
+  if (!args.seconds) throw new Error('streamMicrophone requires --seconds. Use startMicrophone for continuous mode.');
   const chunkBytes = Math.max(2, Math.floor((INPUT_SAMPLE_RATE * 2 * args.chunkMs) / 1000));
   let pending = Buffer.alloc(0);
   let chunksSent = 0;
@@ -282,7 +347,7 @@ async function streamMicrophone(session, args) {
   );
 
   ffmpeg.stderr.on('data', (data) => {
-    const text = String(data).trim();
+    const text = cleanProcessLog(data);
     if (text) console.warn(`[ffmpeg] ${text}`);
   });
 
@@ -310,7 +375,111 @@ async function streamMicrophone(session, args) {
   console.log(`Mic upload complete: ${chunksSent} chunks, ${(bytesSent / 2 / INPUT_SAMPLE_RATE).toFixed(2)}s.`);
 }
 
-function startPlayback() {
+function startMicrophone(session, args, state) {
+  if (process.platform !== 'darwin') {
+    throw new Error('Microphone mode currently uses ffmpeg avfoundation and is supported on macOS.');
+  }
+  if (!commandExists('ffmpeg')) throw new Error('--mic requires ffmpeg');
+  const chunkBytes = Math.max(2, Math.floor((INPUT_SAMPLE_RATE * 2 * args.chunkMs) / 1000));
+  let pending = Buffer.alloc(0);
+  let chunksSent = 0;
+  let bytesSent = 0;
+  let droppedWhilePaused = 0;
+
+  const ffmpeg = spawn(
+    'ffmpeg',
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'avfoundation',
+      '-i',
+      args.micDevice,
+      '-ac',
+      '1',
+      '-ar',
+      String(INPUT_SAMPLE_RATE),
+      '-f',
+      's16le',
+      'pipe:1',
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+
+  const sendChunk = (chunk) => {
+    if (!chunk.length || state.stopping) return;
+    try {
+      sendAudioChunk(session, chunk, args.inputField);
+      chunksSent += 1;
+      bytesSent += chunk.length;
+    } catch (error) {
+      if (!state.stopping) console.warn(`[Mic] send failed: ${error.message || error}`);
+    }
+  };
+
+  ffmpeg.stdout.on('data', (data) => {
+    if (state.uploadPaused) {
+      pending = Buffer.alloc(0);
+      droppedWhilePaused += Math.max(1, Math.ceil(data.length / chunkBytes));
+      return;
+    }
+    pending = Buffer.concat([pending, data]);
+    while (pending.length >= chunkBytes) {
+      const chunk = pending.subarray(0, chunkBytes);
+      pending = pending.subarray(chunkBytes);
+      sendChunk(chunk);
+    }
+  });
+
+  ffmpeg.stderr.on('data', (data) => {
+    const text = cleanProcessLog(data);
+    if (text) console.warn(`[ffmpeg] ${text}`);
+  });
+
+  ffmpeg.on('close', (code) => {
+    if (state.stopping) return;
+    console.warn(`[Mic] ffmpeg exited with code ${code}. Sent chunks=${chunksSent}.`);
+  });
+
+  console.log(`[Mic] listening on avfoundation device ${args.micDevice}. Press Ctrl+C to stop.`);
+  return {
+    close({ sendEnd = true } = {}) {
+      if (pending.length > 0) {
+        sendChunk(pending);
+        pending = Buffer.alloc(0);
+      }
+      state.stopping = true;
+      if (sendEnd) {
+        try {
+          session.sendRealtimeInput({ audioStreamEnd: true });
+        } catch {
+          // best effort
+        }
+      }
+      closeProcess(ffmpeg);
+      console.log(
+        `[Mic] stopped. Sent ${chunksSent} chunks, ${(bytesSent / 2 / INPUT_SAMPLE_RATE).toFixed(2)}s, dropped ${droppedWhilePaused} paused chunks.`,
+      );
+    },
+  };
+}
+
+function closeProcess(child) {
+  if (!child) return;
+  try {
+    if (child.stdin?.writable) child.stdin.destroy();
+  } catch {
+    // best effort
+  }
+  try {
+    if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+  } catch {
+    // best effort
+  }
+}
+
+function startPlaybackProcess(onClose) {
   if (!commandExists('ffplay')) {
     console.warn('ffplay not found; live playback disabled. The WAV file will still be saved.');
     return null;
@@ -324,6 +493,14 @@ function startPlayback() {
       'error',
       '-nodisp',
       '-autoexit',
+      '-fflags',
+      'nobuffer',
+      '-flags',
+      'low_delay',
+      '-probesize',
+      '32',
+      '-analyzeduration',
+      '0',
       '-f',
       's16le',
       '-ar',
@@ -337,102 +514,341 @@ function startPlayback() {
   );
 
   player.stderr.on('data', (data) => {
-    const text = String(data).trim();
+    const text = cleanProcessLog(data);
     if (text) console.warn(`[ffplay] ${text}`);
   });
+  player.stdin.on('error', warnUnexpectedPlaybackError);
+  player.on('error', warnUnexpectedPlaybackError);
+  player.on('close', () => onClose?.(player));
   return player;
 }
 
-function closePlayback(player) {
-  if (!player) return;
-  try {
-    player.stdin.end();
-  } catch {
-    // best effort
-  }
+function createPlayback(enabled) {
+  const bytesPerMs = (OUTPUT_SAMPLE_RATE * 2) / 1000;
+  let child = null;
+  let drainAt = 0;
+
+  const ensureChild = () => {
+    if (!enabled) return null;
+    if (child && child.exitCode === null && !child.killed && child.stdin?.writable) return child;
+    child = startPlaybackProcess((closedChild) => {
+      if (child === closedChild) child = null;
+    });
+    return child;
+  };
+
+  return {
+    write(audio) {
+      if (!enabled || !audio.length) return;
+      const player = ensureChild();
+      if (!player?.stdin?.writable) return;
+      try {
+        player.stdin.write(audio, warnUnexpectedPlaybackError);
+      } catch (error) {
+        warnUnexpectedPlaybackError(error);
+        if (player === child) child = null;
+        drainAt = 0;
+        return;
+      }
+
+      const now = Date.now();
+      const audioMs = audio.length / bytesPerMs;
+      drainAt = Math.max(drainAt, now + 120) + audioMs;
+    },
+    drainDelayMs() {
+      return Math.max(0, Math.ceil(drainAt - Date.now()));
+    },
+    isDraining() {
+      return this.drainDelayMs() > 80;
+    },
+    interrupt() {
+      const pendingMs = this.drainDelayMs();
+      drainAt = 0;
+      closeProcess(child);
+      child = null;
+      return pendingMs;
+    },
+    finishTurn() {
+      drainAt = 0;
+      closeProcess(child);
+      child = null;
+    },
+    close() {
+      drainAt = 0;
+      closeProcess(child);
+      child = null;
+    },
+  };
 }
 
-function getToolDeclarations() {
-  return [
+function appleScriptString(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+function getComputerName() {
+  const computerName =
+    process.platform === 'darwin' ? runCommand('scutil', ['--get', 'ComputerName']).stdout : '';
+  const localHostName =
+    process.platform === 'darwin' ? runCommand('scutil', ['--get', 'LocalHostName']).stdout : '';
+  const hostResult = runCommand('hostname', []);
+  return {
+    computer_name: computerName || hostname(),
+    local_hostname: localHostName || null,
+    hostname: hostResult.stdout || hostname(),
+    platform: process.platform,
+  };
+}
+
+function compactCommandName(command) {
+  const trimmed = String(command || '').trim();
+  if (!trimmed) return '(unknown)';
+  return path.basename(trimmed) || trimmed.split(/\s+/)[0] || '(unknown)';
+}
+
+function compactCommand(command, maxLength = 180) {
+  const trimmed = String(command || '').trim().replace(/\s+/g, ' ');
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength - 1)}…`;
+}
+
+function listRunningProcesses(rawArgs = {}) {
+  const limit = Math.min(Math.max(Number(rawArgs.limit) || 6, 1), 20);
+  const filter = String(rawArgs.filter || '').trim().toLowerCase();
+
+  if (process.platform === 'win32') {
+    const result = runCommand('powershell', [
+      '-NoProfile',
+      '-Command',
+      'Get-Process | Sort-Object CPU -Descending | Select-Object -First 50 Id,ProcessName,CPU,WorkingSet | ConvertTo-Json -Compress',
+    ]);
+    if (result.status !== 0) return { error: result.stderr || result.error || 'Get-Process failed' };
+    return { platform: process.platform, raw: result.stdout.slice(0, 12_000) };
+  }
+
+  const result = runCommand('ps', ['-axo', 'pid=,ppid=,pcpu=,pmem=,comm=']);
+  if (result.status !== 0) return { error: result.stderr || result.error || 'ps failed' };
+
+  const processes = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/);
+      if (!match) return null;
+      return {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        cpu_percent: Number(match[3]),
+        mem_percent: Number(match[4]),
+        name: compactCommandName(match[5]),
+        command: compactCommand(match[5], 90),
+      };
+    })
+    .filter(Boolean)
+    .filter((item) => !filter || item.command.toLowerCase().includes(filter))
+    .sort((a, b) => b.cpu_percent - a.cpu_percent || b.mem_percent - a.mem_percent)
+    .slice(0, limit);
+
+  const compactProcesses = processes.map((item) => ({
+    pid: item.pid,
+    name: item.name,
+    cpu_percent: item.cpu_percent,
+    mem_percent: item.mem_percent,
+  }));
+  const summary = compactProcesses
+    .map((item) => `${item.name} pid ${item.pid} CPU ${item.cpu_percent}%`)
+    .join('; ');
+
+  return {
+    platform: process.platform,
+    filter: filter || null,
+    count: compactProcesses.length,
+    max_count: limit,
+    summary,
+    processes: compactProcesses,
+  };
+}
+
+function openChromeNewTab(rawArgs = {}) {
+  const targetUrl = String(rawArgs.url || 'chrome://newtab/').trim() || 'chrome://newtab/';
+  if (process.platform !== 'darwin') {
+    return {
+      ok: false,
+      error: 'chrome_new_tab currently uses AppleScript and is implemented for macOS only.',
+    };
+  }
+  if (!commandExists('osascript')) {
+    return { ok: false, error: 'osascript not found.' };
+  }
+
+  const script = [
+    'tell application "Google Chrome"',
+    'activate',
+    'if (count of windows) = 0 then',
+    'make new window',
+    'end if',
+    'tell front window',
+    `make new tab at end of tabs with properties {URL:${appleScriptString(targetUrl)}}`,
+    'set active tab index to (count of tabs)',
+    'end tell',
+    'end tell',
+  ];
+  const result = runCommand('osascript', script.flatMap((line) => ['-e', line]), { timeoutMs: 10_000 });
+  return {
+    ok: result.status === 0,
+    url: targetUrl,
+    stdout: result.stdout || undefined,
+    error: result.status === 0 ? undefined : result.stderr || result.error || 'osascript failed',
+  };
+}
+
+function getCurrentTime(rawArgs = {}) {
+  const timeZone = String(rawArgs.timezone || 'Asia/Shanghai');
+  const now = new Date();
+  return {
+    city: rawArgs.city || null,
+    iso_time: now.toISOString(),
+    timezone: timeZone,
+    local_time: new Intl.DateTimeFormat('zh-CN', {
+      timeZone,
+      dateStyle: 'medium',
+      timeStyle: 'medium',
+    }).format(now),
+  };
+}
+
+function getWeather(rawArgs = {}) {
+  return {
+    city: rawArgs.city || 'unknown',
+    source: 'local mock tool',
+    condition: 'clear',
+    temperature_c: 23,
+    note: 'This is a deterministic mock response for testing Gemini Live function calling.',
+  };
+}
+
+function lookupOrderStatus(rawArgs = {}) {
+  return {
+    order_id: rawArgs.order_id || 'unknown',
+    status: 'in_transit',
+    eta: 'tomorrow afternoon',
+    source: 'local mock tool',
+  };
+}
+
+function getToolDeclarations(args) {
+  const declarations = [
+    {
+      name: 'get_computer_name',
+      description: 'Query the local computer name and host name. Use when the user asks for this computer name.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {},
+      },
+    },
+    {
+      name: 'list_running_processes',
+      description:
+        'List local running processes, sorted by CPU usage. Use when the user asks what is running on this machine.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          limit: {
+            type: Type.NUMBER,
+            description: 'Maximum number of processes to return, from 1 to 20. Default 6. Prefer 3 to 6 for voice replies.',
+          },
+          filter: {
+            type: Type.STRING,
+            description: 'Optional command-name filter, for example Chrome or node.',
+          },
+        },
+      },
+    },
+    {
+      name: 'chrome_new_tab',
+      description:
+        'Open a new Google Chrome tab on this Mac. Use when the user asks to open Chrome, create a new browser tab, or open a URL in Chrome.',
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          url: {
+            type: Type.STRING,
+            description: 'Optional URL. If omitted, open a blank Chrome new tab page.',
+          },
+        },
+      },
+    },
     {
       name: 'get_current_time',
-      description: 'Get the current local time for a city or timezone.',
+      description: 'Get the current local time. Useful as a simple latency and tool-call smoke test.',
       parameters: {
         type: Type.OBJECT,
         properties: {
+          timezone: {
+            type: Type.STRING,
+            description: 'IANA timezone. Default Asia/Shanghai.',
+          },
           city: {
             type: Type.STRING,
-            description: 'City name, for example Beijing or San Francisco.',
+            description: 'Optional city label to echo in the result.',
           },
         },
-        required: ['city'],
-      },
-    },
-    {
-      name: 'get_weather',
-      description: 'Get a mock current weather report for latency and function-calling tests.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          city: {
-            type: Type.STRING,
-            description: 'City name.',
-          },
-        },
-        required: ['city'],
-      },
-    },
-    {
-      name: 'lookup_order_status',
-      description: 'Look up a mock order status by order id.',
-      parameters: {
-        type: Type.OBJECT,
-        properties: {
-          order_id: {
-            type: Type.STRING,
-            description: 'Order id, for example A10086.',
-          },
-        },
-        required: ['order_id'],
       },
     },
   ];
+
+  if (args.toolDemo) {
+    declarations.push(
+      {
+        name: 'get_weather',
+        description: 'Get a mock current weather report for latency and function-calling tests.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            city: {
+              type: Type.STRING,
+              description: 'City name.',
+            },
+          },
+          required: ['city'],
+        },
+      },
+      {
+        name: 'lookup_order_status',
+        description: 'Look up a mock order status by order id.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            order_id: {
+              type: Type.STRING,
+              description: 'Order id, for example A10086.',
+            },
+          },
+          required: ['order_id'],
+        },
+      },
+    );
+  }
+
+  return declarations;
 }
 
-function runDemoTool(name, args) {
-  const now = new Date();
-  if (name === 'get_current_time') {
-    return {
-      city: args.city || 'unknown',
-      iso_time: now.toISOString(),
-      local_time: new Intl.DateTimeFormat('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        dateStyle: 'medium',
-        timeStyle: 'medium',
-      }).format(now),
-      timezone: 'Asia/Shanghai',
-    };
-  }
-  if (name === 'get_weather') {
-    return {
-      city: args.city || 'unknown',
-      source: 'local mock tool',
-      condition: 'clear',
-      temperature_c: 23,
-      note: 'This is a deterministic mock response for testing Gemini Live function calling.',
-    };
-  }
-  if (name === 'lookup_order_status') {
-    return {
-      order_id: args.order_id || 'unknown',
-      status: 'in_transit',
-      eta: 'tomorrow afternoon',
-      source: 'local mock tool',
-    };
-  }
+function runLocalTool(name, args) {
+  if (name === 'get_computer_name') return getComputerName();
+  if (name === 'list_running_processes') return listRunningProcesses(args);
+  if (name === 'chrome_new_tab') return openChromeNewTab(args);
+  if (name === 'get_current_time') return getCurrentTime(args);
+  if (name === 'get_weather') return getWeather(args);
+  if (name === 'lookup_order_status') return lookupOrderStatus(args);
   return {
-    error: `Unknown demo tool: ${name}`,
+    error: `Unknown tool: ${name}`,
   };
+}
+
+function describeToolNames(args) {
+  return getToolDeclarations(args)
+    .map((declaration) => declaration.name)
+    .join(', ');
 }
 
 function extractAudioParts(message) {
@@ -468,6 +884,10 @@ function createLiveHarness(args, responseMode) {
   let handledToolCalls = 0;
   let lastActivityAt = Date.now();
   let pendingFinishReason = null;
+  let dropCurrentResponseOutput = false;
+  let currentTurnAudioBytes = 0;
+  let currentTurnTextChars = 0;
+  let currentTurnToolCalls = 0;
 
   const markActivity = () => {
     lastActivityAt = Date.now();
@@ -477,13 +897,55 @@ function createLiveHarness(args, responseMode) {
     if (done) return;
     done = true;
     pendingFinishReason = reason;
-    closePlayback(player);
+    if (args.runtimeState) {
+      args.runtimeState.uploadPaused = false;
+      args.runtimeState.pauseReason = null;
+    }
+    player?.close?.();
+  };
+
+  const pauseMicForToolReply = () => {
+    if (!args.pauseMicDuringTools) return;
+    if (!args.runtimeState || !args.continuous) return;
+    if (!args.runtimeState.uploadPaused) {
+      console.log('[Mic] paused while Gemini handles the tool-backed reply.');
+    }
+    args.runtimeState.uploadPaused = true;
+    args.runtimeState.pauseReason = 'tool_reply';
+  };
+
+  const resumeMicAfterToolReply = () => {
+    if (!args.runtimeState || args.runtimeState.pauseReason !== 'tool_reply') return;
+    args.runtimeState.uploadPaused = false;
+    args.runtimeState.pauseReason = null;
+    console.log('[Mic] resumed.');
+  };
+
+  const waitForPlaybackDrain = async () => {
+    if (!args.waitPlayback || !player?.isDraining?.()) return;
+    const initialDelay = player.drainDelayMs();
+    if (initialDelay > 150) {
+      console.log(`[Playback] waiting for audio to finish (${(initialDelay / 1000).toFixed(1)}s).`);
+    }
+    while (!done && player.isDraining()) {
+      await sleep(Math.min(100, Math.max(20, player.drainDelayMs())));
+    }
+  };
+
+  const announceListening = () => {
+    void (async () => {
+      await waitForPlaybackDrain();
+      player?.finishTurn?.();
+      resumeMicAfterToolReply();
+      if (!done) console.log('[Turn] complete. Listening.');
+    })();
   };
 
   const waitForDone = async () => {
     const startedAt = Date.now();
     while (!done) {
       await sleep(100);
+      if (args.continuous) continue;
       const elapsed = Date.now() - startedAt;
       const idleMs = Date.now() - lastActivityAt;
       if (elapsed > args.timeoutMs) finish(`timeout after ${args.timeoutMs}ms`);
@@ -500,7 +962,7 @@ function createLiveHarness(args, responseMode) {
   const callbacks = {
     onopen: () => {
       console.log('Connected to Gemini Live.');
-      if (args.play) player = startPlayback();
+      player = createPlayback(args.play && responseMode === 'audio');
     },
     onmessage: (message) => {
       markActivity();
@@ -516,36 +978,62 @@ function createLiveHarness(args, responseMode) {
       if (message.serverContent?.outputTranscription?.text) {
         console.log(`[OutputTranscript] ${message.serverContent.outputTranscription.text}`);
       }
+      if (message.voiceActivityDetectionSignal) {
+        console.log(`[VAD] ${JSON.stringify(message.voiceActivityDetectionSignal)}`);
+      }
+      if (message.voiceActivity) {
+        console.log(`[VoiceActivity] ${JSON.stringify(message.voiceActivity)}`);
+      }
+
+      if (message.serverContent?.interrupted) {
+        dropCurrentResponseOutput = true;
+        const droppedMs = player?.interrupt?.() || 0;
+        console.log(
+          `[Interrupted] stopped assistant audio${droppedMs ? `, cleared ${(droppedMs / 1000).toFixed(1)}s queued playback` : ''}.`,
+        );
+      }
 
       const texts = extractTextParts(message);
       for (const text of texts) {
+        if (dropCurrentResponseOutput) continue;
         gotText = true;
+        currentTurnTextChars += text.length;
         textChunks.push(text);
         console.log(`[Text] ${text}`);
       }
 
       const chunks = extractAudioParts(message);
       for (const chunk of chunks) {
+        if (dropCurrentResponseOutput) continue;
         gotAudio = true;
-        audioChunks.push(chunk);
-        if (player?.stdin?.writable) player.stdin.write(chunk);
+        currentTurnAudioBytes += chunk.length;
+        if (!args.continuous) audioChunks.push(chunk);
+        player?.write?.(chunk);
         console.log(`[Audio] ${chunk.length} bytes`);
       }
 
       const calls = message.toolCall?.functionCalls || [];
       if (calls.length > 0) {
         handledToolCalls += calls.length;
+        currentTurnToolCalls += calls.length;
+        pauseMicForToolReply();
         console.log(`[ToolCall] ${calls.length} call(s)`);
         const functionResponses = calls.map((call) => {
           const name = call.name || 'unknown';
           const callArgs = call.args || {};
           console.log(`  -> ${name}(${JSON.stringify(callArgs)}) id=${call.id || '(none)'}`);
+          let output;
+          try {
+            output = runLocalTool(name, callArgs);
+          } catch (error) {
+            output = { error: error.message || String(error) };
+          }
+          console.log(`[ToolResult] ${JSON.stringify(output).slice(0, 2000)}`);
           return {
             id: call.id,
             name,
-            scheduling: 'INTERRUPT',
             response: {
-              output: runDemoTool(name, callArgs),
+              output,
             },
           };
         });
@@ -559,21 +1047,33 @@ function createLiveHarness(args, responseMode) {
 
       if (message.toolCallCancellation?.ids?.length) {
         console.log(`[ToolCallCancellation] ${message.toolCallCancellation.ids.join(', ')}`);
+        resumeMicAfterToolReply();
       }
       if (message.serverContent?.generationComplete) {
         console.log('[GenerationComplete]');
       }
       if (message.serverContent?.turnComplete) {
         console.log('[TurnComplete]');
-        if (responseMode === 'text' && (gotText || handledToolCalls === 0)) {
-          finish('turn complete');
+        const hadOnlyToolCallsThisTurn =
+          currentTurnToolCalls > 0 && currentTurnAudioBytes === 0 && currentTurnTextChars === 0;
+        dropCurrentResponseOutput = false;
+        if (args.continuous) {
+          if (hadOnlyToolCallsThisTurn) {
+            console.log('[Turn] tool call complete; waiting for Gemini reply.');
+          } else {
+            announceListening();
+          }
+        } else {
+          if (responseMode === 'text' && (gotText || handledToolCalls === 0)) {
+            finish('turn complete');
+          }
+          if (responseMode === 'audio' && !gotAudio && handledToolCalls === 0) {
+            finish('turn complete');
+          }
         }
-        if (responseMode === 'audio' && !gotAudio && handledToolCalls === 0) {
-          finish('turn complete');
-        }
-      }
-      if (message.serverContent?.interrupted) {
-        console.log('[Interrupted]');
+        currentTurnAudioBytes = 0;
+        currentTurnTextChars = 0;
+        currentTurnToolCalls = 0;
       }
       if (message.goAway?.timeLeft) {
         console.log(`[GoAway] timeLeft=${message.goAway.timeLeft}`);
@@ -587,8 +1087,15 @@ function createLiveHarness(args, responseMode) {
       finish('error');
     },
     onclose: (event) => {
-      console.log(`[Closed] code=${event?.code ?? 'unknown'} reason=${event?.reason || ''}`);
-      finish('closed');
+      const code = event?.code ?? 'unknown';
+      const reason = event?.reason || '';
+      console.log(`[Closed] code=${code} reason=${reason}`);
+      if (code !== 'unknown' && code !== 1000) {
+        process.exitCode = 1;
+        finish(`closed with code ${code}${reason ? `: ${reason}` : ''}`);
+      } else {
+        finish('closed');
+      }
     },
   };
 
@@ -598,15 +1105,16 @@ function createLiveHarness(args, responseMode) {
       session = value;
     },
     waitForDone,
+    stop(reason = 'stopped') {
+      finish(reason);
+    },
     audioChunks,
     textChunks,
   };
 }
 
 function makeConfig(args, responseMode) {
-  const systemInstruction =
-    process.env.GEMINI_LIVE_SYSTEM_INSTRUCTION ||
-    'You are a concise, natural realtime voice assistant. Reply in the user language.';
+  const systemInstruction = process.env.GEMINI_LIVE_SYSTEM_INSTRUCTION || DEFAULT_SYSTEM_INSTRUCTION;
 
   const config = {
     responseModalities: [responseMode === 'audio' ? Modality.AUDIO : Modality.TEXT],
@@ -616,10 +1124,20 @@ function makeConfig(args, responseMode) {
     },
     inputAudioTranscription: {},
     outputAudioTranscription: {},
+    realtimeInputConfig: {
+      automaticActivityDetection: {
+        disabled: false,
+        startOfSpeechSensitivity: 'START_SENSITIVITY_HIGH',
+        endOfSpeechSensitivity: 'END_SENSITIVITY_LOW',
+        prefixPaddingMs: 120,
+        silenceDurationMs: 450,
+      },
+      activityHandling: 'START_OF_ACTIVITY_INTERRUPTS',
+    },
   };
 
-  if (args.toolDemo) {
-    config.tools = [{ functionDeclarations: getToolDeclarations() }];
+  if (args.tools) {
+    config.tools = [{ functionDeclarations: getToolDeclarations(args) }];
   }
 
   return config;
@@ -629,7 +1147,7 @@ function validateArgs(args) {
   ensureFinitePositiveNumber('--timeout-ms', args.timeoutMs);
   ensureFinitePositiveNumber('--tail-timeout-ms', args.tailTimeoutMs);
   ensureFinitePositiveNumber('--chunk-ms', args.chunkMs);
-  ensureFinitePositiveNumber('--seconds', args.seconds);
+  if (args.seconds !== null) ensureFinitePositiveNumber('--seconds', args.seconds);
 
   if (!['audio', 'media'].includes(args.inputField)) {
     throw new Error('--input-field must be "audio" or "media"');
@@ -656,6 +1174,7 @@ function validateArgs(args) {
   if (args.play === undefined) {
     args.play = args.response === 'audio' && (args.mic || args.audio || args.pcm);
   }
+  args.continuous = Boolean(args.mic && args.seconds === null);
 }
 
 function getConfig(args) {
@@ -702,7 +1221,9 @@ async function main() {
   console.log(`Location: ${config.location}`);
   console.log(`Model: ${config.model}`);
   console.log(`Response: ${responseMode}`);
-  console.log(`Tool demo: ${args.toolDemo ? 'enabled' : 'disabled'}`);
+  console.log(`Tools: ${args.tools ? describeToolNames(args) : 'disabled'}`);
+  console.log(`Mode: ${args.continuous ? 'continuous microphone conversation' : 'single turn'}`);
+  console.log(`Playback sync: ${args.waitPlayback ? 'wait for drain' : 'do not wait'}`);
   console.log(`Credentials: ${config.credentialsPath}`);
 
   if (args.dryRun) {
@@ -718,6 +1239,8 @@ async function main() {
 
   const tempDir = mkdtempSync(path.join(tmpdir(), 'gemini-live-'));
   try {
+    const runtimeState = { stopping: false, uploadPaused: false, pauseReason: null };
+    args.runtimeState = runtimeState;
     const harness = createLiveHarness(args, responseMode);
     const client = new GoogleGenAI({
       vertexai: true,
@@ -737,6 +1260,36 @@ async function main() {
         turns: [{ role: 'user', parts: [{ text: args.text }] }],
         turnComplete: true,
       });
+    } else if (args.mic && args.continuous) {
+      let recorder = startMicrophone(session, args, runtimeState);
+      let shuttingDown = false;
+      const shutdown = (reason, options = {}) => {
+        if (shuttingDown && !options.force) return;
+        shuttingDown = true;
+        recorder?.close?.({ sendEnd: options.sendEnd !== false });
+        recorder = null;
+        try {
+          session.close();
+        } catch {
+          // best effort
+        }
+        harness.stop(reason);
+      };
+      const onSignal = (signal) => {
+        console.log(`\nStopping Gemini Live conversation (${signal})...`);
+        shutdown(`signal ${signal}`);
+      };
+      const onSigint = () => onSignal('SIGINT');
+      const onSigterm = () => onSignal('SIGTERM');
+
+      process.once('SIGINT', onSigint);
+      process.once('SIGTERM', onSigterm);
+      const reason = await harness.waitForDone();
+      process.off('SIGINT', onSigint);
+      process.off('SIGTERM', onSigterm);
+      shutdown(reason || 'finished', { sendEnd: false, force: true });
+      console.log(`Stopped: ${reason}`);
+      return;
     } else if (args.mic) {
       await streamMicrophone(session, args);
     } else {
