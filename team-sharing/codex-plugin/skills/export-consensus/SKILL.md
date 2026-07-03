@@ -1,11 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}export-consensus
-description: Use when a user wants to export, dump, or save one MagClaw Knowledge Space / 共识库 / 知识空间 / 知识库 / 知识管理 consensus article as Markdown through the TeamShare or Team Sharing CLI.
+description: Use when the user explicitly invokes Team Sharing to export, dump, or save one MagClaw Knowledge Space or TeamShare consensus article as Markdown.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Knowledge Export Consensus
+
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
 
 Use this skill for agent-only Knowledge Space Markdown export. Do not use Web import, Web ask, or Web draft editor UI.
 

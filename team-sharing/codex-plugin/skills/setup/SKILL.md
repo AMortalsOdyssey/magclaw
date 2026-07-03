@@ -1,13 +1,15 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}setup
-description: Use when a user wants to enable, install, connect, register, repair, or check MagClaw Team Sharing for a project or agent runtime.
+description: Use when the user explicitly invokes Team Sharing setup, status, install, repair, or project connection for an agent runtime.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Team Sharing Setup
 
-Use this skill when the user semantically asks to connect the current project to MagClaw Team Sharing, install hooks or skills, check whether setup is healthy, or repair local Team Sharing integration.
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
+
+Use this skill when the user explicitly asks to connect the current project to MagClaw Team Sharing, install hooks or skills, check whether setup is healthy, or repair local Team Sharing integration.
 
 Read [references/setup.md](references/setup.md) before running commands or answering setup questions.
 

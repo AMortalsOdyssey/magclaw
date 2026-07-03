@@ -1,5 +1,13 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.2.13 - 2026-07-03 - Explicit foreground activation
+### changed
+- Team Sharing foreground Skills now require explicit activation through `Team Sharing`, `TeamShare`, `/team-sharing ...`, `team-sharing <command>`, or a MagClaw Team Sharing link.
+- Added a `/team-sharing` command entrypoint for Codex plugin users to route search, Knowledge, share, link, setup, and reporting actions without relying on ambiguous natural-language triggers.
+- Codex plugin and Claude Code standalone Skill installs now include the same activation policy, with Claude skills receiving a local `references/activation-policy.md` copy.
+### unchanged
+- Session reporting remains on by default. Short direct current-session commands such as `这个 session 不上报` and `恢复这个 session 上报` still work without requiring the user to say Team Sharing.
+
 ## 0.2.12 - 2026-06-17 - Codex bootstrap filtering and title race fix
 ### bug fix
 - Codex Desktop `# AGENTS.md instructions` bootstrap blocks are now filtered from Team Sharing uploads, including paired environment context blocks.

@@ -1,11 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}ask-consensus
-description: Use when a user wants to ask, query, search, or consult MagClaw Knowledge Space / 共识库 / 知识空间 / 知识库 / 知识管理 / 团队共识 using the agent-only TeamShare or Team Sharing CLI.
+description: Use when the user explicitly invokes Team Sharing to ask or consult MagClaw Knowledge Space, TeamShare, or consensus answers.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Knowledge Ask Consensus
+
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
 
 Use this skill for agent-only Knowledge Space questions. Do not use Web ask UI.
 

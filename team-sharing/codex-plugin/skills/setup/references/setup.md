@@ -1,6 +1,13 @@
 # Setup Reference
 
-Treat flexible wording as onboarding intent, not as a need for one exact trigger phrase. Examples include "接入 Team Sharing", "加入团队共享", "给这个 repo 装 hooks/skills", "让这个 project 同步到 MagClaw", "开启团队上下文同步", "enable Team Sharing", and "connect this project".
+Setup is a foreground Team Sharing action. Require an explicit activation
+signal such as "接入 Team Sharing", "Team Sharing setup", "team-sharing setup",
+or `/team-sharing setup`.
+
+Do not treat flexible wording alone as onboarding intent. Phrases such as
+"给这个 repo 装 hooks/skills", "让这个 project 同步到 MagClaw", "开启团队上下文同步",
+"enable project sharing", or "connect this project" are too broad unless the
+same request explicitly names Team Sharing.
 
 ## Workflow
 

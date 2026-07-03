@@ -1,13 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}session-reporting
-description: Use when a user wants the current session to stop reporting to MagClaw, resume reporting, or check reporting status.
+description: Use when a user gives a short direct current-session reporting command to stop reporting, resume reporting, or check reporting status.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Team Sharing Session Reporting
 
-Use this skill for local per-session reporting controls such as "这个 session 不上报", "do not report this session", "恢复上报", or "is this session reporting?".
+Use this skill for local per-session reporting controls such as "这个 session 不上报", "do not report this session", "恢复上报", or "is this session reporting?". This reporting-control exception does not require the user to say Team Sharing.
 
 Read [references/session-reporting.md](references/session-reporting.md) before acting.
 

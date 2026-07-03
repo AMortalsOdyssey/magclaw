@@ -1,11 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}import-consensus
-description: Use when a user wants to import Markdown text or a Markdown file into MagClaw Knowledge Space / 共识库 / 知识空间 / 知识库 / 知识管理 from an agent-only TeamShare or Team Sharing workflow.
+description: Use when the user explicitly invokes Team Sharing to import Markdown into MagClaw Knowledge Space, TeamShare, or consensus documents.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Knowledge Import Consensus
+
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
 
 Use this skill for agent-only Knowledge Space imports. Do not use Web import UI.
 

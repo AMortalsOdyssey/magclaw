@@ -1,15 +1,17 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}search-consensus
-description: Use when a user wants to find, list, locate, or search MagClaw Knowledge Space / 共识库 / 知识空间 / 知识库 / 知识管理 documents by title, keyword, standard, spec, policy, or consensus topic without asking an LLM.
+description: Use when the user explicitly invokes Team Sharing Knowledge search for MagClaw Knowledge Space, TeamShare, or consensus documents.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Knowledge Search Consensus
 
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
+
 Use this skill for deterministic Knowledge search. It searches Knowledge Space documents only; it does not search Team Sharing session transcripts.
 
-Read [references/retrieval-routing.md](references/retrieval-routing.md) before deciding whether a request is Knowledge search or ordinary Team Sharing search. If the user mixes Knowledge search and session search intent and the target is unclear, ask the user to choose.
+Read [references/retrieval-routing.md](references/retrieval-routing.md) before deciding whether an explicitly activated request is Knowledge search or ordinary Team Sharing search. Do not use this skill only because the user says "共识", "知识库", "标准", "规范", "口径", or similar broad words.
 
 ## Quick Command
 

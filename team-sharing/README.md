@@ -30,6 +30,27 @@ The installer configures MagClaw Team Sharing sync for Codex and Claude Code:
 Tokens are cached under the user profile in `~/.magclaw/team-sharing/` and are
 not written into project repositories.
 
+## Explicit Foreground Activation
+
+Team Sharing foreground tools intentionally avoid broad natural-language
+triggers. Search, Knowledge alignment, share publishing, link management, setup,
+imports, exports, and edits should be invoked explicitly with wording such as
+`Team Sharing`, `TeamShare`, `/team-sharing ...`, `team-sharing <command>`, or a
+MagClaw Team Sharing link.
+
+Examples:
+
+```text
+/team-sharing search yesterday's deployment discussion
+/team-sharing align this PRD against Knowledge Space
+Team Sharing 查一下昨天关于 NPM 发布的讨论
+team-sharing consensus search --query "owner whitelist"
+```
+
+Plain phrases such as "同步一下进度", "对齐一下这个方案", "查一下之前讨论",
+or "看一下是否符合标准" should not trigger foreground Team Sharing tools by
+themselves.
+
 ## Session Reporting Overrides
 
 Per-session reporting controls such as `team-sharing session-reporting off` use

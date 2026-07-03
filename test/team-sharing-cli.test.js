@@ -4115,63 +4115,123 @@ test('team sharing codex plugin source exposes valid plugin and trigger-focused 
   }
 });
 
-test('align-consensus skill covers broad Chinese and English Knowledge Space intent variants', async () => {
+test('align-consensus skill only documents explicit Team Sharing activation variants', async () => {
   const skill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
   const intentMap = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'align-consensus', 'references', 'knowledge-intent.md'), 'utf8');
-  const positiveSection = intentMap.split('## Positive Coverage Cases')[1].split('## Non-trigger Cases')[0];
+  const positiveSection = intentMap.split('## Explicit Activation Cases')[1].split('## Non-trigger Cases')[0];
   const negativeSection = intentMap.split('## Non-trigger Cases')[1];
   const positives = [...positiveSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
   const negatives = [...negativeSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
-  const knowledgeTarget = /(共识库|共识文档|团队共识|共识体系|共识|历史决策|之前说的|基础文档|指引|必做项|推广前必做|落地计划|Agent-only 工作流|agent-only workflow|agreed workflow|工作流|知识空间|知识库|知识管理|知识图谱|知识沉淀|标准|规范|准则|原则|约定|口径|规则|红线|底线|SOP|事实源|TeamShare|Team Sharing|Knowledge Space|knowledge management|knowledge base|knowledge doc|canonical knowledge|source[- ]of[- ]truth|policy|spec|standard|principle|team rule|rule|agreed wording|wording|consensus)/i;
-  const alignmentConcern = /(对齐|对得上|对不对|有没有问题|哪里有问题|看一下|判断|确认|能不能|是否可以|是否需要|合理|对照|比一下|比较|相比|校验|检查|核对|复核|审查|审一下|符合|违背|违反|冲突|矛盾|打架|偏离|一致|差异|踩|越界|风险|diff|gap|risk|boundary|compliance|compliant|align|match|check|compare|validate|consistent|conflict|contradict|violate|violation|bypass|review|divergence)/i;
-  const writeOnlyIntent = /(导入|导出|修改|发布|设置|白名单|通知配置|复制|创建|删除|搜索|翻译|部署|npm|import|export|edit|publish|settings)/i;
+  const explicitActivation = /(TeamShare|Team Sharing|MagClaw Team Sharing|MagClaw Knowledge Space|\/team-sharing|team-sharing align-consensus|team-sharing align|use Team Sharing|用 Team Sharing|通过 TeamShare|TeamShare 帮我)/i;
+  const broadNaturalLanguageOnly = /^(?!.*(TeamShare|Team Sharing|\/team-sharing|team-sharing|MagClaw)).*(对齐|校验|检查|共识|共识库|知识空间|知识库|知识管理|标准|规范|约定|口径|红线|gap|align|compare|validate|check|compliant|policy|spec|divergence|principles|consensus|knowledge base)/i;
 
   assert.match(skill, /references\/knowledge-intent\.md/);
-  assert.match(skill, /共识库.*知识空间.*知识库.*知识管理.*标准.*规范.*准则.*原则.*口径.*红线/s);
-  assert.ok(positives.length >= 120, `expected at least 120 positive coverage cases, got ${positives.length}`);
+  assert.match(skill, /Explicit Activation Policy/);
+  assert.ok(positives.length >= 20, `expected at least 20 explicit cases, got ${positives.length}`);
   assert.ok(negatives.length >= 20, `expected at least 20 non-trigger cases, got ${negatives.length}`);
   for (const phrase of positives) {
-    assert.match(phrase, knowledgeTarget, `positive case should mention a Knowledge Space synonym: ${phrase}`);
-    assert.match(phrase, alignmentConcern, `positive case should mention alignment/compliance intent: ${phrase}`);
+    assert.match(phrase, explicitActivation, `positive case should include explicit activation: ${phrase}`);
   }
   for (const phrase of negatives) {
-    assert.ok(!knowledgeTarget.test(phrase) || !alignmentConcern.test(phrase) || writeOnlyIntent.test(phrase), `negative case should not look like pure alignment intent: ${phrase}`);
+    assert.match(phrase, broadNaturalLanguageOnly, `negative case should document broad natural language non-trigger: ${phrase}`);
   }
 });
 
-test('search-consensus skill documents Knowledge-vs-session retrieval routing with broad cases', async () => {
+test('search-consensus skill documents explicit Team Sharing Knowledge-vs-session routing', async () => {
   const skill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search-consensus', 'SKILL.md'), 'utf8');
   const sessionSearchSkill = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search', 'SKILL.md'), 'utf8');
   const routing = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'search-consensus', 'references', 'retrieval-routing.md'), 'utf8');
-  const knowledgeSection = routing.split('## Knowledge Search Cases')[1].split('## Session Search Cases')[0];
-  const sessionSection = routing.split('## Session Search Cases')[1].split('## Ask Clarification Cases')[0];
-  const clarifySection = routing.split('## Ask Clarification Cases')[1];
+  const knowledgeSection = routing.split('## Explicit Knowledge Search Cases')[1].split('## Explicit Session Search Cases')[0];
+  const sessionSection = routing.split('## Explicit Session Search Cases')[1].split('## Non-trigger Cases')[0];
+  const nonTriggerSection = routing.split('## Non-trigger Cases')[1];
   const knowledgeCases = [...knowledgeSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
   const sessionCases = [...sessionSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
-  const clarifyCases = [...clarifySection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
-  const knowledgeTarget = /(共识库|共识文档|团队共识|共识体系|共识|历史决策|之前说的|基础文档|指引|必做项|推广前必做|落地计划|Agent-only 工作流|agent-only workflow|agreed workflow|工作流|知识空间|知识库|知识管理|知识文档|知识图谱|知识沉淀|标准|规范|准则|原则|约定|口径|规则|红线|底线|SOP|事实源|TeamShare|Team Sharing|source[- ]of[- ]truth|Knowledge Space|knowledge management|knowledge base|knowledge doc|canonical knowledge|policy|spec|standard|principle|team rule|rule|agreed wording|wording|consensus)/i;
+  const nonTriggerCases = [...nonTriggerSection.matchAll(/^- `([^`]+)`/gm)].map((match) => match[1]);
+  const explicitActivation = /(TeamShare|Team Sharing|MagClaw Team Sharing|MagClaw Knowledge Space|\/team-sharing|team-sharing search|team-sharing consensus search|用 Team Sharing|通过 TeamShare)/i;
   const sessionTarget = /(讨论|会话|聊天|消息|会议记录|团队讨论|历史对话|历史会话|谁说|谁提过|什么时候|今天|昨天|上周|刚才|当前|session|conversation|chat|discussion|meeting|teammate|message|transcript|who said|who mentioned|who)/i;
 
   assert.match(skill, /retrieval-routing\.md/);
-  assert.match(skill, /Knowledge search.*team-sharing search/s);
-  assert.match(skill, /ask the user to choose/i);
+  assert.match(skill, /Explicit Activation Policy/);
+  assert.match(skill, /Do not use this skill only because the user says/i);
   assert.match(sessionSearchSkill, /Do not use this skill for Knowledge Space/);
   assert.match(sessionSearchSkill, /Use `search-consensus`, `ask-consensus`, or `align-consensus`/);
-  assert.ok(knowledgeCases.length >= 80, `expected at least 80 Knowledge cases, got ${knowledgeCases.length}`);
-  assert.ok(sessionCases.length >= 40, `expected at least 40 session cases, got ${sessionCases.length}`);
-  assert.ok(clarifyCases.length >= 15, `expected at least 15 clarification cases, got ${clarifyCases.length}`);
-  for (const phrase of knowledgeCases) assert.match(phrase, knowledgeTarget, `Knowledge case should mention a Knowledge target: ${phrase}`);
+  assert.ok(knowledgeCases.length >= 20, `expected at least 20 explicit Knowledge cases, got ${knowledgeCases.length}`);
+  assert.ok(sessionCases.length >= 20, `expected at least 20 explicit session cases, got ${sessionCases.length}`);
+  assert.ok(nonTriggerCases.length >= 20, `expected at least 20 non-trigger cases, got ${nonTriggerCases.length}`);
+  for (const phrase of knowledgeCases) assert.match(phrase, explicitActivation, `Knowledge case should include explicit activation: ${phrase}`);
+  for (const phrase of sessionCases) assert.match(phrase, explicitActivation, `Session case should include explicit activation: ${phrase}`);
   for (const phrase of sessionCases) assert.match(phrase, sessionTarget, `Session case should mention a session target: ${phrase}`);
+  for (const phrase of nonTriggerCases) assert.doesNotMatch(phrase, explicitActivation, `Non-trigger case should stay implicit: ${phrase}`);
+});
+
+test('team sharing foreground skills require explicit activation and keep session reporting as an exception', async () => {
+  const foregroundSkills = [
+    'setup',
+    'search',
+    'read-link',
+    'share-artifact',
+    'edit-link',
+    'manage-links',
+    'import-consensus',
+    'ask-consensus',
+    'search-consensus',
+    'edit-consensus',
+    'align-consensus',
+    'export-consensus',
+  ];
+  const broadTriggerExamples = [
+    '同步一下进度',
+    '对齐一下这个方案',
+    '查一下之前讨论',
+    '找一下 owner whitelist',
+    '搜索一下 0.2.5',
+  ];
+
+  const policy = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', '_shared', 'activation-policy.md'), 'utf8');
+  assert.match(policy, /Explicit Activation Policy/);
+  assert.match(policy, /Team Sharing/);
+  assert.match(policy, /\/team-sharing/);
+  assert.match(policy, /team-sharing <command>/);
+  assert.match(policy, /session-reporting.*exception/is);
+  for (const phrase of broadTriggerExamples) {
+    assert.match(policy, new RegExp(escapeRegExp(phrase)), `policy should document broad non-trigger: ${phrase}`);
+  }
+
+  for (const skillId of foregroundSkills) {
+    const body = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', skillId, 'SKILL.md'), 'utf8');
+    const description = body.match(/^description:\s*(.+)$/m)?.[1] || '';
+    assert.match(description, /(explicitly invokes|provides a MagClaw Team Sharing)/i, `${skillId} description must require explicit activation`);
+    assert.match(body, /Explicit Activation Policy/);
+    assert.match(body, /\{\{TEAM_SHARING_ACTIVATION_POLICY_REF\}\}/);
+    assert.doesNotMatch(description, /Use when a user wants to (find|ask|query|search|compare|validate|check compliance|draft|update|modify|revise|import|export|publish|list|distinguish|audit|enable|install|connect|register|repair)/i);
+  }
+
+  const reporting = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', 'session-reporting', 'SKILL.md'), 'utf8');
+  assert.match(reporting, /short direct current-session reporting command/i);
+  assert.match(reporting, /does not require the user to say Team Sharing/i);
+});
+
+test('team sharing codex plugin exposes slash command entrypoint for explicit invocation', async () => {
+  const command = await readFile(path.resolve('team-sharing', 'codex-plugin', 'commands', 'team-sharing.md'), 'utf8');
+  assert.match(command, /^---\ndescription: Explicitly invoke MagClaw Team Sharing/m);
+  assert.match(command, /argument-hint: \[search\|context\|read\|share\|edit\|links\|ask\|knowledge-search\|align\|import\|export\|setup\|reporting/);
+  assert.match(command, /The user invoked this command with: \$ARGUMENTS/);
+  assert.match(command, /\/team-sharing search/);
+  assert.match(command, /\/team-sharing align/);
+  assert.match(command, /session-reporting remains available through short direct natural-language commands/i);
+  assert.match(command, /Do not run ordinary Team Sharing foreground skills from vague words like/);
 });
 
 test('team sharing cli installs a Codex plugin bundle without writing token into skill files', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-project-'));
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-skill-home-'));
   await writeFile(path.join(cwd, 'package.json'), '{"name":"team-sharing-skill-fixture"}\n');
-  const env = { HOME: home, CODEX_HOME: path.join(home, '.codex'), MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND: '1' };
-  const result = await installTeamSharingSkill({ cwd, target: 'codex' }, env);
+  const env = { HOME: home, CODEX_HOME: path.join(home, '.codex'), CLAUDE_HOME: path.join(cwd, '.claude'), MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND: '1' };
+  const result = await installTeamSharingSkill({ cwd, target: 'all' }, env);
   const pluginRoot = path.join(home, '.magclaw', 'team-sharing', 'codex-marketplace', 'plugins', 'magclaw-team-sharing');
   const manifest = JSON.parse(await readFile(path.join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
+  const slashCommand = await readFile(path.join(pluginRoot, 'commands', 'team-sharing.md'), 'utf8');
+  const sharedActivationPolicy = await readFile(path.join(pluginRoot, 'skills', '_shared', 'activation-policy.md'), 'utf8');
   const setupSkill = await readFile(path.join(pluginRoot, 'skills', 'setup', 'SKILL.md'), 'utf8');
   const setupRef = await readFile(path.join(pluginRoot, 'skills', 'setup', 'references', 'setup.md'), 'utf8');
   const readLinkSkill = await readFile(path.join(pluginRoot, 'skills', 'read-link', 'SKILL.md'), 'utf8');
@@ -4191,7 +4251,12 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   const alignConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'SKILL.md'), 'utf8');
   const alignConsensusIntent = await readFile(path.join(pluginRoot, 'skills', 'align-consensus', 'references', 'knowledge-intent.md'), 'utf8');
   const exportConsensusSkill = await readFile(path.join(pluginRoot, 'skills', 'export-consensus', 'SKILL.md'), 'utf8');
+  const claudeSkillRoot = path.join(cwd, '.claude', 'skills', 'magclaw-team-sharing-search');
+  const claudeActivationPolicy = await readFile(path.join(claudeSkillRoot, 'references', 'activation-policy.md'), 'utf8');
+  const installedClaudeSkill = await readFile(path.join(claudeSkillRoot, 'SKILL.md'), 'utf8');
   const skill = [
+    slashCommand,
+    sharedActivationPolicy,
     setupSkill,
     setupRef,
     readLinkSkill,
@@ -4211,6 +4276,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
     alignConsensusSkill,
     alignConsensusIntent,
     exportConsensusSkill,
+    claudeActivationPolicy,
   ].join('\n');
 
   assert.equal(result.ok, true);
@@ -4220,6 +4286,12 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.equal(manifest.name, 'magclaw-team-sharing');
   assert.equal(manifest.skills, './skills/');
   assert.equal(Object.prototype.hasOwnProperty.call(manifest, 'hooks'), false);
+  assert.match(slashCommand, /\/team-sharing search/);
+  assert.match(sharedActivationPolicy, /Explicit Activation Policy/);
+  assert.match(claudeActivationPolicy, /Explicit Activation Policy/);
+  assert.match(searchSkill, /\.\.\/_shared\/activation-policy\.md/);
+  assert.match(installedClaudeSkill, /references\/activation-policy\.md/);
+  assert.doesNotMatch(skill, /\{\{TEAM_SHARING_ACTIVATION_POLICY_REF\}\}/);
   assert.equal(result.feedback.status, 'ready');
   assert.match(result.feedback.sections.map((section) => section.title).join(','), /Skill 说明/);
   assert.match(skill, /team-sharing read-link "<url>" --format json/);
@@ -4263,7 +4335,7 @@ test('team sharing cli installs a Codex plugin bundle without writing token into
   assert.match(skill, /标准/);
   assert.match(skill, /口径/);
   assert.match(skill, /TeamShare/);
-  assert.match(skill, /Positive Coverage Cases/);
+  assert.match(skill, /Explicit Activation Cases/);
   assert.match(skill, /Web import UI/);
   assert.match(skill, /Web ask UI/);
   assert.match(skill, /Web draft editor UI/);

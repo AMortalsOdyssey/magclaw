@@ -1,11 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}edit-link
-description: Use when a user wants to improve one section, chapter, screenshot-selected area, heading, button, or copy block inside an existing MagClaw share link.
+description: Use when the user explicitly invokes Team Sharing to improve one section, heading, screenshot-selected area, or copy block inside an existing MagClaw share link.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Team Sharing Edit Link
+
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
 
 Use this skill for targeted edits to existing MagClaw share links. Do not regenerate the whole document when the user asks to change only one part.
 

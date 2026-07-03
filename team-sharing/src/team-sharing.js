@@ -30,6 +30,7 @@ const TEAM_SHARING_PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import
 const TEAM_SHARING_PLUGIN_NAME = 'magclaw-team-sharing';
 const TEAM_SHARING_MARKETPLACE_NAME = 'magclaw';
 const TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT = path.join(TEAM_SHARING_PACKAGE_ROOT, 'codex-plugin');
+const TEAM_SHARING_ACTIVATION_POLICY_SOURCE = path.join(TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT, 'skills', '_shared', 'activation-policy.md');
 const TEAM_SHARING_SOURCE_COMMAND = path.join(TEAM_SHARING_PACKAGE_ROOT, 'bin', 'team-sharing.js');
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const DEFAULT_WAIT_LOCK_STALE_MS = 10 * 60_000;
@@ -4560,6 +4561,7 @@ async function installCodexTeamSharingPlugin(flags = {}, env = process.env, inst
   const vars = await teamSharingTemplateVars(env, {
     TEAM_SHARING_SKILL_NAME_PREFIX: '',
     TEAM_SHARING_SURFACE: 'codex-plugin',
+    TEAM_SHARING_ACTIVATION_POLICY_REF: '../_shared/activation-policy.md',
   });
   const files = await renderTeamSharingTemplateDirectory(TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT, paths.pluginPath, vars);
   const marketplacePath = await writeTeamSharingCodexMarketplace(paths);
@@ -4664,11 +4666,17 @@ async function installClaudeTeamSharingSkills(rootDir, env = process.env) {
   const vars = await teamSharingTemplateVars(env, {
     TEAM_SHARING_SKILL_NAME_PREFIX: `${TEAM_SHARING_PLUGIN_NAME}-`,
     TEAM_SHARING_SURFACE: 'claude-standalone',
+    TEAM_SHARING_ACTIVATION_POLICY_REF: 'references/activation-policy.md',
   });
   const installedSkills = [];
   for (const id of TEAM_SHARING_AGENT_SKILL_IDS) {
     const targetDir = path.join(rootDir, 'skills', `${TEAM_SHARING_PLUGIN_NAME}-${id}`);
     await renderTeamSharingTemplateDirectory(path.join(TEAM_SHARING_CODEX_PLUGIN_SOURCE_ROOT, 'skills', id), targetDir, vars);
+    await renderTeamSharingTemplateFile(
+      TEAM_SHARING_ACTIVATION_POLICY_SOURCE,
+      path.join(targetDir, 'references', 'activation-policy.md'),
+      vars,
+    );
     installedSkills.push({ id, name: `${TEAM_SHARING_PLUGIN_NAME}-${id}`, path: path.join(targetDir, 'SKILL.md') });
   }
   return installedSkills;

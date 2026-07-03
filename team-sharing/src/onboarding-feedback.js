@@ -146,9 +146,9 @@ function feedbackSections({ result = {} } = {}) {
       title: 'Skill 说明',
       items: [
         'Codex 已安装 `magclaw-team-sharing` 插件集合；Claude Code 已安装对应的多个 Team Sharing standalone skills。',
-        '集合能力覆盖项目接入、会话上报控制、团队检索、受保护链接读取、分享发布、局部编辑和链接管理。',
+        '前台能力覆盖项目接入、团队检索、受保护链接读取、分享发布、局部编辑和链接管理；请通过 `/team-sharing ...` 或明确写 Team Sharing 来调用。',
         'Codex 插件更新后需要新开一个 Codex thread 才能加载新的插件 skills。',
-        '使用示例：在 Codex 里说“搜索 Team Sharing 里关于 NPM 发布的问题”。',
+        '使用示例：在 Codex 里运行 `/team-sharing search NPM 发布问题`，或明确说“Team Sharing 查一下 NPM 发布问题”。',
       ],
     },
     {
@@ -199,7 +199,7 @@ export function buildTeamSharingOnboardingFeedback({
     nextSteps: [
       '回到 Codex / Claude Code 正常工作，Hooks 会在会话节点自动同步清洗后的上下文。',
       '需要查看上报数据时，打开上面的 MagClaw Channel 链接。',
-      '需要复用团队上下文时，在 Agent 对话里直接让 Team Sharing 检索相关讨论。',
+      '需要复用团队上下文时，使用 `/team-sharing search ...` 或明确让 Team Sharing 检索相关讨论。',
     ],
     expectations: [
       'Hooks 会在会话结束、压缩前或会话开始时自动尝试同步。',

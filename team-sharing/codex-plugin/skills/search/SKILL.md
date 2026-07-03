@@ -1,11 +1,13 @@
 ---
 name: {{TEAM_SHARING_SKILL_NAME_PREFIX}}search
-description: Use when a user asks what teammates discussed, wants prior Team Sharing context, or needs MagClaw original-session evidence.
+description: Use when the user explicitly invokes Team Sharing to search teammate discussions, prior session context, or MagClaw original-session evidence.
 ---
 
 <!-- package: @magclaw/team-sharing@{{TEAM_SHARING_VERSION}} sourceCommit={{TEAM_SHARING_SOURCE_COMMIT}} surface={{TEAM_SHARING_SURFACE}} -->
 
 # MagClaw Team Sharing Search
+
+Read [Explicit Activation Policy]({{TEAM_SHARING_ACTIVATION_POLICY_REF}}) before using this foreground Team Sharing skill.
 
 Use this skill for Team Sharing retrieval, teammate discussion lookup, original context links, and follow-up context around a matched session.
 
