@@ -141,6 +141,11 @@ function codexStderrRuntimeError(text = '') {
   return '';
 }
 
+function codexThreadNotFoundId(text = '') {
+  const match = String(text || '').match(/thread\s+not\s+found(?::|\s)+([A-Za-z0-9_-]+)/i);
+  return match?.[1] || '';
+}
+
 function packageInfoFromSpec(packageSpec = '') {
   const match = String(packageSpec || '').trim().match(/^(@magclaw\/(?:daemon|computer))(?:@(.+))?$/);
   return {
@@ -3139,7 +3144,8 @@ class CodexAgentSession {
     const matchingRuntimeSession = Array.isArray(agent.runtimeSessions)
       ? agent.runtimeSessions.find((session) => session?.sessionKey === this.sessionKey)
       : null;
-    this.threadId = matchingRuntimeSession?.codexThreadId || agent.runtimeSessionId || '';
+    this.threadId = matchingRuntimeSession?.codexThreadId || '';
+    this.threadReady = false;
     this.activeTurnId = '';
     this.status = 'offline';
     this.started = false;
@@ -3154,6 +3160,7 @@ class CodexAgentSession {
     this.streamActivityTimer = null;
     this.pendingStreamActivity = null;
     this.lastRuntimeError = '';
+    this.staleThreadRecoveries = new Set();
     this.trajectoryCoalesceMs = envInteger(this.env, 'MAGCLAW_DAEMON_TRAJECTORY_COALESCE_MS', DEFAULT_TRAJECTORY_COALESCE_MS, { min: 0, max: 5_000 });
   }
 
@@ -3796,21 +3803,33 @@ class CodexAgentSession {
 
     this.sendRequest('initialize', { clientInfo: { name: '@magclaw/daemon', version: DAEMON_VERSION } });
     this.sendNotification('initialized', {});
-    const method = this.threadId ? 'thread/resume' : 'thread/start';
+    this.requestThreadOpen({ resume: Boolean(this.threadId) });
+  }
+
+  requestThreadOpen({ resume = true } = {}) {
+    const resumeThreadId = resume ? this.threadId : '';
+    const method = resumeThreadId ? 'thread/resume' : 'thread/start';
     const params = {
-      ...(this.threadId ? { threadId: this.threadId } : {}),
+      ...(resumeThreadId ? { threadId: resumeThreadId } : {}),
       cwd: this.workspace(),
       approvalPolicy: codexApprovalPolicy(this.env),
       sandbox: codexSandbox(this.env),
       developerInstructions: remoteAgentStandingPrompt(this.agent),
     };
-    this.sendRequest(method, params);
+    this.threadReady = false;
+    return this.sendRequest(method, params);
+  }
+
+  async drainPendingPrompts() {
+    if (!this.threadReady || !this.threadId) return;
+    const queued = this.pendingPrompts.splice(0);
+    for (const item of queued) await this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
   }
 
   async deliver(message = {}, workItem = null, deliveryId = '') {
     const prompt = deliveryPrompt(this.agent, message, workItem);
     if (!this.started) await this.start();
-    if (!this.threadId) {
+    if (!this.threadReady || !this.threadId) {
       this.pendingPrompts.push({ prompt, message, workItem, deliveryId });
       return;
     }
@@ -3841,8 +3860,10 @@ class CodexAgentSession {
     if (!requestId) return false;
     this.pending.set(requestId, {
       ...(this.pending.get(requestId) || {}),
+      prompt,
       sourceMessage: message,
       workItem,
+      deliveryId: deliveryId || '',
     });
     this.lastSourceMessage = message;
     this.responseBuffer = '';
@@ -3884,22 +3905,77 @@ class CodexAgentSession {
     }
   }
 
+  async recoverMissingCodexThread(pending = {}, staleThreadId = '', errorMessage = '') {
+    const method = pending?.method || '';
+    if (!['thread/resume', 'turn/start', 'turn/steer'].includes(method)) return false;
+    const recoveryKey = pending?.deliveryId || this.activeDeliveryId || staleThreadId || method;
+    if (this.staleThreadRecoveries.has(recoveryKey)) return false;
+    this.staleThreadRecoveries.add(recoveryKey);
+    if ((method === 'turn/start' || method === 'turn/steer') && pending?.prompt) {
+      this.pendingPrompts.unshift({
+        prompt: pending.prompt,
+        message: pending.sourceMessage || {},
+        workItem: pending.workItem || null,
+        deliveryId: pending.deliveryId || this.activeDeliveryId || '',
+      });
+    }
+    this.threadId = '';
+    this.threadReady = false;
+    this.activeTurnId = '';
+    this.responseBuffer = '';
+    this.activeTurnUsedSendMessage = false;
+    this.activeTurnSawResponseDelta = false;
+    this.activeTurnDeltaItemIds.clear();
+    this.send({
+      type: 'agent:session',
+      agentId: this.agent.id,
+      status: 'idle',
+      sessionId: null,
+      sessionKey: this.sessionKey || null,
+    });
+    this.send({
+      type: 'agent:activity',
+      agentId: this.agent.id,
+      status: 'starting',
+      deliveryId: this.activeDeliveryId || pending?.deliveryId || null,
+      activity: {
+        source: 'codex-thread-recovery',
+        staleThreadId: staleThreadId || null,
+        error: String(errorMessage || '').slice(0, 500),
+        detail: 'Codex thread was not found; starting a fresh thread for this MagClaw lane.',
+        at: now(),
+      },
+    });
+    this.activeDeliveryId = '';
+    this.sendStatus('starting', {
+      source: 'codex-thread-recovery',
+      detail: 'Starting a fresh Codex thread after stale thread recovery',
+      staleThreadId: staleThreadId || null,
+      at: now(),
+    });
+    this.requestThreadOpen({ resume: false });
+    return true;
+  }
+
   async handleCodexMessage(message) {
     if (message.id !== undefined && (message.result || message.error)) {
       const pending = this.pending.get(message.id);
       this.pending.delete(message.id);
       if (message.error) {
-        this.send({ type: 'agent:error', agentId: this.agent.id, error: message.error.message || 'Codex request failed.' });
-        if (this.activeDeliveryId) await this.markDelivery(this.activeDeliveryId, 'failed', { error: message.error.message || 'Codex request failed.' });
-        this.sendStatus('error', { source: '@magclaw/daemon', error: message.error.message || 'Codex request failed.', at: now() });
+        const errorMessage = message.error.message || 'Codex request failed.';
+        const staleThreadId = codexThreadNotFoundId(errorMessage);
+        if (staleThreadId && await this.recoverMissingCodexThread(pending, staleThreadId, errorMessage)) return;
+        this.send({ type: 'agent:error', agentId: this.agent.id, error: errorMessage });
+        if (this.activeDeliveryId) await this.markDelivery(this.activeDeliveryId, 'failed', { error: errorMessage });
+        this.sendStatus('error', { source: '@magclaw/daemon', error: errorMessage, at: now() });
         return;
       }
       if (pending?.method === 'thread/start' || pending?.method === 'thread/resume') {
         this.threadId = message.result?.thread?.id || message.result?.threadId || this.threadId;
+        this.threadReady = Boolean(this.threadId);
         this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId, sessionKey: this.sessionKey || null });
         this.sendStatus('idle', { source: '@magclaw/daemon', detail: 'Codex session ready', at: now() });
-        const queued = this.pendingPrompts.splice(0);
-        for (const item of queued) await this.startTurn(item.prompt, item.message, item.workItem, item.deliveryId);
+        await this.drainPendingPrompts();
       } else if (pending?.method === 'turn/start' || pending?.method === 'turn/steer') {
         this.activeTurnId = message.result?.turn?.id || message.result?.turnId || this.activeTurnId;
       }
@@ -3925,7 +4001,9 @@ class CodexAgentSession {
     }
     if (method === 'thread/started') {
       this.threadId = params.thread?.id || params.threadId || this.threadId;
+      this.threadReady = Boolean(this.threadId);
       this.send({ type: 'agent:session', agentId: this.agent.id, status: 'idle', sessionId: this.threadId, sessionKey: this.sessionKey || null });
+      await this.drainPendingPrompts();
       return;
     }
     if (method === 'turn/started') {

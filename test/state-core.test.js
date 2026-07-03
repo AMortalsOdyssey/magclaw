@@ -238,6 +238,87 @@ test('state core reads a deduped seven day agent activity window from state and 
   }
 });
 
+test('state core clears server-local Codex sessions for daemon-bound agents on startup', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-remote-runtime-'));
+  const staleThreadId = '019f26b1-8c31-7f50-afe6-45ca77cfb591';
+  const stateFile = path.join(tmp, 'state.json');
+  try {
+    const first = makeStateCore(tmp, {
+      USE_SQLITE_STATE: false,
+      WRITE_STATE_JSON: true,
+    });
+    await first.ensureStorage();
+    const seeded = first.stateFullSnapshot();
+    seeded.connection.workspaceId = 'wsp_remote';
+    seeded.computers = [{
+      id: 'cmp_remote',
+      workspaceId: 'wsp_remote',
+      name: 'Remote computer',
+      status: 'connected',
+      connectedVia: 'daemon',
+      createdAt: '2026-05-11T00:00:00.000Z',
+      updatedAt: '2026-05-11T00:00:00.000Z',
+    }];
+    seeded.agents = [{
+      id: 'agt_remote',
+      workspaceId: 'wsp_remote',
+      computerId: 'cmp_remote',
+      name: 'Remote Agent',
+      runtime: 'codex',
+      model: 'gpt-5.5',
+      status: 'idle',
+      runtimeSessionId: staleThreadId,
+      runtimeSessionHome: '/var/lib/magclaw/agents/agt_remote/codex-home',
+      runtimeConfigVersion: 8,
+      runtimeLastTurnAt: '2026-05-11T00:00:00.000Z',
+      createdAt: '2026-05-11T00:00:00.000Z',
+      updatedAt: '2026-05-11T00:00:00.000Z',
+    }];
+    seeded.agentRuntimeSessions = [{
+      id: 'ars_remote',
+      workspaceId: 'wsp_remote',
+      agentId: 'agt_remote',
+      computerId: 'cmp_remote',
+      sessionKey: 'channel:wsp_remote:chan_all:top',
+      target: '',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      parentMessageId: null,
+      codexThreadId: staleThreadId,
+      status: 'error',
+      activeTurnIds: ['turn_stale'],
+      activeTargetKeys: ['msg_stale'],
+      lastTurnAt: null,
+      createdAt: '2026-05-11T00:00:00.000Z',
+      updatedAt: '2026-05-11T00:00:00.000Z',
+      metadata: {},
+    }];
+    await writeFile(stateFile, JSON.stringify(seeded, null, 2));
+
+    const second = makeStateCore(tmp, {
+      USE_SQLITE_STATE: false,
+      WRITE_STATE_JSON: true,
+    });
+    await second.ensureStorage();
+    const restored = second.stateFullSnapshot();
+    const agent = restored.agents.find((item) => item.id === 'agt_remote');
+    const session = restored.agentRuntimeSessions.find((item) => item.id === 'ars_remote');
+
+    assert.equal(agent.runtimeSessionId, null);
+    assert.equal(agent.runtimeSessionHome, null);
+    assert.equal(agent.runtimeConfigVersion, 0);
+    assert.equal(agent.runtimeLastTurnAt, null);
+    assert.equal(session.codexThreadId, null);
+    assert.equal(session.status, 'idle');
+    assert.deepEqual(session.activeTurnIds, []);
+    assert.deepEqual(session.activeTargetKeys, []);
+    assert.equal(session.metadata.lastThreadResetReason, 'remote_daemon_startup_cleanup');
+    assert.ok(restored.events.some((event) => event.type === 'agent_runtime_home_reset' && event.agentId === 'agt_remote'));
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('state core coalesces burst state broadcasts into lightweight resync signals', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-state-core-sse-'));
   const sseClients = new Set();

@@ -1549,6 +1549,160 @@ test('daemon relay forwards delivery idempotency fields with agent messages', as
   assert.equal(cloud.agentDeliveries.find((item) => item.id === 'adl_reply_1')?.status, undefined);
 });
 
+test('daemon relay strips server-local Codex thread ids before daemon delivery', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_remote';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const sessionKey = 'channel:wsp_test:chan_remote:top';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote computer',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  const agent = {
+    id: 'agt_remote',
+    computerId: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    runtimeSessionId: 'thread_server_local',
+    runtimeSessionHome: '/var/lib/magclaw/agents/agt_remote/codex-home',
+    runtimeConfigVersion: 9,
+  };
+  state.agents.push(agent);
+  state.agentRuntimeSessions = [{
+    id: 'ars_stale',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_remote',
+    computerId: 'cmp_remote',
+    sessionKey,
+    spaceType: 'channel',
+    spaceId: 'chan_remote',
+    parentMessageId: null,
+    codexThreadId: 'thread_server_local',
+    status: 'idle',
+    activeTurnIds: ['turn_old'],
+    activeTargetKeys: ['target_old'],
+    createdAt: '2026-05-13T00:00:00.000Z',
+    updatedAt: '2026-05-13T00:00:00.000Z',
+  }];
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+
+  assert.equal(await relay.deliverToAgent(agent, {
+    id: 'msg_remote',
+    workspaceId: 'wsp_test',
+    body: 'hello',
+    spaceType: 'channel',
+    spaceId: 'chan_remote',
+    parentMessageId: null,
+  }, { id: 'wi_remote', workspaceId: 'wsp_test' }), true);
+
+  const delivery = decodeServerMessages(socket).find((message) => message.type === 'agent:deliver');
+  assert.equal(delivery.payload.agent.runtimeSessionId, null);
+  assert.equal(delivery.payload.runtimeSession.codexThreadId, null);
+  assert.equal(delivery.payload.agent.runtimeSessions[0].codexThreadId, null);
+  assert.equal(agent.runtimeSessionId, null);
+  assert.equal(agent.runtimeSessionHome, null);
+  assert.equal(state.agentRuntimeSessions[0].codexThreadId, null);
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTurnIds, []);
+});
+
+test('daemon relay clears stale runtime sessions after old daemons report thread not found', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_remote';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const sessionKey = 'channel:wsp_test:chan_remote:top';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote computer',
+    status: 'connected',
+    connectedVia: 'daemon',
+  });
+  const agent = {
+    id: 'agt_remote',
+    computerId: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote Agent',
+    runtime: 'codex',
+    runtimeSessionId: 'thread_missing',
+  };
+  state.agents.push(agent);
+  state.agentRuntimeSessions = [{
+    id: 'ars_missing',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_remote',
+    computerId: 'cmp_remote',
+    sessionKey,
+    spaceType: 'channel',
+    spaceId: 'chan_remote',
+    parentMessageId: null,
+    codexThreadId: 'thread_missing',
+    status: 'idle',
+    activeTurnIds: ['turn_old'],
+    activeTargetKeys: ['target_old'],
+    createdAt: '2026-05-13T00:00:00.000Z',
+    updatedAt: '2026-05-13T00:00:00.000Z',
+  }];
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    createdAt: '2026-05-13T00:00:00.000Z',
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  assert.equal(await relay.deliverToAgent(agent, {
+    id: 'msg_remote',
+    workspaceId: 'wsp_test',
+    body: 'hello',
+    spaceType: 'channel',
+    spaceId: 'chan_remote',
+    parentMessageId: null,
+  }, { id: 'wi_remote', workspaceId: 'wsp_test' }), true);
+  const delivery = cloud.agentDeliveries.at(-1);
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:error',
+    agentId: 'agt_remote',
+    commandId: delivery.id,
+    error: 'thread not found: thread_missing',
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(agent.runtimeSessionId, null);
+  assert.equal(agent.status, 'error');
+  assert.equal(state.agentRuntimeSessions[0].codexThreadId, null);
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTurnIds, []);
+  assert.equal(delivery.status, 'failed');
+  assert.match(delivery.error, /thread not found/);
+});
+
 test('daemon relay forwards streaming agent message deltas', async () => {
   const { cloud, relay, state } = createRelay();
   const rawToken = 'mc_machine_remote';

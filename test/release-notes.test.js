@@ -33,8 +33,8 @@ test('release notes expose independent Web, Daemon, and Computer version catalog
   assert.equal(notes.web.releases[1].version, '0.4.0');
   assert.equal(notes.daemon.releases[0].version, '0.1.40');
   assert.match(notes.daemon.releases[0].title, /Shared CLI core alignment/);
-  assert.match(notes.teamSharing.releases[0].title, /Server-wide hybrid recall/i);
-  assert.match(notes.teamSharing.releases[0].new[0], /server-wide hybrid recall/i);
+  assert.match(notes.teamSharing.releases[0].title, /Explicit foreground activation/i);
+  assert.match(notes.teamSharing.releases[0].improved[0], /explicit activation/i);
   assert.match(notes.cliCore.releases[0].title, /Shared CLI core package/);
 });
 
@@ -67,7 +67,7 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.ok(notes.daemon.releases.some((release) => release.version === '0.1.17'));
   assert.equal(notes.computer.releases[0].version, '0.1.40');
   assert.ok(notes.computer.releases.some((release) => release.version === '0.1.23'));
-  assert.equal(notes.teamSharing.releases[0].version, '0.1.67');
+  assert.equal(notes.teamSharing.releases[0].version, '0.2.13');
 });
 
 test('release notes can normalize one component without loading the whole catalog', () => {
@@ -94,7 +94,7 @@ test('release notes can render compact package update markdown', () => {
   const latest = notes.teamSharing.releases[0];
   const lines = latest.new.concat(latest.bugFix, latest.approval).slice(0, 5);
 
-  assert.equal(latest.version, '0.1.67');
+  assert.equal(latest.version, '0.2.13');
   assert.ok(lines.length <= 5);
   assert.ok(lines.every((line) => line.length < 160));
 });

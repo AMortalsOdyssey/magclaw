@@ -68,6 +68,11 @@ function daemonRuntimeErrorDetail(activity = {}) {
   return runtimeError.code === 'unknown_runtime_error' ? '' : text.slice(0, 2000);
 }
 
+function codexThreadNotFoundId(text = '') {
+  const match = String(text || '').match(/thread\s+not\s+found(?::|\s)+([A-Za-z0-9_-]+)/i);
+  return match?.[1] || '';
+}
+
 function runtimeActivityWithError(activity = {}, errorDetail = '') {
   if (!errorDetail) return activity || null;
   return runtimeActivityWithStructuredError(objectValue(activity), errorDetail || activity, {
@@ -1574,6 +1579,91 @@ export function createDaemonRelay(deps) {
     return state.agentRuntimeSessions;
   }
 
+  function clearRuntimeSessionThread(session, reason = 'reset') {
+    if (!session || typeof session !== 'object') return false;
+    const hadThread = Boolean(session.codexThreadId);
+    session.codexThreadId = null;
+    session.activeTurnIds = [];
+    session.activeTargetKeys = [];
+    session.status = 'idle';
+    session.updatedAt = now();
+    session.metadata = {
+      ...objectValue(session.metadata),
+      lastThreadResetReason: reason,
+      lastThreadResetAt: session.updatedAt,
+    };
+    return hadThread;
+  }
+
+  function clearAgentRuntimeThread(agent, staleThreadId = '', options = {}) {
+    if (!agent) return 0;
+    const delivery = options.delivery || null;
+    const sessionKey = options.sessionKey || delivery?.payload?.sessionKey || '';
+    let changed = 0;
+    if (!staleThreadId || agent.runtimeSessionId === staleThreadId) {
+      if (agent.runtimeSessionId) changed += 1;
+      agent.runtimeSessionId = null;
+      agent.runtimeLastTurnAt = null;
+    }
+    for (const session of agentRuntimeSessions()) {
+      if (session.agentId !== agent.id) continue;
+      const matchesThread = staleThreadId && session.codexThreadId === staleThreadId;
+      const matchesSession = sessionKey && session.sessionKey === sessionKey;
+      if (!matchesThread && !matchesSession) continue;
+      if (clearRuntimeSessionThread(session, options.reason || 'thread_not_found')) changed += 1;
+    }
+    if (changed) {
+      recordDaemonEvent('agent_runtime_thread_reset', 'Cleared stale Codex runtime thread for daemon delivery.', {
+        agentId: agent.id,
+        computerId: agent.computerId || null,
+        deliveryId: delivery?.id || null,
+        staleThreadId: staleThreadId || null,
+        reason: options.reason || 'thread_not_found',
+      });
+    }
+    return changed;
+  }
+
+  function resetServerLocalRuntimeForDaemon(agent) {
+    if (!agent || !agent.computerId || agent.computerId === 'cmp_local') return false;
+    if (!agent.runtimeSessionHome) return false;
+    const previousSessionId = agent.runtimeSessionId || null;
+    const previousHome = agent.runtimeSessionHome || null;
+    agent.runtimeSessionId = null;
+    agent.runtimeSessionHome = null;
+    agent.runtimeConfigVersion = 0;
+    agent.runtimeLastTurnAt = null;
+    let clearedSessions = 0;
+    for (const session of agentRuntimeSessions()) {
+      if (session.agentId !== agent.id) continue;
+      if (clearRuntimeSessionThread(session, 'daemon_runtime_home_changed')) clearedSessions += 1;
+      session.computerId = agent.computerId || session.computerId || null;
+    }
+    recordDaemonEvent('agent_runtime_home_reset', 'Cleared server-local Codex runtime session before daemon delivery.', {
+      agentId: agent.id,
+      computerId: agent.computerId || null,
+      previousSessionId,
+      previousHome,
+      clearedSessions,
+    });
+    return true;
+  }
+
+  function runtimeSessionsForDaemonDelivery(agent) {
+    return agentRuntimeSessions()
+      .filter((session) => session.agentId === agent.id)
+      .map((session) => {
+        const sameComputer = !session.computerId || !agent.computerId || session.computerId === agent.computerId;
+        if (!sameComputer) {
+          clearRuntimeSessionThread(session, 'daemon_computer_changed');
+          session.computerId = agent.computerId || null;
+        } else if (String(session.status || '').toLowerCase() === 'error') {
+          clearRuntimeSessionThread(session, 'previous_session_error');
+        }
+        return { ...session };
+      });
+  }
+
   function ensureAgentRuntimeSession(agent, deliveryMessage = {}, sessionKey = '') {
     const key = sessionKey || conversationLaneKeyForMessage(state, {
       agent,
@@ -1607,6 +1697,10 @@ export function createDaemonRelay(deps) {
       };
       agentRuntimeSessions().push(session);
     }
+    if (agent.computerId && session.computerId && session.computerId !== agent.computerId) {
+      clearRuntimeSessionThread(session, 'daemon_computer_changed');
+    }
+    session.computerId = agent.computerId || session.computerId || null;
     session.updatedAt = timestamp;
     return session;
   }
@@ -2065,6 +2159,7 @@ export function createDaemonRelay(deps) {
   }
 
   async function startAgent(agent, options = {}) {
+    resetServerLocalRuntimeForDaemon(agent);
     const result = queueAgentCommand(agent, 'agent:start', {
       agent: {
         id: agent.id,
@@ -2072,7 +2167,7 @@ export function createDaemonRelay(deps) {
         description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
-        runtimeSessionId: agent.runtimeSessionId || null,
+        runtimeSessionId: null,
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -2103,6 +2198,7 @@ export function createDaemonRelay(deps) {
       agent.runtimeLastStartedAt = null;
       agent.workspacePath = null;
     }
+    resetServerLocalRuntimeForDaemon(agent);
     const result = queueAgentCommand(agent, 'agent:restart', {
       agent: {
         id: agent.id,
@@ -2110,7 +2206,7 @@ export function createDaemonRelay(deps) {
         description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
-        runtimeSessionId: agent.runtimeSessionId || null,
+        runtimeSessionId: null,
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -2128,7 +2224,11 @@ export function createDaemonRelay(deps) {
   }
 
   async function deliverToAgent(agent, deliveryMessage, workItem = null) {
+    resetServerLocalRuntimeForDaemon(agent);
     const runtimeSession = ensureAgentRuntimeSession(agent, deliveryMessage);
+    const runtimeSessions = runtimeSessionsForDaemonDelivery(agent);
+    const payloadRuntimeSession = runtimeSessions.find((session) => session.sessionKey === runtimeSession.sessionKey)
+      || { ...runtimeSession, codexThreadId: null };
     const result = queueAgentCommand(agent, 'agent:deliver', {
       agent: {
         id: agent.id,
@@ -2136,8 +2236,8 @@ export function createDaemonRelay(deps) {
         description: agent.description || '',
         runtime: agent.runtime,
         runtimeId: agent.runtimeId || null,
-        runtimeSessionId: agent.runtimeSessionId || null,
-        runtimeSessions: agentRuntimeSessions().filter((session) => session.agentId === agent.id),
+        runtimeSessionId: null,
+        runtimeSessions,
         model: agent.model,
         reasoningEffort: agent.reasoningEffort || null,
         workspace: agent.workspace || null,
@@ -2145,8 +2245,8 @@ export function createDaemonRelay(deps) {
       },
       message: deliveryMessage,
       workItem,
-      sessionKey: runtimeSession.sessionKey,
-      runtimeSession,
+      sessionKey: payloadRuntimeSession.sessionKey,
+      runtimeSession: payloadRuntimeSession,
     });
     if (!result.queued) return false;
     console.info('[daemon-relay] agent_delivery_queued', JSON.stringify({
@@ -2847,6 +2947,9 @@ export function createDaemonRelay(deps) {
         {
           const agent = findAgent(message.agentId);
           const commandId = String(message.commandId || message.deliveryId || '');
+          const delivery = commandId
+            ? safeArray(cloud().agentDeliveries).find((item) => item.id === commandId) || null
+            : null;
           const readOnlyError = agentCommandIsReadOnly(commandId);
           const pendingSkill = pendingSkillRequests.get(message.commandId);
           if (pendingSkill) {
@@ -2862,6 +2965,13 @@ export function createDaemonRelay(deps) {
           }
           clearAgentCommandIntent(commandId);
           if (agent && !readOnlyError) {
+            const staleThreadId = codexThreadNotFoundId(message.error || '');
+            if (staleThreadId) {
+              clearAgentRuntimeThread(agent, staleThreadId, {
+                delivery,
+                reason: 'daemon_thread_not_found',
+              });
+            }
             const runtimeActivity = runtimeActivityWithStructuredError({
               source: '@magclaw/daemon',
               at: now(),

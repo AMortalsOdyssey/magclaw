@@ -795,6 +795,20 @@ export function createStateCore(deps) {
       agent.activityAt = agent.activityAt || agent.runtimeActivity?.updatedAt || agent.heartbeatAt || null;
       agent.workspacePath = agent.workspacePath || path.join(AGENTS_DIR, agent.id);
       agent.computerId = agent.computerId || 'cmp_local';
+      const remoteDaemonAgent = agent.computerId && agent.computerId !== 'cmp_local';
+      if (remoteDaemonAgent && (agent.runtimeSessionId || agent.runtimeSessionHome || agent.runtimeConfigVersion)) {
+        addSystemEvent('agent_runtime_home_reset', `${agent.name} server-local Codex session was cleared before daemon handoff.`, {
+          agentId: agent.id,
+          computerId: agent.computerId,
+          previousSessionId: agent.runtimeSessionId || null,
+          previousHome: agent.runtimeSessionHome || null,
+          previousConfigVersion: agent.runtimeConfigVersion || 0,
+        });
+        agent.runtimeSessionId = null;
+        agent.runtimeSessionHome = null;
+        agent.runtimeConfigVersion = 0;
+        agent.runtimeLastTurnAt = null;
+      }
       agent.statusUpdatedAt = agent.statusUpdatedAt || agent.updatedAt || agent.createdAt || now();
       agent.heartbeatAt = agent.heartbeatAt || agent.statusUpdatedAt;
       agent.activeWorkItemIds = normalizeIds(agent.activeWorkItemIds || []);
@@ -815,6 +829,27 @@ export function createStateCore(deps) {
           previousHome: SOURCE_CODEX_HOME,
         });
       }
+    }
+    const agentsById = new Map(state.agents.map((agent) => [agent.id, agent]));
+    for (const session of state.agentRuntimeSessions) {
+      const agent = agentsById.get(session.agentId);
+      const remoteDaemonAgent = agent?.computerId && agent.computerId !== 'cmp_local';
+      if (!remoteDaemonAgent) continue;
+      const mismatchedComputer = session.computerId && session.computerId !== agent.computerId;
+      if (mismatchedComputer) session.computerId = agent.computerId;
+      const failedSession = String(session.status || '').toLowerCase() === 'error';
+      if (!session.codexThreadId && !mismatchedComputer && !failedSession) continue;
+      const resetAt = now();
+      session.codexThreadId = null;
+      session.status = 'idle';
+      session.activeTurnIds = [];
+      session.activeTargetKeys = [];
+      session.updatedAt = resetAt;
+      session.metadata = {
+        ...session.metadata,
+        lastThreadResetReason: mismatchedComputer ? 'daemon_computer_changed' : 'remote_daemon_startup_cleanup',
+        lastThreadResetAt: resetAt,
+      };
     }
     for (const computer of state.computers) {
       computer.workspaceId = computer.workspaceId || state.connection.workspaceId || 'local';

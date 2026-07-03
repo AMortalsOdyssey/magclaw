@@ -181,6 +181,8 @@ async function startRelay(options = {}) {
                 name: options.agent?.name || 'Remote Codex',
                 description: options.agent?.description || 'Remote agent that loves concise jokes',
                 runtime: options.agent?.runtime || 'codex',
+                runtimeSessionId: options.agentRuntimeSessionId || null,
+                runtimeSessions: options.agentRuntimeSessions || [],
                 model: options.agent?.model || 'gpt-test',
                 reasoningEffort: 'low',
               },
@@ -626,6 +628,111 @@ process.stdin.on('data', (chunk) => {
     const delivery = ledger.records.find((record) => record.deliveryId === 'adl_test');
     assert.equal(delivery.status, 'failed');
     assert.match(delivery.error, /responses_websocket/);
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('npm daemon recovers from stale Codex thread ids by starting a fresh thread', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-stale-thread-'));
+  const fakeCodex = path.join(tmp, 'codex-fake.js');
+  const logPath = path.join(tmp, 'codex-log.jsonl');
+  await writeFile(fakeCodex, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const logPath = process.env.FAKE_CODEX_LOG;
+function log(value) {
+  if (logPath) fs.appendFileSync(logPath, JSON.stringify(value) + '\\n');
+}
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+if (args[0] === '--version') {
+  console.log('codex-cli fake-stale-thread-test');
+  process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === '--help') {
+  console.log('Usage: codex app-server --listen stdio://');
+  process.exit(0);
+}
+if (args[0] !== 'app-server') process.exit(2);
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    log({ method: message.method, id: message.id, params: message.params });
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+    } else if (message.method === 'thread/resume') {
+      send({ id: message.id, error: { code: -32004, message: 'thread not found: thread_stale_remote' } });
+    } else if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_fresh_remote' } } });
+    } else if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_fresh_remote' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_fresh_remote' } } });
+      send({ method: 'item/agentMessage/delta', params: { itemId: 'item_fresh_remote', delta: 'fresh remote response' } });
+      send({ method: 'turn/completed', params: { turn: { id: 'turn_fresh_remote', status: 'completed' } } });
+    }
+  }
+});
+`);
+  await chmod(fakeCodex, 0o755);
+  const relay = await startRelay({
+    welcomeInUpgradeHead: true,
+    agentRuntimeSessionId: 'thread_stale_remote',
+    agentRuntimeSessions: [{
+      id: 'ars_stale',
+      agentId: 'agt_remote',
+      sessionKey: 'channel:wsp_test:chan_all:top',
+      codexThreadId: 'thread_stale_remote',
+      status: 'idle',
+    }],
+  });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-stale-thread-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: fakeCodex,
+      FAKE_CODEX_LOG: logPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'), 5000);
+    assert.equal(message.agentId, 'agt_remote');
+    assert.equal(message.payload.body, 'fresh remote response');
+    assert.ok(relay.messages.some((item) => item.type === 'agent:session' && item.agentId === 'agt_remote' && item.sessionId === null));
+    assert.ok(relay.messages.some((item) => item.type === 'agent:session' && item.agentId === 'agt_remote' && item.sessionId === 'thread_fresh_remote'));
+    assert.equal(relay.messages.some((item) => item.type === 'agent:error' && item.agentId === 'agt_remote'), false);
+    const entries = (await readFile(logPath, 'utf8')).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.deepEqual(
+      entries.filter((entry) => ['thread/resume', 'thread/start', 'turn/start'].includes(entry.method)).map((entry) => entry.method),
+      ['thread/resume', 'thread/start', 'turn/start'],
+    );
+    const turnStart = entries.find((entry) => entry.method === 'turn/start');
+    assert.equal(turnStart.params.threadId, 'thread_fresh_remote');
+    const ledger = JSON.parse(await readFile(path.join(tmp, 'daemon-home', 'profiles', 'cloud-stale-thread-test', 'delivery-ledger.json'), 'utf8'));
+    const delivery = ledger.records.find((record) => record.deliveryId === 'adl_test');
+    assert.equal(delivery.status, 'completed');
   } finally {
     daemon.kill('SIGINT');
     await Promise.race([
