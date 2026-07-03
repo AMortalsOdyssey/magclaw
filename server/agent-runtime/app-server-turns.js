@@ -71,6 +71,122 @@ function deliveryParentMessageId(sourceMessage, fallbackParentMessageId = null) 
   return fallbackParentMessageId || null;
 }
 
+function codexTextPart(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.content === 'string') return value.content;
+  if (typeof value.output_text === 'string') return value.output_text;
+  if (typeof value.delta === 'string') return value.delta;
+  if (Array.isArray(value.content)) return codexTextParts(value.content);
+  if (Array.isArray(value.output)) return codexTextParts(value.output);
+  return '';
+}
+
+function codexTextParts(parts) {
+  return (Array.isArray(parts) ? parts : [])
+    .map((part) => codexTextPart(part))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function codexAgentMessageText(item = {}, params = {}) {
+  const candidates = [
+    item?.text,
+    item?.message,
+    item?.output_text,
+    item?.content,
+    item?.output,
+    item?.message?.content,
+    params?.text,
+    params?.content,
+  ];
+  for (const candidate of candidates) {
+    const text = Array.isArray(candidate) ? codexTextParts(candidate) : codexTextPart(candidate);
+    if (text) return text;
+  }
+  return '';
+}
+
+function codexAgentDeltaText(params = {}) {
+  const candidates = [
+    params.delta,
+    params.text,
+    params.content,
+    params.output_text,
+    params.item,
+  ];
+  for (const candidate of candidates) {
+    const text = Array.isArray(candidate) ? codexTextParts(candidate) : codexTextPart(candidate);
+    if (text) return text;
+  }
+  return '';
+}
+
+function codexItemPhase(item = {}, params = {}) {
+  return String(
+    item?.phase
+    || item?.message?.phase
+    || params?.phase
+    || params?.message?.phase
+    || ''
+  ).toLowerCase();
+}
+
+function isCodexFinalPhase(phase = '') {
+  return phase === 'final' || phase === 'final_answer';
+}
+
+function isCodexProgressPhase(phase = '') {
+  return phase === 'commentary' || phase === 'progress' || phase === 'status';
+}
+
+function isCodexAgentMessageItem(item = {}, params = {}) {
+  const type = String(item?.type || params?.type || '').toLowerCase();
+  const role = String(item?.role || item?.message?.role || params?.role || '').toLowerCase();
+  return type === 'agentmessage'
+    || type === 'message'
+    || type === 'assistantmessage'
+    || role === 'assistant'
+    || Boolean(codexAgentMessageText(item, params));
+}
+
+function resetCodexTurnText(proc) {
+  proc.responseBuffer = '';
+  proc.completedAgentTexts = [];
+  proc.finalResponseText = '';
+}
+
+function recordCodexAgentDelta(proc, params = {}) {
+  const delta = codexAgentDeltaText(params);
+  const phase = codexItemPhase(params.item || params, params);
+  if (delta && !isCodexProgressPhase(phase)) proc.responseBuffer += delta;
+}
+
+function recordCodexCompletedAgentText(proc, item = {}, params = {}) {
+  if (!isCodexAgentMessageItem(item, params)) return;
+  const text = codexAgentMessageText(item, params);
+  if (!text) return;
+  const phase = codexItemPhase(item, params);
+  if (!isCodexProgressPhase(phase)) {
+    proc.completedAgentTexts = Array.isArray(proc.completedAgentTexts) ? proc.completedAgentTexts : [];
+    proc.completedAgentTexts.push(text);
+    proc.finalResponseText = text;
+  }
+  if (!proc.responseBuffer.includes(text)) proc.responseBuffer += text;
+  if (isCodexFinalPhase(phase)) proc.finalResponseText = text;
+}
+
+function codexTurnResponseBody(proc) {
+  const completed = Array.isArray(proc.completedAgentTexts) ? proc.completedAgentTexts : [];
+  return String(
+    proc.finalResponseText
+    || completed[completed.length - 1]
+    || proc.responseBuffer
+    || ''
+  ).trim();
+}
+
 function applyAgentProcessDeliveryScope(proc, spaceType, spaceId, parentMessageId = null) {
   if (!proc) return;
   proc.spaceType = spaceType;
@@ -248,7 +364,7 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
   if (turnId) proc.turnMeta?.delete(turnId);
   if (turnMeta?.warmup) {
     const elapsedMs = proc.warmupStartedAt ? Date.now() - proc.warmupStartedAt : null;
-    proc.responseBuffer = '';
+    resetCodexTurnText(proc);
     proc.warmupActive = false;
     proc.warmupRequestedAt = null;
     proc.warmupCompletedAt = now();
@@ -262,9 +378,9 @@ async function handleCodexTurnCompleted(agent, proc, turn) {
       model: turnMeta.runtime?.model || null,
       reasoningEffort: turnMeta.runtime?.reasoningEffort || null,
     });
-  } else if (proc.responseBuffer.trim()) {
-    const responseText = proc.responseBuffer.trim();
-    proc.responseBuffer = '';
+  } else if (codexTurnResponseBody(proc)) {
+    const responseText = codexTurnResponseBody(proc);
+    resetCodexTurnText(proc);
     const sourceMessage = turnMeta
       ? turnMeta.sourceMessage || proc.lastSourceMessage || proc.inbox[Math.max(0, proc.promptMessageCount - 1)] || null
       : null;
@@ -417,6 +533,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
       proc.activeTurnId = turnId;
       proc.activeTurnIds = proc.activeTurnIds || new Set();
       proc.activeTurnIds.add(turnId);
+      resetCodexTurnText(proc);
       updateRuntimeSession(agent, proc, {
         status: 'running',
         activeTurnIds: activeTurnIdList(proc),
@@ -513,6 +630,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
         proc.activeTurnId = turnId;
         proc.activeTurnIds = proc.activeTurnIds || new Set();
         proc.activeTurnIds.add(turnId);
+        resetCodexTurnText(proc);
         updateRuntimeSession(agent, proc, {
           status: 'running',
           activeTurnIds: activeTurnIdList(proc),
@@ -525,9 +643,9 @@ async function handleCodexAppServerLine(agent, proc, line) {
       broadcastState({ realtimeOnly: true });
       break;
     }
-    case 'item/agentMessage/delta': {
-      const delta = message.params?.delta;
-      if (typeof delta === 'string') proc.responseBuffer += delta;
+    case 'item/agentMessage/delta':
+    case 'response/output_text/delta': {
+      recordCodexAgentDelta(proc, message.params || {});
       if (!proc.agentMessageStreamingAt) {
         proc.agentMessageStreamingAt = Date.now();
         addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'thinking', 'Streaming response text.', {
@@ -541,9 +659,7 @@ async function handleCodexAppServerLine(agent, proc, line) {
     }
     case 'item/completed': {
       const item = message.params?.item;
-      if (item?.type === 'agentMessage' && typeof item.text === 'string' && item.text && !proc.responseBuffer.includes(item.text)) {
-        proc.responseBuffer += item.text;
-      }
+      recordCodexCompletedAgentText(proc, item || {}, message.params || {});
       if (item?.type === 'commandExecution' || item?.type === 'mcpToolCall' || item?.type === 'collabAgentToolCall') {
         recordCodexToolCallCompleted(agent, proc, item);
         addAgentRuntimeActivityEvent(agent, proc, 'agent_activity', 'working', summarizeCodexEvent(item), { raw: item }, { broadcast: true });

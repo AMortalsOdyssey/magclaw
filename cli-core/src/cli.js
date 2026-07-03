@@ -2407,6 +2407,86 @@ function codexToolArguments(item) {
   return {};
 }
 
+function codexTextPart(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.content === 'string') return value.content;
+  if (typeof value.output_text === 'string') return value.output_text;
+  if (typeof value.delta === 'string') return value.delta;
+  if (Array.isArray(value.content)) return codexTextParts(value.content);
+  if (Array.isArray(value.output)) return codexTextParts(value.output);
+  return '';
+}
+
+function codexTextParts(parts) {
+  return (Array.isArray(parts) ? parts : [])
+    .map((part) => codexTextPart(part))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function codexAgentMessageText(item = {}, params = {}) {
+  const candidates = [
+    item?.text,
+    item?.message,
+    item?.output_text,
+    item?.content,
+    item?.output,
+    item?.message?.content,
+    params?.text,
+    params?.content,
+  ];
+  for (const candidate of candidates) {
+    const text = Array.isArray(candidate) ? codexTextParts(candidate) : codexTextPart(candidate);
+    if (text) return text;
+  }
+  return '';
+}
+
+function codexAgentDeltaText(params = {}) {
+  const candidates = [
+    params.delta,
+    params.text,
+    params.content,
+    params.output_text,
+    params.item,
+  ];
+  for (const candidate of candidates) {
+    const text = Array.isArray(candidate) ? codexTextParts(candidate) : codexTextPart(candidate);
+    if (text) return text;
+  }
+  return '';
+}
+
+function codexItemPhase(item = {}, params = {}) {
+  return String(
+    item?.phase
+    || item?.message?.phase
+    || params?.phase
+    || params?.message?.phase
+    || ''
+  ).toLowerCase();
+}
+
+function isCodexFinalPhase(phase = '') {
+  return phase === 'final' || phase === 'final_answer';
+}
+
+function isCodexProgressPhase(phase = '') {
+  return phase === 'commentary' || phase === 'progress' || phase === 'status';
+}
+
+function isCodexAgentMessageItem(item = {}, params = {}) {
+  const type = String(item?.type || params?.type || '').toLowerCase();
+  const role = String(item?.role || item?.message?.role || params?.role || '').toLowerCase();
+  return type === 'agentmessage'
+    || type === 'message'
+    || type === 'assistantmessage'
+    || role === 'assistant'
+    || Boolean(codexAgentMessageText(item, params));
+}
+
 function canonicalMagClawToolName(name) {
   const tools = [
     'send_message',
@@ -3209,6 +3289,8 @@ class CodexAgentSession {
     this.activeTurnUsedSendMessage = false;
     this.activeTurnSawResponseDelta = false;
     this.activeTurnDeltaItemIds = new Set();
+    this.activeTurnCompletedAgentTexts = [];
+    this.activeTurnFinalResponseText = '';
     this.codexMessageQueue = Promise.resolve();
     this.streamActivityTimer = null;
     this.pendingStreamActivity = null;
@@ -3726,6 +3808,49 @@ class CodexAgentSession {
     if (!this.responseBuffer.includes(value)) this.responseBuffer += value;
   }
 
+  resetActiveTurnText() {
+    this.responseBuffer = '';
+    this.activeTurnCompletedAgentTexts = [];
+    this.activeTurnFinalResponseText = '';
+    this.activeTurnSawResponseDelta = false;
+    this.activeTurnDeltaItemIds.clear();
+  }
+
+  recordCodexAgentDelta(params = {}) {
+    const delta = codexAgentDeltaText(params);
+    const itemId = String(params.itemId || params.item_id || params.item?.id || '__default__');
+    const phase = codexItemPhase(params.item || params, params);
+    if (itemId) this.activeTurnDeltaItemIds.add(itemId);
+    if (delta && !isCodexProgressPhase(phase)) this.responseBuffer += delta;
+    if (delta) this.activeTurnSawResponseDelta = true;
+    this.queueCodexStreamActivity();
+  }
+
+  recordCodexCompletedAgentText(item = {}, params = {}) {
+    if (!isCodexAgentMessageItem(item, params)) return;
+    const text = codexAgentMessageText(item, params);
+    if (!text) return;
+    const phase = codexItemPhase(item, params);
+    const itemId = String(item?.id || item?.itemId || item?.item_id || params.itemId || params.item_id || '');
+    if (!isCodexProgressPhase(phase)) {
+      this.activeTurnCompletedAgentTexts.push(text);
+      this.activeTurnFinalResponseText = text;
+    }
+    this.appendCompletedAgentText(text, {
+      hadDelta: Boolean((itemId && this.activeTurnDeltaItemIds.has(itemId)) || this.activeTurnSawResponseDelta),
+    });
+    if (isCodexFinalPhase(phase)) this.activeTurnFinalResponseText = text;
+  }
+
+  activeTurnResponseBody() {
+    return String(
+      this.activeTurnFinalResponseText
+      || this.activeTurnCompletedAgentTexts[this.activeTurnCompletedAgentTexts.length - 1]
+      || this.responseBuffer
+      || ''
+    ).trim();
+  }
+
   async executeCodexToolItem(item = {}, requestId = null, params = {}) {
     const callId = codexToolCallId(item) || String(params.callId || params.call_id || '');
     const name = canonicalMagClawToolName(codexToolName(item));
@@ -3896,6 +4021,8 @@ class CodexAgentSession {
     this.activeTurnUsedSendMessage = false;
     this.activeTurnSawResponseDelta = false;
     this.activeTurnDeltaItemIds = new Set();
+    this.activeTurnCompletedAgentTexts = [];
+    this.activeTurnFinalResponseText = '';
     this.lastRuntimeError = '';
     const model = this.agent.model || undefined;
     const effort = this.agent.reasoningEffort || undefined;
@@ -3919,7 +4046,7 @@ class CodexAgentSession {
       deliveryId: deliveryId || '',
     });
     this.lastSourceMessage = message;
-    this.responseBuffer = '';
+    this.resetActiveTurnText();
     if (this.activeDeliveryId) {
       this.markDelivery(this.activeDeliveryId, 'started', {
             agentId: this.agent.id,
@@ -3975,10 +4102,8 @@ class CodexAgentSession {
     this.threadId = '';
     this.threadReady = false;
     this.activeTurnId = '';
-    this.responseBuffer = '';
     this.activeTurnUsedSendMessage = false;
-    this.activeTurnSawResponseDelta = false;
-    this.activeTurnDeltaItemIds.clear();
+    this.resetActiveTurnText();
     this.send({
       type: 'agent:session',
       agentId: this.agent.id,
@@ -4065,26 +4190,18 @@ class CodexAgentSession {
       return;
     }
     if (method === 'item/agentMessage/delta' || method === 'response/output_text/delta') {
-      this.responseBuffer += String(params.delta || params.text || '');
-      const itemId = String(params.itemId || params.item_id || params.item?.id || '');
-      if (itemId) this.activeTurnDeltaItemIds.add(itemId);
-      this.activeTurnSawResponseDelta = true;
-      this.queueCodexStreamActivity();
+      this.recordCodexAgentDelta(params);
       return;
     }
     if (method === 'item/completed') {
       const item = params.item || {};
       if (await this.executeCodexToolItem(item, null, params)) return;
-      const text = item?.text || item?.message || params.text || '';
-      const itemId = String(item?.id || item?.itemId || item?.item_id || '');
-      this.appendCompletedAgentText(text, {
-        hadDelta: Boolean((itemId && this.activeTurnDeltaItemIds.has(itemId)) || this.activeTurnSawResponseDelta),
-      });
+      this.recordCodexCompletedAgentText(item, params);
       return;
     }
     if (method === 'turn/completed' || method === 'turn/failed') {
       this.flushCodexStreamActivity();
-      const body = this.responseBuffer.trim();
+      const body = this.activeTurnResponseBody();
       if (body && method === 'turn/completed' && !this.activeTurnUsedSendMessage) {
         const frame = {
           type: 'agent:message',
@@ -4108,11 +4225,9 @@ class CodexAgentSession {
       } else if (this.activeDeliveryId && method === 'turn/failed') {
         await this.markDelivery(this.activeDeliveryId, 'failed', { error: 'Turn failed' });
       }
-      this.responseBuffer = '';
       this.activeTurnId = '';
       this.activeTurnUsedSendMessage = false;
-      this.activeTurnSawResponseDelta = false;
-      this.activeTurnDeltaItemIds.clear();
+      this.resetActiveTurnText();
       this.sendStatus(method === 'turn/completed' ? 'idle' : 'error', {
         source: '@magclaw/daemon',
         detail: method === 'turn/completed' ? 'Turn completed' : 'Turn failed',

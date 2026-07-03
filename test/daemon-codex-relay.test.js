@@ -561,6 +561,119 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+test('npm daemon preserves Codex final markdown instead of posting progress text', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-final-markdown-'));
+  const fakeCodex = path.join(tmp, 'codex-fake.js');
+  const finalText = [
+    '已完成处理。',
+    '',
+    '**验证结果**',
+    '- `npm test` 通过。',
+    '- `git diff --check` 通过。',
+    '',
+    '```js',
+    'console.log("ok");',
+    '```',
+  ].join('\n');
+  await writeFile(fakeCodex, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+if (args[0] === '--version') {
+  console.log('codex-cli fake-final-markdown');
+  process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === '--help') {
+  console.log('Usage: codex app-server --listen stdio://');
+  process.exit(0);
+}
+if (args[0] !== 'app-server') process.exit(2);
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+    } else if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_final_markdown' } } });
+    } else if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_final_markdown' } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_final_markdown' } } });
+      send({
+        method: 'item/agentMessage/delta',
+        params: { itemId: 'item_progress', phase: 'commentary', delta: '我先查日志，然后继续。' },
+      });
+      send({
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'item_progress',
+            type: 'message',
+            role: 'assistant',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text: '我先查日志，然后继续。' }],
+          },
+        },
+      });
+      send({
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'item_final',
+            type: 'message',
+            role: 'assistant',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: ${JSON.stringify(finalText)} }],
+          },
+        },
+      });
+      send({ method: 'turn/completed', params: { turn: { id: 'turn_final_markdown', status: 'completed' } } });
+    }
+  }
+});
+`);
+  await chmod(fakeCodex, 0o755);
+  const relay = await startRelay({ welcomeInUpgradeHead: true });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-final-markdown-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: fakeCodex,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    const message = await waitFor(() => relay.messages.find((item) => item.type === 'agent:message'), 5000);
+    assert.equal(message.agentId, 'agt_remote');
+    assert.equal(message.payload.body, finalText);
+    assert.match(message.payload.body, /\n\n\*\*验证结果\*\*\n- `npm test` 通过。/);
+    assert.match(message.payload.body, /```js\nconsole\.log\("ok"\);\n```/);
+    assert.doesNotMatch(message.payload.body, /我先查日志/);
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('npm daemon reports Codex responses websocket stderr as an agent error', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-codex-stderr-error-'));
   const fakeCodex = path.join(tmp, 'codex-fake.js');
