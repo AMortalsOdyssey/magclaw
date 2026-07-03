@@ -898,6 +898,7 @@ test('postgres store deletes one computer through queued deleteComputer', async 
 
 test('postgres store can reset transient online state when loading a fresh server process', async () => {
   const createdAt = '2026-05-13T10:01:53.000Z';
+  const staleThreadId = '019f26b1-8c31-7f50-afe6-45ca77cfb591';
   const rowsForTable = {
     cloud_workspaces: [{
       id: 'wsp_main',
@@ -942,6 +943,41 @@ test('postgres store can reset transient online state when loading a fresh serve
       created_at: createdAt,
       updated_at: createdAt,
       status_updated_at: createdAt,
+      metadata: {
+        state: {
+          runtimeSessionId: staleThreadId,
+          runtimeSessionHome: '/var/lib/magclaw/agents/agt_remote/codex-home',
+          runtimeConfigVersion: 9,
+          runtimeLastTurnAt: createdAt,
+        },
+      },
+    }],
+    cloud_state_records: [{
+      workspace_id: 'wsp_main',
+      kind: 'agentRuntimeSessions',
+      id: 'ars_remote',
+      position: 0,
+      payload: {
+        id: 'ars_remote',
+        workspaceId: 'wsp_main',
+        agentId: 'agt_remote',
+        computerId: 'cmp_remote',
+        sessionKey: 'channel:wsp_main:chan_all:top',
+        target: '',
+        spaceType: 'channel',
+        spaceId: 'chan_all',
+        parentMessageId: null,
+        codexThreadId: staleThreadId,
+        status: 'error',
+        activeTurnIds: ['turn_stale'],
+        activeTargetKeys: ['msg_stale'],
+        lastTurnAt: null,
+        createdAt,
+        updatedAt: createdAt,
+        metadata: {},
+      },
+      created_at: createdAt,
+      updated_at: createdAt,
     }],
     cloud_messages: [{
       id: 'msg_reacted',
@@ -1014,6 +1050,15 @@ test('postgres store can reset transient online state when loading a fresh serve
   assert.equal(state.agents[0].status, 'idle');
   assert.deepEqual(state.agents[0].activeWorkItemIds, []);
   assert.equal(state.agents[0].runtimeActivity, null);
+  assert.equal(state.agents[0].runtimeSessionId, null);
+  assert.equal(state.agents[0].runtimeSessionHome, null);
+  assert.equal(state.agents[0].runtimeConfigVersion, 0);
+  assert.equal(state.agents[0].runtimeLastTurnAt, null);
+  assert.equal(state.agentRuntimeSessions[0].codexThreadId, null);
+  assert.equal(state.agentRuntimeSessions[0].status, 'idle');
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTurnIds, []);
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTargetKeys, []);
+  assert.equal(state.agentRuntimeSessions[0].metadata.lastThreadResetReason, 'remote_daemon_startup_cleanup');
   assert.equal(state.packageVersions, undefined);
   assert.equal(state.attachments[0].url, '/api/attachments/att_image/note.png?workspaceId=wsp_main');
   assert.equal(state.attachments[0].path, '/var/lib/magclaw/uploads/2026/05/att_image-note.png');

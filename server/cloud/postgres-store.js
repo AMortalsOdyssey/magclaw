@@ -494,6 +494,34 @@ function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
       agent.runtimeActivity = null;
       agent.updatedAt = loadedAt;
     }
+    const remoteDaemonAgent = agent.computerId && agent.computerId !== 'cmp_local';
+    if (remoteDaemonAgent && (agent.runtimeSessionId || agent.runtimeSessionHome || agent.runtimeConfigVersion)) {
+      agent.runtimeSessionId = null;
+      agent.runtimeSessionHome = null;
+      agent.runtimeConfigVersion = 0;
+      agent.runtimeLastTurnAt = null;
+      agent.updatedAt = loadedAt;
+    }
+  }
+  const agentsById = new Map(safeArray(state.agents).map((agent) => [agent.id, agent]));
+  for (const session of safeArray(state.agentRuntimeSessions)) {
+    const agent = agentsById.get(session.agentId);
+    const remoteDaemonAgent = agent?.computerId && agent.computerId !== 'cmp_local';
+    if (!remoteDaemonAgent) continue;
+    const mismatchedComputer = session.computerId && session.computerId !== agent.computerId;
+    if (mismatchedComputer) session.computerId = agent.computerId;
+    const failedSession = String(session.status || '').toLowerCase() === 'error';
+    if (!session.codexThreadId && !mismatchedComputer && !failedSession) continue;
+    session.codexThreadId = null;
+    session.status = 'idle';
+    session.activeTurnIds = [];
+    session.activeTargetKeys = [];
+    session.updatedAt = loadedAt;
+    session.metadata = {
+      ...jsonObject(session.metadata),
+      lastThreadResetReason: mismatchedComputer ? 'daemon_computer_changed' : 'remote_daemon_startup_cleanup',
+      lastThreadResetAt: loadedAt,
+    };
   }
 }
 
