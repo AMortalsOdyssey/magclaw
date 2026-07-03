@@ -1,5 +1,10 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.2.14 - 2026-07-03 - Consensus non-trigger hardening
+### bug fix
+- Clarified that bare Knowledge or consensus wording such as `查看一下关于创角的共识` is not a Team Sharing activation signal.
+- Reworded Knowledge search workflow examples so they remain explicitly activated instead of implying that any bare `共识` request may run `team-sharing consensus search`.
+
 ## 0.2.13 - 2026-07-03 - Explicit foreground activation
 ### changed
 - Team Sharing foreground Skills now require explicit activation through `Team Sharing`, `TeamShare`, `/team-sharing ...`, `team-sharing <command>`, or a MagClaw Team Sharing link.

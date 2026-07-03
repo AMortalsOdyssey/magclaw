@@ -27,12 +27,21 @@ Do not run foreground Team Sharing skills for vague natural-language phrases:
 - `查一下之前讨论`
 - `找一下 owner whitelist`
 - `搜索一下 0.2.5`
+- `查看一下关于创角的共识`
+- `帮我搜一下共识相关内容`
+- `知识库里有没有创建伙伴的标准`
 - `看一下这个和标准是否一致`
 - `帮我把这个总结分享一下`
 - `把这个文档导入知识库`
 
 In those cases, answer from the current workspace or ask a short clarification
 only if Team Sharing is truly necessary.
+
+Bare Knowledge or consensus words are not activation signals. A request such as
+`查看一下关于创角的共识` is still implicit unless the same message says Team
+Sharing, uses `/team-sharing ...`, uses a `team-sharing <command>`, provides a
+MagClaw Team Sharing link, or is a direct continuation of an already explicit
+Team Sharing request.
 
 ## Session-reporting Exception
 

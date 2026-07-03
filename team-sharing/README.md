@@ -48,8 +48,8 @@ team-sharing consensus search --query "owner whitelist"
 ```
 
 Plain phrases such as "同步一下进度", "对齐一下这个方案", "查一下之前讨论",
-or "看一下是否符合标准" should not trigger foreground Team Sharing tools by
-themselves.
+"查看一下关于创角的共识", or "看一下是否符合标准" should not trigger
+foreground Team Sharing tools by themselves.
 
 ## Session Reporting Overrides
 

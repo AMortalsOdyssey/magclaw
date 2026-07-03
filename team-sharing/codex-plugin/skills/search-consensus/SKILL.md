@@ -21,7 +21,9 @@ team-sharing consensus search --server <server> --workspace <workspace> --query 
 
 ## Workflow
 
-Use Knowledge search for questions like "查某个共识", "找知识空间里的文档", "按标准/规范/口径查", or "source of truth for X". Return compact matches with `docId`, `title`, `href`, `summary`, `snippet`, and `score`, then use `team-sharing read-link` only for the selected document.
+After explicit activation, use Knowledge search for requests like "Team Sharing 查某个共识", "/team-sharing knowledge-search 知识空间里的文档", "team-sharing consensus search --query 标准", or "MagClaw Knowledge Space source of truth for X". Return compact matches with `docId`, `title`, `href`, `summary`, `snippet`, and `score`, then use `team-sharing read-link` only for the selected document.
+
+Do not run this skill or the CLI for bare requests such as "查看一下关于创角的共识", "查某个共识", "找知识空间里的文档", "按标准/规范/口径查", or "source of truth for X" unless the same message also contains an explicit Team Sharing activation signal.
 
 Use ordinary `team-sharing search` only for team discussions, historical sessions, meeting/chat records, who said something, or when the user explicitly asks to search Team Sharing conversations.
 

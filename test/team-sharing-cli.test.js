@@ -4153,11 +4153,14 @@ test('search-consensus skill documents explicit Team Sharing Knowledge-vs-sessio
   assert.match(skill, /retrieval-routing\.md/);
   assert.match(skill, /Explicit Activation Policy/);
   assert.match(skill, /Do not use this skill only because the user says/i);
+  assert.match(skill, /After explicit activation/);
+  assert.match(skill, /查看一下关于创角的共识/);
   assert.match(sessionSearchSkill, /Do not use this skill for Knowledge Space/);
   assert.match(sessionSearchSkill, /Use `search-consensus`, `ask-consensus`, or `align-consensus`/);
   assert.ok(knowledgeCases.length >= 20, `expected at least 20 explicit Knowledge cases, got ${knowledgeCases.length}`);
   assert.ok(sessionCases.length >= 20, `expected at least 20 explicit session cases, got ${sessionCases.length}`);
   assert.ok(nonTriggerCases.length >= 20, `expected at least 20 non-trigger cases, got ${nonTriggerCases.length}`);
+  assert.ok(nonTriggerCases.includes('查看一下关于创角的共识'), 'bad-case consensus request should be documented as a non-trigger');
   for (const phrase of knowledgeCases) assert.match(phrase, explicitActivation, `Knowledge case should include explicit activation: ${phrase}`);
   for (const phrase of sessionCases) assert.match(phrase, explicitActivation, `Session case should include explicit activation: ${phrase}`);
   for (const phrase of sessionCases) assert.match(phrase, sessionTarget, `Session case should mention a session target: ${phrase}`);
@@ -4185,6 +4188,9 @@ test('team sharing foreground skills require explicit activation and keep sessio
     '查一下之前讨论',
     '找一下 owner whitelist',
     '搜索一下 0.2.5',
+    '查看一下关于创角的共识',
+    '帮我搜一下共识相关内容',
+    '知识库里有没有创建伙伴的标准',
   ];
 
   const policy = await readFile(path.resolve('team-sharing', 'codex-plugin', 'skills', '_shared', 'activation-policy.md'), 'utf8');
