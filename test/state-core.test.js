@@ -292,6 +292,24 @@ test('state core clears server-local Codex sessions for daemon-bound agents on s
       createdAt: '2026-05-11T00:00:00.000Z',
       updatedAt: '2026-05-11T00:00:00.000Z',
       metadata: {},
+    }, {
+      id: 'ars_inactive_working',
+      workspaceId: 'wsp_remote',
+      agentId: 'agt_remote',
+      computerId: 'cmp_remote',
+      sessionKey: 'channel:wsp_remote:chan_all:thread:msg_inactive',
+      target: '#all:msg_inactive',
+      spaceType: 'channel',
+      spaceId: 'chan_all',
+      parentMessageId: 'msg_inactive',
+      codexThreadId: null,
+      status: 'working',
+      activeTurnIds: [],
+      activeTargetKeys: [],
+      lastTurnAt: null,
+      createdAt: '2026-05-11T00:00:00.000Z',
+      updatedAt: '2026-05-11T00:00:00.000Z',
+      metadata: {},
     }];
     await writeFile(stateFile, JSON.stringify(seeded, null, 2));
 
@@ -303,6 +321,7 @@ test('state core clears server-local Codex sessions for daemon-bound agents on s
     const restored = second.stateFullSnapshot();
     const agent = restored.agents.find((item) => item.id === 'agt_remote');
     const session = restored.agentRuntimeSessions.find((item) => item.id === 'ars_remote');
+    const inactiveSession = restored.agentRuntimeSessions.find((item) => item.id === 'ars_inactive_working');
 
     assert.equal(agent.runtimeSessionId, null);
     assert.equal(agent.runtimeSessionHome, null);
@@ -313,6 +332,11 @@ test('state core clears server-local Codex sessions for daemon-bound agents on s
     assert.deepEqual(session.activeTurnIds, []);
     assert.deepEqual(session.activeTargetKeys, []);
     assert.equal(session.metadata.lastThreadResetReason, 'remote_daemon_startup_cleanup');
+    assert.equal(inactiveSession.codexThreadId, null);
+    assert.equal(inactiveSession.status, 'idle');
+    assert.deepEqual(inactiveSession.activeTurnIds, []);
+    assert.deepEqual(inactiveSession.activeTargetKeys, []);
+    assert.equal(inactiveSession.metadata.lastThreadResetReason, 'inactive_daemon_session_cleanup');
     assert.ok(restored.events.some((event) => event.type === 'agent_runtime_home_reset' && event.agentId === 'agt_remote'));
   } finally {
     await rm(tmp, { recursive: true, force: true });

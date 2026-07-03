@@ -30,6 +30,8 @@ const CODEX_PERMISSION_REQUEST_METHODS = new Set([
   'item/permissions/requestApproval',
 ]);
 const CODEX_SANDBOX_MODES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const DAEMON_PROBE_BUSY_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming']);
+const DAEMON_PROBE_IDLE_STATUSES = new Set(['idle', 'offline']);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -66,6 +68,55 @@ export const CAPABILITIES = [
 
 function now() {
   return new Date().toISOString();
+}
+
+function daemonProbeSessionHasActiveWork(session) {
+  if (!session || typeof session !== 'object') return false;
+  if (session.activeDeliveryId || session.activeTurnId) return true;
+  if (Array.isArray(session.pendingPrompts) && session.pendingPrompts.length) return true;
+  if (session.pending instanceof Map && session.pending.size) return true;
+  return false;
+}
+
+function daemonProbeStatusForSession(session) {
+  const status = String(session?.status || 'offline').trim().toLowerCase() || 'offline';
+  if (status === 'error' && daemonProbeSessionHasActiveWork(session)) return 'working';
+  return status;
+}
+
+function daemonProbeStatusRank(status) {
+  if (DAEMON_PROBE_BUSY_STATUSES.has(status)) return 4;
+  if (DAEMON_PROBE_IDLE_STATUSES.has(status)) return 3;
+  if (status === 'error') return 2;
+  return 1;
+}
+
+function selectDaemonProbeSession(sessions = [], agentId = '') {
+  const matches = [...sessions]
+    .filter((session) => session?.agent?.id === agentId)
+    .map((session, index) => {
+      const status = daemonProbeStatusForSession(session);
+      return {
+        session,
+        status,
+        rank: daemonProbeStatusRank(status),
+        index,
+      };
+    });
+  let selected = null;
+  for (const item of matches) {
+    if (!selected || item.rank > selected.rank || (item.rank === selected.rank && item.index > selected.index)) {
+      selected = item;
+    }
+  }
+  return {
+    selected: selected?.session || null,
+    status: selected?.status || 'offline',
+    counts: matches.reduce((acc, item) => {
+      acc[item.status] = (acc[item.status] || 0) + 1;
+      return acc;
+    }, {}),
+  };
 }
 
 function claudeStreamEvents(raw) {
@@ -1973,14 +2024,16 @@ function contextDataImageUrl(value = '') {
 }
 
 function contextImageType(reference = {}) {
-  const explicit = String(reference.type || reference.mime || reference.mimeType || '').toLowerCase();
+  const item = reference && typeof reference === 'object' ? reference : {};
+  const explicit = String(item.type || item.mime || item.mimeType || '').toLowerCase();
   if (explicit.startsWith('image/')) return explicit;
-  const data = contextDataImageUrl(reference.dataUrl || reference.url || reference.downloadUrl);
+  const data = contextDataImageUrl(item.dataUrl || item.url || item.downloadUrl);
   if (data) return data.match(/^data:([^;,]+)[;,]/i)?.[1]?.toLowerCase() || 'image';
-  return contextImageMimeFromName(reference.name || reference.filename || reference.url || reference.downloadUrl || reference.path || reference.description);
+  return contextImageMimeFromName(item.name || item.filename || item.url || item.downloadUrl || item.path || item.description);
 }
 
 function isContextImageReference(reference = {}) {
+  if (!reference || typeof reference !== 'object') return false;
   return contextImageType(reference).startsWith('image/');
 }
 
@@ -3450,7 +3503,7 @@ class CodexAgentSession {
       inputs.push(resolved.input);
     }
     const avatar = pack?.targetAgent?.avatar || null;
-    if (avatar?.visualInput !== false) {
+    if (avatar && avatar.visualInput !== false) {
       const resolved = await this.imageInputFromContextReference(avatar);
       if (resolved && !seen.has(resolved.key)) {
         seen.add(resolved.key);
@@ -5355,16 +5408,20 @@ class MagClawDaemon {
 
   handleAgentActivityProbe(message) {
     const agentId = message.agentId || message.payload?.agentId;
-    const session = [...this.sessions.values()].find((item) => item.agent?.id === agentId) || null;
-    const status = session?.status || 'offline';
+    const { selected: session, status, counts } = selectDaemonProbeSession(this.sessions.values(), agentId);
     this.send({
       type: 'agent:activity',
       agentId,
       status,
+      deliveryId: session?.activeDeliveryId || null,
+      sessionId: session?.threadId || null,
+      sessionKey: session?.sessionKey || null,
       probeId: message.probeId || null,
       activity: {
         source: '@magclaw/daemon',
         detail: session ? `Current daemon runtime status: ${status}` : 'Agent not running on this computer',
+        sessionCount: Object.values(counts).reduce((sum, value) => sum + value, 0),
+        sessionStatuses: counts,
         probeId: message.probeId || null,
         at: now(),
       },

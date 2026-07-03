@@ -744,6 +744,138 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+test('npm daemon activity probe prefers healthy lanes over stale failed sessions', async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-probe-lanes-'));
+  const fakeCodex = path.join(tmp, 'codex-fake.js');
+  const seqPath = path.join(tmp, 'codex-seq.txt');
+  await writeFile(fakeCodex, `#!/usr/bin/env node
+const fs = require('node:fs');
+const seqPath = process.env.FAKE_CODEX_SEQ;
+const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  console.log('codex-cli fake-probe-lanes-test');
+  process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === '--help') {
+  console.log('Usage: codex app-server --listen stdio://');
+  process.exit(0);
+}
+if (args[0] !== 'app-server') process.exit(2);
+const previous = Number(fs.existsSync(seqPath) ? fs.readFileSync(seqPath, 'utf8') : '0') || 0;
+const seq = previous + 1;
+fs.writeFileSync(seqPath, String(seq));
+let buffer = '';
+function send(value) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\\n');
+}
+process.stdin.on('data', (chunk) => {
+  buffer += chunk.toString();
+  const lines = buffer.split(/\\r?\\n/);
+  buffer = lines.pop() || '';
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === 'initialize') {
+      send({ id: message.id, result: {} });
+    } else if (message.method === 'initialized') {
+      // ignore
+    } else if (message.method === 'thread/start') {
+      send({ id: message.id, result: { thread: { id: 'thread_probe_' + seq } } });
+    } else if (message.method === 'turn/start') {
+      send({ id: message.id, result: { turn: { id: 'turn_probe_' + seq } } });
+      send({ method: 'turn/started', params: { turn: { id: 'turn_probe_' + seq } } });
+      if (seq === 1) {
+        send({ method: 'turn/failed', params: { turn: { id: 'turn_probe_' + seq, status: 'failed' } } });
+      } else {
+        send({ method: 'item/agentMessage/delta', params: { itemId: 'item_probe_' + seq, delta: 'healthy lane finished' } });
+        send({ method: 'turn/completed', params: { turn: { id: 'turn_probe_' + seq, status: 'completed' } } });
+      }
+    }
+  }
+});
+`);
+  await chmod(fakeCodex, 0o755);
+  const relay = await startRelay({ welcomeInUpgradeHead: true });
+  const daemon = spawn(process.execPath, [
+    DAEMON_BIN,
+    'connect',
+    '--server-url',
+    relay.baseUrl,
+    '--pair-token',
+    'mc_pair_test',
+    '--profile',
+    'cloud-probe-lanes-test',
+  ], {
+    env: {
+      ...process.env,
+      MAGCLAW_DAEMON_HOME: path.join(tmp, 'daemon-home'),
+      CODEX_PATH: fakeCodex,
+      FAKE_CODEX_SEQ: seqPath,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  try {
+    await waitFor(() => relay.messages.find((item) => item.type === 'agent:status'
+      && item.agentId === 'agt_remote'
+      && item.status === 'error'), 5000);
+    relay.send({
+      type: 'agent:deliver',
+      commandId: 'adl_second',
+      seq: 2,
+      agentId: 'agt_remote',
+      workspaceId: 'wsp_test',
+      payload: {
+        agent: {
+          id: 'agt_remote',
+          name: 'Remote Codex',
+          runtime: 'codex',
+          model: 'gpt-test',
+          reasoningEffort: 'low',
+          runtimeSessionId: null,
+          runtimeSessions: [],
+        },
+        message: {
+          id: 'msg_second',
+          body: 'second lane',
+          spaceType: 'channel',
+          spaceId: 'chan_all',
+          parentMessageId: 'msg_parent_second',
+          workItemId: 'wi_second',
+          attachmentIds: [],
+          contextPack: {
+            targetAgentId: 'agt_remote',
+            targetAgent: { id: 'agt_remote', name: 'Remote Codex', runtime: 'codex' },
+            participants: [],
+            attachments: [],
+          },
+        },
+        workItem: { id: 'wi_second' },
+      },
+    });
+    await waitFor(() => relay.messages.find((item) => item.type === 'agent:status'
+      && item.agentId === 'agt_remote'
+      && item.deliveryId === 'adl_second'
+      && item.status === 'idle'), 5000);
+
+    relay.send({ type: 'agent:activity_probe', agentId: 'agt_remote', probeId: 'probe_stale_failed_lane' });
+    const probe = await waitFor(() => relay.messages.find((item) => item.type === 'agent:activity'
+      && item.probeId === 'probe_stale_failed_lane'), 5000);
+    assert.equal(probe.status, 'idle');
+    assert.equal(probe.sessionId, 'thread_probe_2');
+    assert.match(probe.sessionKey, /thread:msg_parent_second$/);
+    assert.equal(probe.activity.sessionStatuses.error, 1);
+    assert.equal(probe.activity.sessionStatuses.idle, 1);
+  } finally {
+    daemon.kill('SIGINT');
+    await Promise.race([
+      new Promise((resolve) => daemon.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 500)),
+    ]);
+    await relay.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('npm daemon applies MagClaw Codex permission policy instead of hanging the turn', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-daemon-approval-'));
   const fakeCodex = path.join(tmp, 'codex-fake.js');

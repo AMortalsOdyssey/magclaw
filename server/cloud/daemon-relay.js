@@ -29,6 +29,10 @@ const COMPUTER_PACKAGE_NAME = '@magclaw/computer';
 const KNOWN_PACKAGE_NAMES = new Set([DAEMON_PACKAGE_NAME, COMPUTER_PACKAGE_NAME]);
 const BUSY_AGENT_ACTIVITY_STATUSES = new Set(['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming']);
 
+function daemonRelayStatusIsBusy(status = '') {
+  return BUSY_AGENT_ACTIVITY_STATUSES.has(String(status || '').trim().toLowerCase());
+}
+
 function readMsEnv(name, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   const parsed = Number(process.env[name]);
   if (!Number.isFinite(parsed)) return fallback;
@@ -1705,6 +1709,31 @@ export function createDaemonRelay(deps) {
     return session;
   }
 
+  function syncAgentRuntimeSessionFromDaemon(agent, message = {}, status = 'idle') {
+    if (!agent) return null;
+    const sessionKey = String(message.sessionKey || '').trim();
+    const sessionIdProvided = Object.prototype.hasOwnProperty.call(message, 'sessionId');
+    const sessionId = sessionIdProvided ? (message.sessionId || null) : undefined;
+    const normalizedStatus = String(status || 'idle').trim().toLowerCase() || 'idle';
+    let session = null;
+    if (sessionKey) {
+      session = ensureAgentRuntimeSession(agent, {}, sessionKey);
+    } else if (sessionId !== undefined && sessionId) {
+      session = agentRuntimeSessions().find((item) => item.agentId === agent.id && item.codexThreadId === sessionId) || null;
+    } else if (!daemonRelayStatusIsBusy(normalizedStatus) && agent.runtimeSessionId) {
+      session = agentRuntimeSessions().find((item) => item.agentId === agent.id && item.codexThreadId === agent.runtimeSessionId) || null;
+    }
+    if (!session) return null;
+    if (sessionIdProvided) session.codexThreadId = sessionId;
+    session.status = normalizedStatus;
+    if (!daemonRelayStatusIsBusy(normalizedStatus)) {
+      session.activeTurnIds = [];
+      session.activeTargetKeys = [];
+    }
+    session.updatedAt = now();
+    return session;
+  }
+
   function markAgentsForComputerDisconnected(computerId) {
     let changed = 0;
     for (const agent of safeArray(state.agents)) {
@@ -2521,13 +2550,8 @@ export function createDaemonRelay(deps) {
     }
     if (message.sessionId !== undefined) {
       agent.runtimeSessionId = message.sessionId || null;
-      if (message.sessionKey) {
-        const session = ensureAgentRuntimeSession(agent, {}, String(message.sessionKey));
-        session.codexThreadId = message.sessionId || null;
-        session.status = String(message.status || 'idle');
-        session.updatedAt = now();
-      }
     }
+    syncAgentRuntimeSessionFromDaemon(agent, message, nextStatus);
     agent.runtimeActivity = runtimeActivityWithError(runtimeActivity, runtimeError);
     agent.heartbeatAt = now();
     if (!message.status) recordAgentRealtimeSnapshot(agent);
@@ -2558,15 +2582,43 @@ export function createDaemonRelay(deps) {
     const runtimeError = daemonRuntimeErrorDetail(runtimeActivity);
     const nextStatus = String(runtimeError ? 'error' : (message.status || '')).toLowerCase();
     const currentStatus = String(agent.status || '').toLowerCase();
-    const suppressBusyActivityAfterError = Boolean(nextStatus && !runtimeError && currentStatus === 'error' && BUSY_AGENT_ACTIVITY_STATUSES.has(nextStatus));
-    if (nextStatus && !suppressBusyActivityAfterError) {
+    const daemonRuntimeProbe = Boolean(
+      message.probeId
+      && !message.deliveryId
+      && String(runtimeActivity?.source || '') === '@magclaw/daemon'
+      && String(runtimeActivity?.detail || '').startsWith('Current daemon runtime status:')
+    );
+    const unscopedDaemonRuntimeProbe = Boolean(
+      daemonRuntimeProbe
+      && !message.sessionId
+      && !message.sessionKey
+    );
+    const ignoreProbeOnlyError = Boolean(
+      daemonRuntimeProbe
+      && nextStatus === 'error'
+      && !runtimeError
+      && (daemonRelayStatusIsBusy(currentStatus) || unscopedDaemonRuntimeProbe)
+    );
+    const currentStructuredRuntimeError = Boolean(
+      agent.runtimeActivity?.runtimeError
+      || agent.runtimeActivity?.errorCode
+    );
+    const suppressBusyActivityAfterError = Boolean(
+      nextStatus
+      && !runtimeError
+      && currentStatus === 'error'
+      && BUSY_AGENT_ACTIVITY_STATUSES.has(nextStatus)
+      && (!daemonRuntimeProbe || currentStructuredRuntimeError)
+    );
+    if (nextStatus && !suppressBusyActivityAfterError && !ignoreProbeOnlyError) {
       setAgentStatus(agent, nextStatus, 'daemon_activity', {
         runtimeActivity: runtimeActivityWithError(runtimeActivity, runtimeError),
       });
     }
-    if (!suppressBusyActivityAfterError) {
+    if (!suppressBusyActivityAfterError && !ignoreProbeOnlyError) {
       agent.runtimeActivity = runtimeActivityWithError(runtimeActivity, runtimeError);
     }
+    if (nextStatus && !ignoreProbeOnlyError) syncAgentRuntimeSessionFromDaemon(agent, message, nextStatus);
     agent.heartbeatAt = now();
     if (!message.status && !runtimeError) recordAgentRealtimeSnapshot(agent);
     recordDaemonEvent('agent_activity', `${agent.name} reported daemon activity.`, {

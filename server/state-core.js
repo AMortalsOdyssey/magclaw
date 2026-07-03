@@ -837,8 +837,16 @@ export function createStateCore(deps) {
       if (!remoteDaemonAgent) continue;
       const mismatchedComputer = session.computerId && session.computerId !== agent.computerId;
       if (mismatchedComputer) session.computerId = agent.computerId;
-      const failedSession = String(session.status || '').toLowerCase() === 'error';
-      if (!session.codexThreadId && !mismatchedComputer && !failedSession) continue;
+      const sessionStatus = String(session.status || '').toLowerCase();
+      const failedSession = sessionStatus === 'error';
+      const inactiveWorkingSession = Boolean(
+        sessionStatus === 'working'
+        && !agentStatusIsBusy(agent.status)
+        && !normalizeIds(agent.activeWorkItemIds || []).length
+        && !normalizeIds(session.activeTurnIds || []).length
+        && !normalizeIds(session.activeTargetKeys || []).length
+      );
+      if (!session.codexThreadId && !mismatchedComputer && !failedSession && !inactiveWorkingSession) continue;
       const resetAt = now();
       session.codexThreadId = null;
       session.status = 'idle';
@@ -847,7 +855,9 @@ export function createStateCore(deps) {
       session.updatedAt = resetAt;
       session.metadata = {
         ...session.metadata,
-        lastThreadResetReason: mismatchedComputer ? 'daemon_computer_changed' : 'remote_daemon_startup_cleanup',
+        lastThreadResetReason: mismatchedComputer
+          ? 'daemon_computer_changed'
+          : (inactiveWorkingSession ? 'inactive_daemon_session_cleanup' : 'remote_daemon_startup_cleanup'),
         lastThreadResetAt: resetAt,
       };
     }

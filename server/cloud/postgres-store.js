@@ -41,6 +41,10 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function agentStatusIsBusy(status) {
+  return ['starting', 'thinking', 'working', 'running', 'busy', 'queued', 'warming'].includes(String(status || '').toLowerCase());
+}
+
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -510,8 +514,16 @@ function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
     if (!remoteDaemonAgent) continue;
     const mismatchedComputer = session.computerId && session.computerId !== agent.computerId;
     if (mismatchedComputer) session.computerId = agent.computerId;
-    const failedSession = String(session.status || '').toLowerCase() === 'error';
-    if (!session.codexThreadId && !mismatchedComputer && !failedSession) continue;
+    const sessionStatus = String(session.status || '').toLowerCase();
+    const failedSession = sessionStatus === 'error';
+    const inactiveWorkingSession = Boolean(
+      sessionStatus === 'working'
+      && !agentStatusIsBusy(agent.status)
+      && !safeArray(agent.activeWorkItemIds).length
+      && !safeArray(session.activeTurnIds).length
+      && !safeArray(session.activeTargetKeys).length
+    );
+    if (!session.codexThreadId && !mismatchedComputer && !failedSession && !inactiveWorkingSession) continue;
     session.codexThreadId = null;
     session.status = 'idle';
     session.activeTurnIds = [];
@@ -519,7 +531,9 @@ function resetTransientRuntimeStateAfterLoad(state, loadedAt = requiredIso()) {
     session.updatedAt = loadedAt;
     session.metadata = {
       ...jsonObject(session.metadata),
-      lastThreadResetReason: mismatchedComputer ? 'daemon_computer_changed' : 'remote_daemon_startup_cleanup',
+      lastThreadResetReason: mismatchedComputer
+        ? 'daemon_computer_changed'
+        : (inactiveWorkingSession ? 'inactive_daemon_session_cleanup' : 'remote_daemon_startup_cleanup'),
       lastThreadResetAt: loadedAt,
     };
   }

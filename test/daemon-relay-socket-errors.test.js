@@ -528,6 +528,154 @@ test('daemon relay promotes Codex websocket stderr activity to agent error', asy
   assert.equal(state.agents[0].runtimeActivity.runtimeError.recoveryAction, 'check_proxy_then_retry');
 });
 
+test('daemon relay ignores unscoped daemon probe-only errors from stale local lanes', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_unscoped_probe';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.41',
+    metadata: {},
+  });
+  state.agents.push({
+    id: 'agt_probe_error',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Probe Error',
+    status: 'idle',
+    runtimeActivity: null,
+  });
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.41',
+    runtimes: ['codex'],
+    service: { mode: 'foreground', background: false, active: true },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_probe_error',
+    status: 'error',
+    probeId: 'probe_stale_error',
+    activity: {
+      source: '@magclaw/daemon',
+      detail: 'Current daemon runtime status: error',
+      probeId: 'probe_stale_error',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.agents[0].status, 'idle');
+  assert.equal(state.agents[0].runtimeActivity, null);
+  assert.equal(state.agents[0].statusUpdatedAt, undefined);
+});
+
+test('daemon relay syncs runtime session status from daemon activity probes', async () => {
+  const { cloud, relay, state } = createRelay();
+  const rawToken = 'mc_machine_probe_session';
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const sessionKey = 'channel:wsp_test:chan_all:thread:msg_parent';
+  state.computers.push({
+    id: 'cmp_remote',
+    workspaceId: 'wsp_test',
+    name: 'Remote',
+    status: 'connected',
+    connectedVia: 'daemon',
+    daemonVersion: '0.1.43',
+    metadata: {},
+  });
+  state.agents.push({
+    id: 'agt_probe_session',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    name: 'Probe Session',
+    status: 'working',
+    runtimeSessionId: 'thread_current',
+  });
+  state.agentRuntimeSessions = [{
+    id: 'ars_probe',
+    workspaceId: 'wsp_test',
+    agentId: 'agt_probe_session',
+    computerId: 'cmp_remote',
+    sessionKey,
+    spaceType: 'channel',
+    spaceId: 'chan_all',
+    parentMessageId: 'msg_parent',
+    codexThreadId: 'thread_current',
+    status: 'working',
+    activeTurnIds: ['turn_current'],
+    activeTargetKeys: ['target_current'],
+    createdAt: '2026-05-13T00:00:00.000Z',
+    updatedAt: '2026-05-13T00:00:00.000Z',
+    metadata: {},
+  }];
+  cloud.computerTokens.push({
+    id: 'ctok_remote',
+    workspaceId: 'wsp_test',
+    computerId: 'cmp_remote',
+    tokenHash,
+    revokedAt: null,
+  });
+  const socket = new FakeSocket();
+  assert.equal(await relay.handleUpgrade({
+    url: `/daemon/connect?token=${rawToken}`,
+    headers: {
+      host: 'magclaw.multiego.me',
+      'sec-websocket-key': 'test-key',
+    },
+    socket: {},
+  }, socket), true);
+  socket.emit('data', encodeFrame({
+    type: 'ready',
+    daemonVersion: '0.1.43',
+    runtimes: ['codex'],
+    service: { mode: 'foreground', background: false, active: true },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  socket.emit('data', encodeFrame({
+    type: 'agent:activity',
+    agentId: 'agt_probe_session',
+    status: 'idle',
+    sessionId: 'thread_current',
+    sessionKey,
+    probeId: 'probe_idle',
+    activity: {
+      source: '@magclaw/daemon',
+      detail: 'Current daemon runtime status: idle',
+      probeId: 'probe_idle',
+    },
+  }));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(state.agents[0].status, 'idle');
+  assert.equal(state.agentRuntimeSessions[0].status, 'idle');
+  assert.equal(state.agentRuntimeSessions[0].codexThreadId, 'thread_current');
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTurnIds, []);
+  assert.deepEqual(state.agentRuntimeSessions[0].activeTargetKeys, []);
+});
+
 test('daemon relay re-closes background relaunches while a computer close is pending', async () => {
   const { cloud, relay, state } = createRelay();
   const rawToken = 'mc_machine_close_relaunch';
