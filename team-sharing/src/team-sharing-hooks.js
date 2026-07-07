@@ -1072,6 +1072,14 @@ function shellQuote(value = '', platform = process.platform) {
     : posixShellQuote(value);
 }
 
+// Claude Code executes hook commands through sh on macOS/Linux and Git Bash on
+// Windows (PowerShell only when Git Bash is absent), never cmd.exe, so its
+// commands must always use POSIX quoting. Codex keeps platform-based quoting
+// plus a PowerShell commandWindows variant.
+function hookCommandQuotePlatform(runtime, platform = process.platform) {
+  return normalizeRuntime(runtime) === 'claude_code' ? 'posix' : platform;
+}
+
 function shouldQuoteCommandPath(value = '', platform = process.platform) {
   const text = String(value || '');
   if (!text) return false;
@@ -1083,7 +1091,7 @@ function shouldQuoteCommandPath(value = '', platform = process.platform) {
 
 export function buildTeamSharingHookCommand(options = {}) {
   const runtime = normalizeRuntime(options.runtime);
-  const platform = options.platform || process.platform;
+  const platform = hookCommandQuotePlatform(runtime, options.platform || process.platform);
   const hookEventName = String(options.hookEventName || (runtime === 'claude_code' ? 'SessionEnd' : 'Stop')).trim();
   const transcriptPath = String(options.transcriptPath || '').trim();
   const sessionTitle = String(options.sessionTitle ?? '').trim();

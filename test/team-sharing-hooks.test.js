@@ -835,6 +835,21 @@ test('team sharing hook command and config installer preserve existing hooks', a
   assert.match(windowsCommand, /--package-version "0\.1\.41"/);
   assert.doesNotMatch(windowsCommand, /\$\{|'/);
 
+  // Claude Code runs hooks through Git Bash on Windows (never cmd.exe), so its
+  // commands keep POSIX quoting even when the setup platform is win32.
+  const windowsClaudeCommand = buildTeamSharingHookCommand({
+    runtime: 'claude_code',
+    hookEventName: 'Stop',
+    platform: 'win32',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+    projectDir: 'C:\\Users\\Agent User\\repo\\magclaw',
+    packageVersion: '0.1.41',
+    sourceCommit: 'abc123def456',
+  });
+  assert.match(windowsClaudeCommand, /^'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
+  assert.match(windowsClaudeCommand, /--cwd 'C:\\Users\\Agent User\\repo\\magclaw'/);
+  assert.doesNotMatch(windowsClaudeCommand, /\^|"/);
+
   const windowsPowerShellCommand = buildTeamSharingWindowsHookCommand({
     runtime: 'codex',
     hookEventName: 'Stop',
@@ -878,4 +893,20 @@ test('team sharing hook command and config installer preserve existing hooks', a
   assert.match(windowsHook.command, /^"C:\\Users\\Agent User\\bin\\team-sharing\.cmd" sync/);
   assert.match(windowsHook.commandWindows, /^& 'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
   assert.match(windowsHook.commandWindows, /--hook-event 'Stop'/);
+
+  const windowsClaudeConfig = path.join(home, '.claude', 'windows-settings.local.json');
+  const windowsClaudeResult = await installTeamSharingHookConfig({
+    runtime: 'claude_code',
+    configPath: windowsClaudeConfig,
+    platform: 'win32',
+    teamSharingCommand: 'C:\\Users\\Agent User\\bin\\team-sharing.cmd',
+    projectDir: 'C:\\Users\\Agent User\\repo\\magclaw',
+  });
+  const windowsClaudeInstalled = JSON.parse(await readFile(windowsClaudeConfig, 'utf8'));
+  const windowsClaudeHook = windowsClaudeInstalled.hooks.Stop[0].hooks.find((item) => item.command.includes('team-sharing.cmd'));
+
+  assert.equal(windowsClaudeResult.ok, true);
+  assert.match(windowsClaudeHook.command, /^'C:\\Users\\Agent User\\bin\\team-sharing\.cmd' sync/);
+  assert.equal(windowsClaudeHook.commandWindows, undefined);
+  assert.ok(windowsClaudeInstalled.hooks.SessionEnd[0].hooks.some((item) => item.command.startsWith("'C:\\Users\\Agent User\\bin\\team-sharing.cmd' sync")));
 });
