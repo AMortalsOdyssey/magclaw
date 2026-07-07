@@ -175,6 +175,41 @@ function validateCliCoreReleaseSet(packages) {
   }
 }
 
+// When a dependent package is released without cli-core in the same set, its
+// pinned cli-core version must already exist on the registry — publishing
+// @magclaw/computer@X with a dependency on an unpublished cli-core@X makes the
+// package uninstallable (this happened for 0.1.43).
+export async function validateDependencyAvailability(packages, options = {}) {
+  const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  if (byName.has(CLI_CORE_PACKAGE_NAME)) return [];
+  const npmVersionExists = options.npmVersionExists || defaultNpmVersionExists;
+  const checked = [];
+  for (const pkg of packages) {
+    if (!CLI_CORE_DEPENDENT_PACKAGE_NAMES.includes(pkg.name)) continue;
+    const dependencyVersion = cleanText(pkg.manifest?.dependencies?.[CLI_CORE_PACKAGE_NAME]);
+    if (!dependencyVersion) {
+      throw new Error(`${pkg.name} is missing its ${CLI_CORE_PACKAGE_NAME} dependency pin.`);
+    }
+    const exists = await npmVersionExists(CLI_CORE_PACKAGE_NAME, dependencyVersion, options);
+    if (!exists) {
+      throw new Error(`${pkg.name}@${pkg.version} depends on ${CLI_CORE_PACKAGE_NAME}@${dependencyVersion}, which is not published on the registry. Publish ${CLI_CORE_PACKAGE_NAME} first or release them together.`);
+    }
+    checked.push({ packageName: pkg.name, dependency: `${CLI_CORE_PACKAGE_NAME}@${dependencyVersion}` });
+  }
+  return checked;
+}
+
+async function defaultNpmVersionExists(packageName, version, options = {}) {
+  const args = ['view', `${packageName}@${version}`, 'version', '--json'];
+  if (options.registryUrl) args.push('--registry', options.registryUrl);
+  try {
+    const result = await runCommand('npm', args);
+    return packageVersionFromNpmResult(parseJsonOutput(result.stdout, '')) === version;
+  } catch {
+    return false;
+  }
+}
+
 export function parsePublishArgs(argv = []) {
   const options = {
     dryRun: false,
@@ -252,6 +287,7 @@ async function main(argv = process.argv.slice(2)) {
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const packages = await collectReleasePackages({ root, packageNames: options.packageNames });
+  await validateDependencyAvailability(packages, { registryUrl: options.registryUrl });
   await runPackagePublishRelease({
     packages,
     dryRun: options.dryRun,

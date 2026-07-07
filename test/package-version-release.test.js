@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import os from 'node:os';
-import { collectReleasePackages, runPackagePublishRelease } from '../scripts/publish-magclaw-packages.mjs';
+import { collectReleasePackages, runPackagePublishRelease, validateDependencyAvailability } from '../scripts/publish-magclaw-packages.mjs';
 
 const releasePackages = [
   { name: '@magclaw/cli-core', version: '0.1.40', dir: '/repo/cli-core' },
@@ -61,6 +61,41 @@ test('collect release packages lets daemon and computer publish independently wh
   assert.deepEqual(daemonOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/daemon@0.1.82']);
   assert.deepEqual(computerOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/computer@0.1.83']);
   assert.deepEqual(teamSharingOnly.map((pkg) => `${pkg.name}@${pkg.version}`), ['@magclaw/team-sharing@0.1.84']);
+});
+
+test('dependent-only releases require their cli-core pin to exist on the registry', async () => {
+  const root = await mkdtemp(join(os.tmpdir(), 'magclaw-release-packages-'));
+  await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
+  await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.82', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.82', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.84' });
+  const computerOnly = await collectReleasePackages({ root, packageNames: ['@magclaw/computer'] });
+
+  const checked = await validateDependencyAvailability(computerOnly, {
+    npmVersionExists: async (packageName, version) => packageName === '@magclaw/cli-core' && version === '0.1.81',
+  });
+  assert.deepEqual(checked, [{ packageName: '@magclaw/computer', dependency: '@magclaw/cli-core@0.1.81' }]);
+
+  await assert.rejects(
+    () => validateDependencyAvailability(computerOnly, { npmVersionExists: async () => false }),
+    /depends on @magclaw\/cli-core@0\.1\.81, which is not published/,
+  );
+});
+
+test('dependency availability check is skipped when cli-core ships in the same release set', async () => {
+  const root = await mkdtemp(join(os.tmpdir(), 'magclaw-release-packages-'));
+  await writePackage(root, 'cli-core', { name: '@magclaw/cli-core', version: '0.1.81' });
+  await writePackage(root, 'daemon', { name: '@magclaw/daemon', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'computer', { name: '@magclaw/computer', version: '0.1.81', dependencies: { '@magclaw/cli-core': '0.1.81' } });
+  await writePackage(root, 'team-sharing', { name: '@magclaw/team-sharing', version: '0.1.84' });
+  const packages = await collectReleasePackages({ root, packageNames: ['@magclaw/cli-core'] });
+
+  const checked = await validateDependencyAvailability(packages, {
+    npmVersionExists: async () => {
+      throw new Error('should not be called');
+    },
+  });
+  assert.deepEqual(checked, []);
 });
 
 test('collect release packages does not validate team-sharing against cli-core version', async () => {
