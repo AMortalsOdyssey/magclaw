@@ -697,8 +697,17 @@ async function readJsonFile(file, fallback = {}) {
 
 async function writeJsonFile(file, value, { privateFile = false } = {}) {
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
-  if (privateFile) await chmod(file, 0o600).catch(() => {});
+  // Write-then-rename keeps readers (e.g. the shim resolving active.json on
+  // every invocation) from ever observing a partially written file.
+  const tempFile = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`;
+  try {
+    await writeFile(tempFile, `${JSON.stringify(value, null, 2)}\n`);
+    if (privateFile) await chmod(tempFile, 0o600).catch(() => {});
+    await rename(tempFile, file);
+  } catch (error) {
+    await rm(tempFile, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function auditCharCount(value = '') {
@@ -4465,12 +4474,22 @@ function codexCommandResultOk(result = {}) {
   return /already|exists|configured|installed/i.test(text);
 }
 
+// On Windows npm/codex resolve to .cmd shims that newer Node refuses to spawn
+// without a shell; quote each token so paths with spaces survive cmd.exe.
+function spawnSyncCliCommand(command, args = [], options = {}) {
+  if (process.platform !== 'win32') return spawnSync(command, args, options);
+  const quoted = [command, ...args]
+    .map((part) => (/[\s&|<>^()"]/.test(String(part)) ? `"${String(part)}"` : String(part)))
+    .join(' ');
+  return spawnSync(quoted, { ...options, shell: true });
+}
+
 function runCodexPluginCommand(args = [], flags = {}, env = process.env) {
   const command = codexCommandForTeamSharing(flags, env);
   if (flags.skipCodexPluginCommand || flags.skipCodexPluginCommands || env.MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND === '1') {
     return { ok: true, skipped: true, command, args };
   }
-  const result = spawnSync(command, args, {
+  const result = spawnSyncCliCommand(command, args, {
     encoding: 'utf8',
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -4887,6 +4906,10 @@ function semverGreater(left = '', right = '') {
 }
 
 const TEAM_SHARING_UPDATE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+// Upgrade checks run inside agent hooks whose timeouts are as low as 3s, so a
+// hanging fetch must never block the hook longer than this.
+const TEAM_SHARING_UPDATE_FETCH_TIMEOUT_MS = 4000;
+const TEAM_SHARING_UPDATE_LOCK_STALE_MS = 15 * 60 * 1000;
 
 function teamSharingUpdateServerUrl(options = {}, env = process.env) {
   const explicit = String(
@@ -4910,7 +4933,9 @@ async function checkTeamSharingUpgradeFromServer(options = {}, env = process.env
   const serverUrl = teamSharingUpdateServerUrl(options, env);
   if (!serverUrl) return null;
   const currentVersion = String(options.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
-  const response = await fetch(teamSharingPackageUpdateUrl(serverUrl, currentVersion, Boolean(options.force)));
+  const response = await fetch(teamSharingPackageUpdateUrl(serverUrl, currentVersion, Boolean(options.force)), {
+    signal: AbortSignal.timeout(TEAM_SHARING_UPDATE_FETCH_TIMEOUT_MS),
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data?.ok === false) throw new Error(data?.error || `package update API returned ${response.status}`);
   const packageInfo = data.package || {};
@@ -4935,7 +4960,9 @@ async function checkTeamSharingUpgradeFromServer(options = {}, env = process.env
 async function checkTeamSharingUpgradeFromNpm(options = {}, env = process.env) {
   const currentVersion = String(options.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
   const encodedPackageName = encodeURIComponent(TEAM_SHARING_PACKAGE_NAME);
-  const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`);
+  const response = await fetch(`https://registry.npmjs.org/${encodedPackageName}`, {
+    signal: AbortSignal.timeout(TEAM_SHARING_UPDATE_FETCH_TIMEOUT_MS),
+  });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `npm registry returned ${response.status}`);
   const latestVersion = String(data?.['dist-tags']?.latest || currentVersion);
@@ -4985,26 +5012,52 @@ export async function checkTeamSharingUpgrade(options = {}, env = process.env) {
   return result;
 }
 
+function updateLockOwnerAlive(pid) {
+  const numericPid = Number(pid);
+  if (!Number.isFinite(numericPid) || numericPid <= 0) return false;
+  try {
+    process.kill(numericPid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+// Hook-triggered updates can be killed by agent hook timeouts before the lock
+// is released; without stale recovery every later update is silently skipped.
+async function clearStaleTeamSharingUpdateLock(paths) {
+  const owner = await readJsonFile(path.join(paths.updateLock, 'owner.json'), null);
+  const acquiredAtMs = Date.parse(owner?.acquiredAt || '');
+  const expired = !Number.isFinite(acquiredAtMs)
+    || Date.now() - acquiredAtMs > TEAM_SHARING_UPDATE_LOCK_STALE_MS;
+  const stale = !owner || !updateLockOwnerAlive(owner.pid) || expired;
+  if (!stale) return false;
+  await rm(paths.updateLock, { recursive: true, force: true }).catch(() => {});
+  return true;
+}
+
 async function acquireTeamSharingUpdateLock(paths) {
   await mkdir(paths.updatesDir, { recursive: true });
-  try {
-    await mkdir(paths.updateLock);
-    await writeJsonFile(path.join(paths.updateLock, 'owner.json'), {
-      pid: process.pid,
-      acquiredAt: now(),
-    }, { privateFile: true });
-    return {
-      acquired: true,
-      async release() {
-        await rm(paths.updateLock, { recursive: true, force: true }).catch(() => {});
-      },
-    };
-  } catch (error) {
-    if (error?.code === 'EEXIST') {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await mkdir(paths.updateLock);
+      await writeJsonFile(path.join(paths.updateLock, 'owner.json'), {
+        pid: process.pid,
+        acquiredAt: now(),
+      }, { privateFile: true });
+      return {
+        acquired: true,
+        async release() {
+          await rm(paths.updateLock, { recursive: true, force: true }).catch(() => {});
+        },
+      };
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      if (attempt === 0 && await clearStaleTeamSharingUpdateLock(paths)) continue;
       return { acquired: false, reason: 'update_in_progress', release: async () => {} };
     }
-    throw error;
   }
+  return { acquired: false, reason: 'update_in_progress', release: async () => {} };
 }
 
 async function stageTeamSharingPackage(flags = {}, env = process.env) {
@@ -5012,45 +5065,58 @@ async function stageTeamSharingPackage(flags = {}, env = process.env) {
   const version = cleanTemplateVersion(flags.latestVersion || flags.targetVersion || flags.version || '');
   if (!version || version === '0.0.0') throw new Error('A target Team Sharing version is required.');
   const versionDir = path.join(paths.versionsDir, version);
-  await rm(versionDir, { recursive: true, force: true });
-  await mkdir(versionDir, { recursive: true });
-  if (flags.sourceDir) {
-    const packageRoot = path.join(versionDir, 'package');
-    await cp(path.resolve(flags.sourceDir), packageRoot, { recursive: true, force: true });
-    const sourceCommit = cleanTemplateCommit(flags.sourceCommit || currentTeamSharingSourceCommit(env));
-    if (sourceCommit !== 'unknown') {
-      const packageJsonPath = path.join(packageRoot, 'package.json');
-      const packageJson = await readJsonFile(packageJsonPath, {});
-      await writeJsonFile(packageJsonPath, {
-        ...packageJson,
-        gitHead: sourceCommit,
-      });
+  // Stage into a scratch dir and swap in only after a successful install so a
+  // failed download never destroys an existing (possibly active) version dir.
+  const stagingDir = `${versionDir}.staging-${process.pid}`;
+  await rm(stagingDir, { recursive: true, force: true });
+  await mkdir(stagingDir, { recursive: true });
+  const commitStagedVersionDir = async () => {
+    await rm(versionDir, { recursive: true, force: true });
+    await rename(stagingDir, versionDir);
+  };
+  try {
+    if (flags.sourceDir) {
+      await cp(path.resolve(flags.sourceDir), path.join(stagingDir, 'package'), { recursive: true, force: true });
+      const sourceCommit = cleanTemplateCommit(flags.sourceCommit || currentTeamSharingSourceCommit(env));
+      if (sourceCommit !== 'unknown') {
+        const packageJsonPath = path.join(stagingDir, 'package', 'package.json');
+        const packageJson = await readJsonFile(packageJsonPath, {});
+        await writeJsonFile(packageJsonPath, {
+          ...packageJson,
+          gitHead: sourceCommit,
+        });
+      }
+      await commitStagedVersionDir();
+      const packageRoot = path.join(versionDir, 'package');
+      const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
+      await chmod(bin, 0o755).catch(() => {});
+      return { version, versionDir, packageRoot, bin, source: 'sourceDir', sourceCommit };
     }
+    const npmPath = String(flags.npmPath || env.MAGCLAW_TEAM_SHARING_NPM_PATH || 'npm').trim() || 'npm';
+    const install = spawnSyncCliCommand(npmPath, [
+      'install',
+      '--prefix',
+      stagingDir,
+      '--ignore-scripts',
+      '--no-audit',
+      '--no-fund',
+      '--no-save',
+      `${TEAM_SHARING_PACKAGE_NAME}@${version}`,
+    ], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+    if (install.status !== 0) {
+      throw new Error(String(install.stderr || install.stdout || `npm install exited ${install.status}`).trim());
+    }
+    await commitStagedVersionDir();
+    const packageRoot = path.join(versionDir, 'node_modules', '@magclaw', 'team-sharing');
     const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
     await chmod(bin, 0o755).catch(() => {});
-    return { version, versionDir, packageRoot, bin, source: 'sourceDir', sourceCommit };
+    return { version, versionDir, packageRoot, bin, source: 'npm' };
+  } finally {
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   }
-  const npmPath = String(flags.npmPath || env.MAGCLAW_TEAM_SHARING_NPM_PATH || 'npm').trim() || 'npm';
-  const install = spawnSync(npmPath, [
-    'install',
-    '--prefix',
-    versionDir,
-    '--ignore-scripts',
-    '--no-audit',
-    '--no-fund',
-    '--no-save',
-    `${TEAM_SHARING_PACKAGE_NAME}@${version}`,
-  ], {
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
-  if (install.status !== 0) {
-    throw new Error(String(install.stderr || install.stdout || `npm install exited ${install.status}`).trim());
-  }
-  const packageRoot = path.join(versionDir, 'node_modules', '@magclaw', 'team-sharing');
-  const bin = path.join(packageRoot, 'bin', 'team-sharing.js');
-  await chmod(bin, 0o755).catch(() => {});
-  return { version, versionDir, packageRoot, bin, source: 'npm' };
 }
 
 function verifyStagedTeamSharingPackage(stage, env = process.env) {
@@ -5204,6 +5270,18 @@ async function recordTeamSharingStageFailure(paths, previousState, error) {
   return { ok: false, activated: false, phase: 'stage', activePreserved, state, error: error?.message || String(error) };
 }
 
+// User-scope installs (~/.claude, ~/.codex) are not tracked in projects.yaml,
+// so updates must detect them from installed hook configs or their skills and
+// hooks would silently stay on the version that first installed them.
+async function detectUserScopeTeamSharingInstall(env = process.env) {
+  const home = homeDirForEnv(env);
+  for (const file of [path.join(home, '.claude', 'settings.json'), path.join(home, '.codex', 'hooks.json')]) {
+    const config = await readJsonFile(file, null);
+    if (config?.hooks && JSON.stringify(config.hooks).includes('--integration team-sharing')) return true;
+  }
+  return false;
+}
+
 async function syncRegisteredTeamSharingProjectsForUpdate(flags = {}, env = process.env, stage) {
   const listed = await listTeamSharingProjects({ ...flags, status: true }, env);
   const syncedProjects = [];
@@ -5255,6 +5333,43 @@ async function syncRegisteredTeamSharingProjectsForUpdate(flags = {}, env = proc
       });
     }
   }
+  if (await detectUserScopeTeamSharingInstall(projectEnv)) {
+    const userFlags = {
+      ...flags,
+      installScope: 'user',
+      projectDir: '',
+      projectPath: '',
+      cwd: '',
+      target: flags.target || 'all',
+      yes: true,
+      nonInteractive: true,
+      noLogin: true,
+      packageSpec: `${TEAM_SHARING_PACKAGE_NAME}@${stage.version}`,
+    };
+    try {
+      const shim = await installTeamSharingShim(userFlags, projectEnv);
+      const hooks = await installTeamSharingHooks({
+        ...userFlags,
+        teamSharingCommand: shim.path || userFlags.teamSharingCommand,
+      }, projectEnv);
+      const skill = await installTeamSharingSkill(userFlags, projectEnv);
+      syncedProjects.push({
+        key: 'user-scope',
+        path: '',
+        ok: Boolean(shim.ok && hooks.ok && skill.ok),
+        shim,
+        hooks,
+        skill,
+      });
+    } catch (error) {
+      failedProjects.push({
+        key: 'user-scope',
+        path: '',
+        ok: false,
+        error: error?.message || String(error),
+      });
+    }
+  }
   return { syncedProjects, failedProjects, skippedProjects };
 }
 
@@ -5264,12 +5379,13 @@ export async function updateTeamSharingPackage(flags = {}, env = process.env) {
     return { ok: true, skipped: true, reason: 'auto_update_disabled' };
   }
   const currentVersion = String(flags.currentVersion || env.MAGCLAW_TEAM_SHARING_VERSION || env.MAGCLAW_ENTRY_PACKAGE_VERSION || '0.0.0');
-  const check = flags.latestVersion
+  const pinnedVersion = String(flags.latestVersion || flags.targetVersion || '').trim();
+  const check = pinnedVersion
     ? {
       ok: true,
       currentVersion,
-      latestVersion: String(flags.latestVersion),
-      upgradeAvailable: semverGreater(flags.latestVersion, currentVersion),
+      latestVersion: pinnedVersion,
+      upgradeAvailable: semverGreater(pinnedVersion, currentVersion),
       releaseNotesMarkdown: flags.releaseNotesMarkdown || '',
     }
     : await checkTeamSharingUpgrade({
@@ -5393,6 +5509,33 @@ function teamSharingPackageUpdateSummary(check = {}, overrides = {}) {
   };
 }
 
+// Applying an update inside an agent hook risks the hook timeout (3-15s)
+// killing the npm install mid-flight; run the actual update in a detached
+// child so the hook returns immediately and the update survives it.
+function spawnBackgroundTeamSharingUpdate(latestVersion = '', env = process.env) {
+  const paths = teamSharingPaths({ env });
+  if (existsSync(paths.updateLock)) {
+    return { spawned: false, reason: 'update_in_progress' };
+  }
+  try {
+    const child = spawn(process.execPath, [
+      TEAM_SHARING_SOURCE_COMMAND,
+      'update',
+      '--target-version',
+      latestVersion,
+      '--all',
+    ], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, ...env },
+    });
+    child.unref();
+    return { spawned: true, pid: child.pid };
+  } catch (error) {
+    return { spawned: false, reason: error?.message || String(error) };
+  }
+}
+
 export async function maybeAutoUpdateTeamSharingPackage(flags = {}, env = process.env) {
   const trigger = String(flags.trigger || 'manual').trim().toLowerCase() || 'manual';
   const manual = Boolean(flags.manual || flags.yes || flags.force || trigger === 'manual');
@@ -5452,6 +5595,14 @@ export async function maybeAutoUpdateTeamSharingPackage(flags = {}, env = proces
         ...summaryBase,
         action: 'notice',
         updateMode,
+      });
+    }
+    if (flags.background) {
+      const scheduled = spawnBackgroundTeamSharingUpdate(check.latestVersion, env);
+      return teamSharingPackageUpdateSummary(check, {
+        ...summaryBase,
+        action: scheduled.spawned ? 'scheduled' : 'skipped',
+        reason: scheduled.spawned ? 'background_update_started' : (scheduled.reason || ''),
       });
     }
     const result = await updateTeamSharingPackage({

@@ -424,6 +424,7 @@ export async function runTeamSharingCommand(flags = {}, env = process.env) {
           result.packageUpdate = await maybeAutoUpdateTeamSharingPackage({
             ...flags,
             trigger: 'hook',
+            background: true,
             all: true,
             target: flags.target || 'all',
           }, env);

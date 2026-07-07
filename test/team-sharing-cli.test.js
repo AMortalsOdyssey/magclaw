@@ -3089,6 +3089,124 @@ test('team sharing auto update can be disabled for non-manual triggers', async (
   assert.equal(result.updateAvailable, true);
 });
 
+test('team sharing update recovers a stale update lock left by a killed process', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-stale-lock-home-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-stale-lock-source-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  await writeFakeTeamSharingPackage(source, '0.1.56');
+  const paths = teamSharingPaths({ env });
+  await mkdir(paths.updateLock, { recursive: true });
+  await writeFile(path.join(paths.updateLock, 'owner.json'), JSON.stringify({
+    pid: 2147483647,
+    acquiredAt: '2026-01-01T00:00:00.000Z',
+  }));
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    yes: true,
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.activated, true);
+  assert.equal(result.latestVersion, '0.1.56');
+});
+
+test('team sharing update still skips while a live process holds the update lock', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-live-lock-home-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-live-lock-source-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  await writeFakeTeamSharingPackage(source, '0.1.56');
+  const paths = teamSharingPaths({ env });
+  await mkdir(paths.updateLock, { recursive: true });
+  await writeFile(path.join(paths.updateLock, 'owner.json'), JSON.stringify({
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  }));
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    yes: true,
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'update_in_progress');
+});
+
+test('team sharing update honors --target-version pinning', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-target-version-home-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-target-version-source-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  await writeFakeTeamSharingPackage(source, '0.1.56');
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    targetVersion: '0.1.56',
+    sourceDir: source,
+    yes: true,
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.activated, true);
+  assert.equal(result.latestVersion, '0.1.56');
+});
+
+test('team sharing hook-triggered background update defers while an update is already in progress', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-background-lock-home-'));
+  const env = { HOME: home, MAGCLAW_TEAM_SHARING_VERSION: '0.1.55' };
+  const paths = teamSharingPaths({ env });
+  await mkdir(paths.updateLock, { recursive: true });
+
+  const result = await maybeAutoUpdateTeamSharingPackage({
+    trigger: 'hook',
+    background: true,
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+  }, env);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.action, 'skipped');
+  assert.equal(result.reason, 'update_in_progress');
+  assert.equal(result.updateAvailable, true);
+});
+
+test('team sharing update refreshes user-scope claude installs that are not registered projects', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-user-scope-home-'));
+  const source = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-user-scope-source-'));
+  const binDir = path.join(home, 'bin');
+  const env = {
+    HOME: home,
+    MAGCLAW_TEAM_SHARING_VERSION: '0.1.55',
+    MAGCLAW_TEAM_SHARING_SKIP_CODEX_PLUGIN_COMMAND: '1',
+  };
+  await mkdir(path.join(home, '.claude'), { recursive: true });
+  await writeFakeTeamSharingPackage(source, '0.1.56');
+  await installTeamSharingHooks({ installScope: 'user', target: 'claude_code', binDir }, env);
+  await installTeamSharingSkill({ installScope: 'user', target: 'claude_code' }, env);
+
+  const before = await readFile(path.join(home, '.claude', 'skills', 'magclaw-team-sharing-search', 'SKILL.md'), 'utf8');
+  assert.match(before, /@magclaw\/team-sharing@0\.1\.55/);
+
+  const result = await updateTeamSharingPackage({
+    currentVersion: '0.1.55',
+    latestVersion: '0.1.56',
+    sourceDir: source,
+    all: true,
+    yes: true,
+    target: 'claude_code',
+    binDir,
+  }, env);
+  const after = await readFile(path.join(home, '.claude', 'skills', 'magclaw-team-sharing-search', 'SKILL.md'), 'utf8');
+
+  assert.equal(result.ok, true);
+  assert.ok(result.syncedProjects.some((project) => project.key === 'user-scope' && project.ok));
+  assert.match(after, /@magclaw\/team-sharing@0\.1\.56/);
+});
+
 test('team sharing update check falls back to npm registry when server package update API fails', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-update-fallback-home-'));
   const env = {
