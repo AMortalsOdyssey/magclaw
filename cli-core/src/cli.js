@@ -2597,6 +2597,26 @@ function agentEnvironment(agent = {}, env = process.env) {
   return output;
 }
 
+// Windows dir symlinks need privileges most users lack; junctions do not,
+// and when even those fail (network drives, containers) fall back to a copy.
+async function symlinkWithWindowsFallback(source, target, sourceStat) {
+  const linkType = sourceStat.isDirectory()
+    ? (process.platform === 'win32' ? 'junction' : 'dir')
+    : 'file';
+  try {
+    await symlink(source, target, linkType);
+  } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'UNKNOWN', 'ENOTSUP'].includes(error?.code)) {
+      throw error;
+    }
+    if (sourceStat.isDirectory()) {
+      await cp(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
+    } else {
+      await copyFile(source, target);
+    }
+  }
+}
+
 async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
   const source = path.join(SOURCE_CODEX_HOME, entryName);
   if (!existsSync(source)) return;
@@ -2615,21 +2635,7 @@ async function ensureSymlinkedCodexHomeEntry(codexHome, entryName) {
     if (error.code !== 'ENOENT') throw error;
   }
   const sourceStat = await stat(source);
-  const linkType = sourceStat.isDirectory()
-    ? (process.platform === 'win32' ? 'junction' : 'dir')
-    : 'file';
-  try {
-    await symlink(source, target, linkType);
-  } catch (error) {
-    if (process.platform !== 'win32' || !['EPERM', 'EINVAL', 'UNKNOWN', 'ENOTSUP'].includes(error?.code)) {
-      throw error;
-    }
-    if (sourceStat.isDirectory()) {
-      await cp(source, target, { recursive: true, dereference: true, errorOnExist: true, force: false });
-    } else {
-      await copyFile(source, target);
-    }
-  }
+  await symlinkWithWindowsFallback(source, target, sourceStat);
 }
 
 function toPosixPath(value) {
@@ -2653,7 +2659,7 @@ async function linkPathEntry(source, target) {
     if (error.code !== 'ENOENT') throw error;
   }
   const sourceStat = await stat(source);
-  await symlink(source, target, sourceStat.isDirectory() ? 'dir' : 'file');
+  await symlinkWithWindowsFallback(source, target, sourceStat);
   return true;
 }
 
@@ -2737,7 +2743,7 @@ async function migrateLegacyAgentSkills(codexHome, workspaceSkills, globalResolv
         if (pathIsWithinResolvedRoots(realTarget, globalResolvedRoots)) continue;
         const targetInfo = await stat(realTarget).catch(() => null);
         if (!targetInfo) continue;
-        await symlink(realTarget, target, targetInfo.isDirectory() ? 'dir' : 'file');
+        await symlinkWithWindowsFallback(realTarget, target, targetInfo);
         await unlink(source);
       } else {
         await rename(source, target);
@@ -5856,10 +5862,13 @@ async function writeLauncher(profile, env = process.env) {
     "  PATH: launchPath,",
     "};",
     "if (packageKind === 'computer') childEnv.MAGCLAW_COMPUTER_DAEMON = '1';",
-    'const child = spawn(command, args, {',
-    "  stdio: 'inherit',",
-    '  env: childEnv,',
-    '});',
+    '// Windows npm resolves to npm.cmd, which current Node refuses to spawn',
+    '// without a shell (EINVAL); quote tokens so paths with spaces survive.',
+    "const needsShell = process.platform === 'win32' && /\\.(cmd|bat)$/i.test(command);",
+    "const quoteToken = (part) => (/[\\s&|<>^()\"]/.test(String(part)) ? `\"${part}\"` : String(part));",
+    'const child = needsShell',
+    "  ? spawn([command, ...args].map(quoteToken).join(' '), { stdio: 'inherit', env: childEnv, shell: true })",
+    "  : spawn(command, args, { stdio: 'inherit', env: childEnv });",
     "child.on('exit', (code, signal) => {",
     '  if (signal) process.kill(process.pid, signal);',
     '  process.exit(code || 0);',
