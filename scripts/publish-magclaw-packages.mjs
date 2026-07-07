@@ -78,6 +78,30 @@ function wrapReleaseError(phase, error, publishId) {
   return wrapped;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// The registry needs a few seconds to serve a freshly published version;
+// verifying immediately after publish used to abort mid-release and leave
+// dependent packages unpublished (the 0.1.42/0.1.43 gaps).
+async function verifyWithRetry(pkg, npmVerify, options = {}) {
+  const attempts = options.verifyOnly ? 1 : Number(options.attempts || 5);
+  const delayMs = Number(options.delayMs || 10_000);
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await npmVerify(pkg, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+      options.logger?.info?.(`[packages:publish] registry not serving ${pkg.name}@${pkg.version} yet (attempt ${attempt}/${attempts}); retrying in ${Math.round(delayMs / 1000)}s`);
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
 export async function runPackagePublishRelease(options = {}) {
   const packages = safeArray(options.packages).map((pkg) => ({
     name: cleanText(pkg.name),
@@ -117,7 +141,7 @@ export async function runPackagePublishRelease(options = {}) {
       }
 
       phase = 'npm-verify';
-      const npmResult = await npmVerify(pkg, { registryUrl, publishId });
+      const npmResult = await verifyWithRetry(pkg, npmVerify, { registryUrl, publishId, verifyOnly, logger });
       verifyNpmPackage(pkg, npmResult);
       verified.push({ packageName: pkg.name, version: pkg.version, npm: npmResult });
     }
