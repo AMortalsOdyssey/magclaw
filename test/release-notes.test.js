@@ -31,11 +31,11 @@ test('release notes expose independent Web, Daemon, and Computer version catalog
   assert.match(notes.web.releases[0].title, /Package update API/);
   assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
   assert.equal(notes.web.releases[1].version, '0.4.0');
-  assert.equal(notes.daemon.releases[0].version, '0.1.40');
-  assert.match(notes.daemon.releases[0].title, /Shared CLI core alignment/);
-  assert.match(notes.teamSharing.releases[0].title, /Explicit foreground activation/i);
-  assert.match(notes.teamSharing.releases[0].improved[0], /explicit activation/i);
-  assert.match(notes.cliCore.releases[0].title, /Shared CLI core package/);
+  assert.equal(notes.daemon.releases[0].version, '0.1.45');
+  assert.match(notes.daemon.releases[0].title, /Windows daemon reliability/);
+  assert.match(notes.teamSharing.releases[0].title, /Unattended upgrade hardening/i);
+  assert.match(notes.teamSharing.releases[0].bugFix[0], /POSIX quoting/i);
+  assert.match(notes.cliCore.releases[0].title, /Windows daemon reliability/);
 });
 
 test('release notes normalization keeps the seeded catalog authoritative', () => {
@@ -63,11 +63,11 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.deepEqual(notes.web.releases.map((release) => release.version).slice(0, 3), ['0.4.1', '0.4.0', '0.3.8']);
   assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
   assert.equal(notes.web.releases[10].features[0], 'Feishu authorization login is now supported.');
-  assert.equal(notes.daemon.releases[0].version, '0.1.40');
+  assert.equal(notes.daemon.releases[0].version, '0.1.45');
   assert.ok(notes.daemon.releases.some((release) => release.version === '0.1.17'));
-  assert.equal(notes.computer.releases[0].version, '0.1.40');
+  assert.equal(notes.computer.releases[0].version, '0.1.45');
   assert.ok(notes.computer.releases.some((release) => release.version === '0.1.23'));
-  assert.equal(notes.teamSharing.releases[0].version, '0.2.13');
+  assert.equal(notes.teamSharing.releases[0].version, '0.2.15');
 });
 
 test('release notes can normalize one component without loading the whole catalog', () => {
@@ -94,7 +94,7 @@ test('release notes can render compact package update markdown', () => {
   const latest = notes.teamSharing.releases[0];
   const lines = latest.new.concat(latest.bugFix, latest.approval).slice(0, 5);
 
-  assert.equal(latest.version, '0.2.13');
+  assert.equal(latest.version, '0.2.15');
   assert.ok(lines.length <= 5);
   assert.ok(lines.every((line) => line.length < 160));
 });

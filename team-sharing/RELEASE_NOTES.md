@@ -1,5 +1,17 @@
 # @magclaw/team-sharing Release Notes
 
+## 0.2.15 - 2026-07-07 - Unattended upgrade hardening
+### bug fix
+- Claude Code hook commands now always use POSIX quoting; Windows setups previously wrote cmd.exe-style quoting that Git Bash hook execution could not parse.
+- Stale update locks left by hook-timeout-killed processes are now recovered automatically instead of silently skipping every later update.
+- `active.json` and update state are written atomically so the shim never reads a partially written version pointer.
+- New versions are staged into a scratch directory and swapped in only after a successful install, so failed downloads no longer corrupt existing version dirs.
+- `team-sharing update --target-version` now pins the requested version instead of re-resolving latest.
+### new
+- Hook-triggered auto-updates now run in a detached background process so agent hook timeouts cannot interrupt the npm install.
+- Updates now refresh user-scope (`~/.claude`, `~/.codex`) skill and hook installs, not just registered projects.
+- Upgrade checks time out after 4 seconds so offline hooks never hang.
+
 ## 0.2.14 - 2026-07-03 - Consensus non-trigger hardening
 ### bug fix
 - Clarified that bare Knowledge or consensus wording such as `查看一下关于创角的共识` is not a Team Sharing activation signal.
