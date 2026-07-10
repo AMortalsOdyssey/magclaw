@@ -1287,7 +1287,7 @@ export async function initTeamSharingProject(flags = {}, env = process.env) {
     project_key: projectKey,
     routing_mode: 'fixed_single_channel',
     channel: {
-      id: String(flags.channelId || (!channelIsPath ? channel : existing.channel?.id || '')).trim(),
+      id: String(flags.channelId || parsedChannelPath?.channelId || (!channelIsPath ? channel : existing.channel?.id || '')).trim(),
       path: String(flags.channelPath || (channelIsPath ? channel : existing.channel?.path || '')).trim(),
     },
     runtimes: {

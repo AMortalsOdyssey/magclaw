@@ -413,11 +413,37 @@ test('team sharing cli init treats signed MagClaw channel paths as channelPath, 
     '  path: mc://magclaw/server/ws_team/channel/chan_team?key=route-key',
   ].join('\n')));
 
-  assert.match(yaml, /id: ""/);
+  assert.match(yaml, /id: chan_team/);
   assert.match(yaml, /path: mc:\/\/magclaw\/server\/ws_team\/channel\/chan_team\?key=route-key/);
-  assert.equal(parsed.channelId, '');
+  assert.equal(parsed.channelId, 'chan_team');
   assert.equal(parsed.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
   assert.equal(legacyBlankId.channelId, '');
+});
+
+test('team sharing cli init replaces a stale channel id when a new signed channel path is provided', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-path-replace-project-'));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-cli-path-replace-home-'));
+  const env = { HOME: home, MAGCLAW_DAEMON_HOME: path.join(home, '.magclaw-daemon') };
+
+  await initTeamSharingProject({
+    cwd,
+    channel: 'chan_old',
+    serverUrl: 'https://magclaw.example',
+    workspaceId: 'ws_old',
+  }, env);
+  const result = await initTeamSharingProject({
+    cwd,
+    channel: 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key',
+    serverUrl: 'https://magclaw.example',
+  }, env);
+
+  const yaml = await readFile(path.join(cwd, '.magclaw', 'team-sharing.yaml'), 'utf8');
+  const parsed = normalizeTeamSharingProjectConfig(parseTeamSharingYaml(yaml));
+  assert.equal(result.workspaceId, 'ws_team');
+  assert.equal(result.channelId, 'chan_team');
+  assert.equal(parsed.workspaceId, 'ws_team');
+  assert.equal(parsed.channelId, 'chan_team');
+  assert.equal(parsed.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
 });
 
 test('team sharing cli init infers workspace id from signed MagClaw channel paths', async () => {
@@ -4208,7 +4234,7 @@ test('team sharing cli infers artifact title and type from local documents', asy
     assert.equal(calls[0].body.title, '团队分享总结');
     assert.equal(calls[0].body.contentType, 'markdown');
     assert.equal(calls[0].body.channelPath, 'mc://magclaw/server/ws_team/channel/chan_team?key=route-key');
-    assert.equal(calls[0].body.channelId, '');
+    assert.equal(calls[0].body.channelId, 'chan_team');
   } finally {
     globalThis.fetch = originalFetch;
   }
