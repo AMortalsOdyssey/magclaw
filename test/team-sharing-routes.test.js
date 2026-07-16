@@ -808,6 +808,26 @@ test('team sharing raw sessions remain searchable and expose a workspace before 
     },
   ), true);
   assert.ok(remoteSearchRes.data.results.some((item) => item.vectorDocumentId === 'sess_jhb_raw:RAW'));
+
+  deps.state.teamSharing.sessions.sess_jhb_raw.updatedAt = '2026-06-02T08:00:00.000Z';
+  const yesterdaySearchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    yesterdaySearchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      now: () => '2026-06-02T10:00:00.000Z',
+      readJson: async () => ({
+        member: '蒋海波',
+        time: 'yesterday',
+        channelId: 'chan_team',
+        sort: 'recent',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.ok(yesterdaySearchRes.data.results.some((item) => item.vectorDocumentId === 'sess_jhb_raw:RAW'));
   assert.equal(deps.state.teamSharing.syncReceipts[syncRes.data.receiptId].status, 'queued');
 });
 

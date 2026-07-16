@@ -3893,7 +3893,7 @@ function rawSessionSearchDocuments(teamSharingState = {}) {
       .sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0) || String(left.createdAt || '').localeCompare(String(right.createdAt || '')));
     if (!events.length) return [];
     const firstEventId = String(events[0]?.rawEventId || events[0]?.eventId || '').trim();
-    const updatedAt = String(session.updatedAt || events.at(-1)?.createdAt || session.createdAt || '').trim();
+    const updatedAt = String(events.at(-1)?.createdAt || session.updatedAt || session.createdAt || '').trim();
     const text = compactText([
       session.title || 'Team Sharing Session',
       session.optionalLocalDigest || '',
