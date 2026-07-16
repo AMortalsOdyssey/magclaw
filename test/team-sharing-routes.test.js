@@ -810,6 +810,7 @@ test('team sharing raw sessions remain searchable and expose a workspace before 
   assert.ok(remoteSearchRes.data.results.some((item) => item.vectorDocumentId === 'sess_jhb_raw:RAW'));
 
   deps.state.teamSharing.sessions.sess_jhb_raw.updatedAt = '2026-06-02T08:00:00.000Z';
+  deps.state.teamSharing.events.sess_jhb_raw[1].createdAt = '2026-06-02T08:00:00.000Z';
   const yesterdaySearchRes = makeResponse();
   assert.equal(await handleTeamSharingApi(
     { method: 'POST' },

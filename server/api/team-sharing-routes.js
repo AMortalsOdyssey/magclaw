@@ -3442,6 +3442,19 @@ function isWithinDateRange(value = '', dateRange = null) {
   return true;
 }
 
+function teamSharingDocumentDateValue(doc = {}, dateRange = null, teamSharingState = {}) {
+  const updatedAt = String(doc.updatedAt || '').trim();
+  if (!dateRange || typeof dateRange !== 'object') return updatedAt;
+  const rawSessionDocument = doc.sourceKind === 'session'
+    && String(doc.vectorDocumentId || '').endsWith(':RAW')
+    && doc.sessionId;
+  if (!rawSessionDocument) return isWithinDateRange(updatedAt, dateRange) ? updatedAt : '';
+  return asArray(teamSharingState?.events?.[doc.sessionId])
+    .map((event) => String(event?.createdAt || '').trim())
+    .filter((createdAt) => createdAt && isWithinDateRange(createdAt, dateRange))
+    .sort((left, right) => right.localeCompare(left))[0] || '';
+}
+
 function normalizeMemberMatchText(value = '') {
   return String(value || '')
     .trim()
@@ -3940,11 +3953,17 @@ function recentUploaderDocuments({ teamSharingState, uploaderIds = [], workspace
     .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
-    .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
+    .map((doc) => {
+      const matchedAt = teamSharingDocumentDateValue(doc, dateRange, teamSharingState);
+      return matchedAt ? { ...doc, updatedAt: matchedAt } : null;
+    })
+    .filter(Boolean)
     .filter((doc) => doc.layer === 'L0')
     .map((doc) => {
       const activeAt = String(
-        doc.sourceKind === 'share'
+        dateRange
+          ? doc.updatedAt
+          : doc.sourceKind === 'share'
           ? ensureTeamSharingShares(teamSharingState).find((share) => String(share.id || '') === String(doc.shareId || ''))?.updatedAt || doc.updatedAt
           : teamSharingState?.sessions?.[doc.sessionId]?.updatedAt || doc.updatedAt,
       ).trim();
@@ -3990,7 +4009,11 @@ function localVectorSearch({ teamSharingState, documents = null, query = '', wor
     .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
-    .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
+    .map((doc) => {
+      const matchedAt = teamSharingDocumentDateValue(doc, dateRange, teamSharingState);
+      return matchedAt ? { ...doc, updatedAt: matchedAt } : null;
+    })
+    .filter(Boolean)
     .map((doc) => {
       const haystack = `${doc.title || ''}\n${doc.topicId || ''}\n${doc.text || ''}`.toLowerCase();
       const matchedTerms = terms.filter((term) => haystack.includes(term));
@@ -4017,7 +4040,11 @@ function localKeywordSearch({ teamSharingState, documents = null, query = '', ke
     .filter((doc) => !excludeChannelId || doc.channelId !== excludeChannelId)
     .filter((doc) => !projectKey || doc.projectKey === projectKey)
     .filter((doc) => uploaderMatchesFilter(doc, uploaderIds))
-    .filter((doc) => isWithinDateRange(doc.updatedAt, dateRange))
+    .map((doc) => {
+      const matchedAt = teamSharingDocumentDateValue(doc, dateRange, teamSharingState);
+      return matchedAt ? { ...doc, updatedAt: matchedAt } : null;
+    })
+    .filter(Boolean)
     .map((doc) => {
       const haystack = `${doc.title || ''}\n${doc.topicId || ''}\n${doc.text || ''}`.toLowerCase();
       const matchedTerms = terms.filter((term) => haystack.includes(term));
