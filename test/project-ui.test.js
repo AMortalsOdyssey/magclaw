@@ -1250,6 +1250,25 @@ test('join-link auth keeps Feishu login on the join return path', async () => {
   assert.match(app, /window\.location\.assign\(joinReturnTo\)/);
 });
 
+test('completed cloud login navigates back to server-handled return paths', async () => {
+  const app = await readAppSource();
+  const passwordLoginSource = app.slice(
+    app.indexOf("if (form.id === 'cloud-login-form')"),
+    app.indexOf("if (form.id === 'feishu-link-form')"),
+  );
+  const feishuLinkSource = app.slice(
+    app.indexOf("if (form.id === 'feishu-link-form')"),
+    app.indexOf("if (form.id === 'cloud-open-register-form')"),
+  );
+
+  assert.match(passwordLoginSource, /window\.location\.assign\(loginReturnTo\)/);
+  assert.match(passwordLoginSource, /skipFinalRefresh = true;[\s\S]*return;/);
+  assert.doesNotMatch(passwordLoginSource, /history\.replaceState\([^\n]*loginReturnTo/);
+  assert.match(feishuLinkSource, /window\.location\.assign\(returnTo\)/);
+  assert.match(feishuLinkSource, /skipFinalRefresh = true;[\s\S]*return;/);
+  assert.doesNotMatch(feishuLinkSource, /history\.replaceState\([^\n]*returnTo/);
+});
+
 test('left rail settings entry renders as the signed-in user account avatar with hover details', async () => {
   const app = await readAppSource();
   const styles = await readStylesSource();

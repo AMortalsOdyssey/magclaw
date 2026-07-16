@@ -491,10 +491,12 @@ document.addEventListener('submit', async (event) => {
         }),
           });
           cloudLoginDraftEmail = '';
-          if (loginReturnTo.startsWith('/') && !loginReturnTo.startsWith('//') && window.history?.replaceState) {
-            window.history.replaceState({}, '', loginReturnTo);
-          }
           toast('Signed in');
+          if (loginReturnTo.startsWith('/') && !loginReturnTo.startsWith('//')) {
+            window.location.assign(loginReturnTo);
+            skipFinalRefresh = true;
+            return;
+          }
         }
         if (form.id === 'feishu-link-form') {
           const result = await api('/api/cloud/auth/feishu/link/confirm', {
@@ -502,8 +504,13 @@ document.addEventListener('submit', async (event) => {
             body: '{}',
           });
           const returnTo = String(result.returnTo || '').trim();
-          if (window.history?.replaceState) window.history.replaceState({}, '', returnTo || '/console');
           toast('Feishu account linked');
+          if (returnTo.startsWith('/') && !returnTo.startsWith('//')) {
+            window.location.assign(returnTo);
+            skipFinalRefresh = true;
+            return;
+          }
+          if (window.history?.replaceState) window.history.replaceState({}, '', '/console');
           await refreshStateOrAuthGate();
           skipFinalRefresh = true;
         }
