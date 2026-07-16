@@ -398,7 +398,7 @@ function compactReceiptError(error) {
   if (!error) return null;
   return {
     name: String(error?.name || 'Error').slice(0, 80),
-    message: compactText(error?.message || String(error), 300),
+    message: cleanText(error?.message || String(error)).slice(0, 300),
     code: String(error?.code || '').slice(0, 80),
   };
 }
@@ -1806,6 +1806,7 @@ export async function processTeamSharingSyncReceipt(receiptId = '', deps = {}) {
     return { ok: false, receipt };
   }
 
+  try {
   const allEvents = asArray(teamSharingState.events[receipt.sessionId]);
   const acceptedIds = new Set(asArray(receipt.acceptedEventIds).map((id) => String(id || '')));
   const acceptedEvents = acceptedIds.size
@@ -1891,6 +1892,26 @@ export async function processTeamSharingSyncReceipt(receiptId = '', deps = {}) {
       error: compactError,
     });
     return { ok: false, receipt };
+  }
+  } catch (error) {
+    const failedAt = now();
+    const failedPhase = receipt.phase === 'indexing' ? 'indexing' : 'summary';
+    const compactError = compactReceiptError(error) || { name: 'Error', message: 'Unknown Team Sharing processing error.', code: '' };
+    receipt.status = 'failed';
+    receipt.phase = failedPhase;
+    receipt.detail = `Team Sharing ${failedPhase} processing failed.`;
+    receipt.error = compactError;
+    receipt.completedAt = failedAt;
+    session.indexStatus = 'failed';
+    setTeamSharingReceiptStage(receipt, failedPhase, 'failed', failedAt, {
+      detail: receipt.detail,
+      error: compactError,
+    });
+    setTeamSharingReceiptStage(receipt, 'completed', 'failed', failedAt, {
+      detail: 'Team Sharing sync processing failed.',
+      error: compactError,
+    });
+    return { ok: false, receipt, error: compactError.message };
   }
 }
 

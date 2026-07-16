@@ -1091,6 +1091,9 @@ test('postgres store merges team sharing state records across workspaces on load
           abstracts: {
             sess_shared: { revision: 3, abstractMarkdown: '# Owner' },
           },
+          syncReceipts: {
+            rcpt_owner: { receiptId: 'rcpt_owner', sessionId: 'sess_shared', workspaceId: 'wsp_owner', status: 'completed' },
+          },
           vectorDocuments: [
             { vectorDocumentId: 'sess_shared:L0', sessionId: 'sess_shared', workspaceId: 'wsp_owner', layer: 'L0' },
           ],
@@ -1113,6 +1116,9 @@ test('postgres store merges team sharing state records across workspaces on load
           abstracts: {
             sess_other: { revision: 1, abstractMarkdown: '# Other' },
             sess_shared: { revision: 1, abstractMarkdown: '# Stale' },
+          },
+          syncReceipts: {
+            rcpt_other: { receiptId: 'rcpt_other', sessionId: 'sess_other', workspaceId: 'wsp_other', status: 'queued' },
           },
         },
       },
@@ -1143,6 +1149,8 @@ test('postgres store merges team sharing state records across workspaces on load
   assert.equal(state.teamSharing.abstracts.sess_shared.revision, 3);
   assert.deepEqual(state.teamSharing.events.sess_shared.map((event) => event.eventId), ['evt_1', 'evt_2']);
   assert.equal(state.teamSharing.sessions.sess_other.channelId, 'chan_other');
+  assert.equal(state.teamSharing.syncReceipts.rcpt_owner.status, 'completed');
+  assert.equal(state.teamSharing.syncReceipts.rcpt_other.status, 'queued');
 });
 
 test('postgres store upserts duplicate durable state records without crashing', async () => {
@@ -1276,6 +1284,10 @@ test('postgres store persists scoped team sharing state to the requested workspa
         sess_main: { revision: 2, abstractMarkdown: '# Main' },
         sess_other: { revision: 1, abstractMarkdown: '# Other' },
       },
+      syncReceipts: {
+        rcpt_main: { receiptId: 'rcpt_main', sessionId: 'sess_main', workspaceId: 'wsp_main', status: 'completed' },
+        rcpt_other: { receiptId: 'rcpt_other', sessionId: 'sess_other', workspaceId: 'wsp_other', status: 'queued' },
+      },
       vectorDocuments: [
         { vectorDocumentId: 'sess_main:L0', sessionId: 'sess_main', workspaceId: 'wsp_main', layer: 'L0' },
         { vectorDocumentId: 'sess_other:L0', sessionId: 'sess_other', workspaceId: 'wsp_other', layer: 'L0' },
@@ -1319,6 +1331,8 @@ test('postgres store persists scoped team sharing state to the requested workspa
   assert.deepEqual(Object.keys(payload.sessions), ['sess_main']);
   assert.equal(payload.abstracts.sess_main.revision, 2);
   assert.equal(payload.sessions.sess_other, undefined);
+  assert.deepEqual(Object.keys(payload.syncReceipts), ['rcpt_main']);
+  assert.equal(payload.syncReceipts.rcpt_main.status, 'completed');
   assert.equal(payload.vectorDocuments.some((doc) => doc.sessionId === 'sess_other'), false);
   assert.deepEqual(payload.shares.map((share) => share.id), ['share_main']);
   assert.deepEqual(payload.assets.map((asset) => asset.id), ['asset_main']);

@@ -78,6 +78,15 @@ async function openTeamSharingWorkspace(messageId = '') {
     toast('Team Sharing workspace is unavailable');
     return;
   }
+  threadMessageId = message.id;
+  mobileHomeOpen = false;
+  workspaceActivityDrawerOpen = false;
+  inspectorReturnThreadId = null;
+  selectedSavedRecordId = null;
+  selectedAgentId = null;
+  selectedTaskId = null;
+  selectedProjectFile = null;
+  markThreadRead(threadMessageId);
   teamSharingWorkspaceState = {
     ...teamSharingWorkspaceState,
     messageId: message.id,
@@ -89,6 +98,7 @@ async function openTeamSharingWorkspace(messageId = '') {
     expandedFolders: teamSharingWorkspaceState?.sessionId === sessionId ? (teamSharingWorkspaceState.expandedFolders || { topics: true }) : { topics: true },
   };
   render();
+  refreshThreadSelection(threadMessageId);
   try {
     const data = await api(`/api/team-sharing/workspace/${encodeURIComponent(sessionId)}`);
     if (teamSharingWorkspaceState.sessionId !== sessionId) return;

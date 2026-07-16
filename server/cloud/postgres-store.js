@@ -211,6 +211,7 @@ function mergeTeamSharingState(leftValue, rightValue) {
     sessions: mergeTeamSharingRecordMap(left.sessions, right.sessions),
     events: mergeTeamSharingEventsMap(left.events, right.events),
     syncLedger: mergeTeamSharingRecordMap(left.syncLedger, right.syncLedger),
+    syncReceipts: mergeTeamSharingRecordMap(left.syncReceipts, right.syncReceipts),
     abstracts: mergeTeamSharingRecordMap(left.abstracts, right.abstracts),
     activities: mergeTeamSharingArrays('activities', left.activities, right.activities),
     feedback: mergeTeamSharingArrays('feedback', left.feedback, right.feedback),
@@ -249,6 +250,11 @@ function teamSharingSessionIdsForWorkspace(teamSharingState, workspaceId, option
   for (const [key, ledger] of Object.entries(jsonObject(source.syncLedger))) {
     if (teamSharingRecordWorkspaceId(ledger) !== cleanWorkspaceId) continue;
     const sessionId = teamSharingRecordSessionId(ledger) || cleanIdentifier(key);
+    if (sessionId) sessionIds.add(sessionId);
+  }
+  for (const receipt of Object.values(jsonObject(source.syncReceipts))) {
+    if (teamSharingRecordWorkspaceId(receipt) !== cleanWorkspaceId) continue;
+    const sessionId = teamSharingRecordSessionId(receipt);
     if (sessionId) sessionIds.add(sessionId);
   }
   return sessionIds;
@@ -312,6 +318,7 @@ function filterTeamSharingStateForWorkspace(teamSharingState, workspaceId, optio
       const sessionId = teamSharingRecordSessionId(ledger);
       return matchesRecord(ledger) || (sessionId && sessionIds.has(sessionId)) || sessionIds.has(cleanIdentifier(key));
     }),
+    syncReceipts: filterMap(source.syncReceipts, (receipt) => matchesRecord(receipt)),
     abstracts: filterMap(source.abstracts, (_abstract, key) => sessionIds.has(cleanIdentifier(key))),
     activities: safeArray(source.activities).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue),
     feedback: safeArray(source.feedback).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue),
@@ -339,6 +346,7 @@ function hasTeamSharingContent(teamSharingState) {
   return objectHasKeys(source.sessions)
     || objectHasKeys(source.events)
     || objectHasKeys(source.syncLedger)
+    || objectHasKeys(source.syncReceipts)
     || objectHasKeys(source.abstracts)
     || safeArray(source.activities).length > 0
     || safeArray(source.feedback).length > 0

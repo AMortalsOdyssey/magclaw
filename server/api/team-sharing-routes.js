@@ -21,6 +21,7 @@ import {
   processTeamSharingSyncReceipt,
   rankTeamSharingCandidates,
   syncTeamSharingBatch,
+  teamSharingDisplayBodyForRecord,
 } from '../team-sharing.js';
 import { TEAM_SHARING_COMMON_LINK_ICONS } from '../team-sharing-link-icons.js';
 import { ensureWorkspaceAllChannel } from '../workspace-defaults.js';
@@ -1828,10 +1829,29 @@ function normalizeWorkspaceMarkdownSources(markdown = '', { sessionId = '', sour
   return appendWorkspaceInlineSource(stripped, sessionId, sourceEventId);
 }
 
+function rawTeamSharingWorkspaceAbstract(session = {}, events = []) {
+  const sessionId = String(session.sessionId || '').trim();
+  const eventLines = asArray(events).map((event) => {
+    const role = event.role === 'user' ? 'User' : 'Assistant';
+    const body = compactText(teamSharingDisplayBodyForRecord(event) || event.cleanText || event.displayText || '', 600);
+    const eventId = String(event.rawEventId || event.eventId || '').trim();
+    const source = eventId ? `（[原文](${sourceContextUrlForEvent(sessionId, eventId)})）` : '';
+    return body ? `- **${role}**：${body}${source}` : '';
+  }).filter(Boolean);
+  return [
+    `# ${session.title || 'Team Sharing Session'}`,
+    '',
+    '> Workspace 摘要与索引仍在处理中。以下内容直接来自已经成功上报的原始会话，因此即使后台摘要暂时失败，也可以立即查看。',
+    '',
+    '## Conversation',
+    eventLines.length ? eventLines.join('\n') : '原始会话尚未包含可展示事件。',
+  ].join('\n');
+}
+
 function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
   const session = teamSharingState.sessions?.[sessionId];
-  const abstract = teamSharingState.abstracts?.[sessionId];
-  if (!session || !abstract) return null;
+  const abstract = teamSharingState.abstracts?.[sessionId] || null;
+  if (!session) return null;
   const events = asArray(teamSharingState.events?.[sessionId])
     .slice()
     .sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0) || String(left.createdAt || '').localeCompare(String(right.createdAt || '')));
@@ -1839,7 +1859,7 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     .filter((activity) => activity.sessionId === sessionId)
     .slice()
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
-  const topics = Object.values(abstract.topics || {})
+  const topics = Object.values(abstract?.topics || {})
     .sort((left, right) => String(left.title || left.topicId || '').localeCompare(String(right.title || right.topicId || '')));
   const activitiesJson = JSON.stringify(activities.map((activity) => ({
     activityId: activity.activityId || '',
@@ -1851,16 +1871,16 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
     sourceEventIds: asArray(activity.sourceEventIds),
     createdAt: activity.createdAt || '',
   })), null, 2);
-  const abstractMarkdown = normalizeWorkspaceMarkdownSources(abstract.abstractMarkdown || '', {
+  const abstractMarkdown = normalizeWorkspaceMarkdownSources(abstract?.abstractMarkdown || rawTeamSharingWorkspaceAbstract(session, events), {
     sessionId,
-    sourceEventIds: asArray(abstract.sourceEventIds),
+    sourceEventIds: asArray(abstract?.sourceEventIds),
   });
   const files = [
     teamSharingWorkspaceFile('abstract.md', abstractMarkdown),
-    teamSharingWorkspaceFile('debug-log.md', abstract.debugLogMarkdown || [
+    teamSharingWorkspaceFile('debug-log.md', abstract?.debugLogMarkdown || [
       `# ${session.title || 'Team Sharing Session'} Debug Log`,
       '',
-      'No sync log entries yet.',
+      abstract ? 'No sync log entries yet.' : 'Raw events are available. Summary and indexing have not completed yet.',
     ].join('\n')),
     teamSharingWorkspaceFile('activities.json', activitiesJson, { previewKind: 'json' }),
     ...topics.map((topic) => {
@@ -1888,9 +1908,10 @@ function buildTeamSharingWorkspace(teamSharingState = {}, sessionId = '') {
       projectKey: session.projectKey || '',
       workspaceId: session.workspaceId || '',
       channelId: session.channelId || '',
-      abstractRevision: session.abstractRevision || abstract.revision || 0,
+      abstractRevision: session.abstractRevision || abstract?.revision || 0,
       indexStatus: session.indexStatus || '',
-      updatedAt: abstract.updatedAt || session.updatedAt || '',
+      workspaceStatus: abstract ? 'ready' : 'raw',
+      updatedAt: abstract?.updatedAt || session.updatedAt || '',
       eventCount: events.length,
       activityCount: activities.length,
       topicCount: topics.length,
@@ -3859,9 +3880,60 @@ function uploaderMatchesFilter(doc = {}, uploaderIds = []) {
   return Boolean(docUploaderId && ids.has(docUploaderId));
 }
 
+function rawSessionSearchDocuments(teamSharingState = {}) {
+  const indexedSessionIds = new Set(asArray(teamSharingState?.vectorDocuments)
+    .filter((doc) => doc.active !== false && doc.layer === 'L0' && doc.sessionId)
+    .map((doc) => String(doc.sessionId || '').trim())
+    .filter(Boolean));
+  return Object.entries(teamSharingState?.sessions || {}).flatMap(([key, session]) => {
+    const sessionId = String(session?.sessionId || key || '').trim();
+    if (!sessionId || indexedSessionIds.has(sessionId)) return [];
+    const events = asArray(teamSharingState?.events?.[sessionId])
+      .slice()
+      .sort((left, right) => Number(left.ordinal || 0) - Number(right.ordinal || 0) || String(left.createdAt || '').localeCompare(String(right.createdAt || '')));
+    if (!events.length) return [];
+    const firstEventId = String(events[0]?.rawEventId || events[0]?.eventId || '').trim();
+    const updatedAt = String(session.updatedAt || events.at(-1)?.createdAt || session.createdAt || '').trim();
+    const text = compactText([
+      session.title || 'Team Sharing Session',
+      session.optionalLocalDigest || '',
+      ...events.map((event) => `${event.role || 'message'}: ${teamSharingDisplayBodyForRecord(event) || event.cleanText || event.displayText || ''}`),
+    ].filter(Boolean).join('\n'), 12000);
+    return [{
+      vectorDocumentId: `${sessionId}:RAW`,
+      sourceKind: 'session',
+      workspaceId: String(session.workspaceId || '').trim(),
+      channelId: String(session.channelId || '').trim(),
+      projectKey: String(session.projectKey || '').trim(),
+      runtime: String(session.runtime || '').trim(),
+      sessionId,
+      title: String(session.title || 'Team Sharing Session').trim(),
+      layer: 'L0',
+      topicId: '',
+      rawEventId: firstEventId,
+      sourceEventIds: firstEventId ? [firstEventId] : [],
+      sourceRef: firstEventId ? `${sessionId}/events/${firstEventId}.md#${firstEventId}` : `${sessionId}/events`,
+      text,
+      updatedAt,
+      active: true,
+      vectorScore: 0.05,
+      keywordScore: 0,
+      freshnessScore: 0.5,
+      ...uploaderMetadataFromIdentity(session.uploader || {}),
+    }];
+  });
+}
+
+function teamSharingSearchDocuments(teamSharingState = {}) {
+  return [
+    ...asArray(teamSharingState?.vectorDocuments),
+    ...rawSessionSearchDocuments(teamSharingState),
+  ];
+}
+
 function recentUploaderDocuments({ teamSharingState, uploaderIds = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', dateRange = null, limit = 40 } = {}) {
   const seen = new Set();
-  const candidates = asArray(teamSharingState?.vectorDocuments)
+  const candidates = teamSharingSearchDocuments(teamSharingState)
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
@@ -3909,9 +3981,9 @@ function keywordSearchInputs({ query = '', keywordQuery = '', keywords = [], top
   return { phrases, terms };
 }
 
-function localVectorSearch({ teamSharingState, query = '', workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+function localVectorSearch({ teamSharingState, documents = null, query = '', workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const terms = queryTerms(query);
-  const candidates = asArray(teamSharingState?.vectorDocuments)
+  const candidates = (documents === null ? teamSharingSearchDocuments(teamSharingState) : asArray(documents))
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
@@ -3936,9 +4008,9 @@ function localVectorSearch({ teamSharingState, query = '', workspaceId = '', cha
   return { ok: true, candidates };
 }
 
-function localKeywordSearch({ teamSharingState, query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
+function localKeywordSearch({ teamSharingState, documents = null, query = '', keywordQuery = '', keywords = [], topics = [], workspaceId = '', channelId = '', excludeChannelId = '', projectKey = '', uploaderIds = [], dateRange = null, limit = 40 } = {}) {
   const { phrases, terms } = keywordSearchInputs({ query, keywordQuery, keywords, topics });
-  const candidates = asArray(teamSharingState?.vectorDocuments)
+  const candidates = (documents === null ? teamSharingSearchDocuments(teamSharingState) : asArray(documents))
     .filter((doc) => doc.active !== false)
     .filter((doc) => !workspaceId || doc.workspaceId === workspaceId)
     .filter((doc) => !channelId || doc.channelId === channelId)
@@ -6557,7 +6629,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     }
     const semanticPromise = needsSemantic
       ? Promise.all(searchScopes.map(async (scope) => {
-        const result = semanticRemoteReady
+        let result = semanticRemoteReady
           ? await vectorSearch({
             ...scopedSearchBase(scope),
             query: intent.semanticQuery,
@@ -6571,6 +6643,14 @@ export async function handleTeamSharingApi(req, res, url, deps) {
             ...scopedSearchBase(scope),
             query: intent.semanticQuery,
           });
+        if (semanticRemoteReady && result?.ok) {
+          const rawFallback = localVectorSearch({
+            ...scopedSearchBase(scope),
+            documents: rawSessionSearchDocuments(teamSharingState),
+            query: intent.semanticQuery,
+          });
+          result = mergeScopedSearchResults([result, rawFallback], candidateK);
+        }
         return annotateScopedCandidates(result, scope, currentChannelId);
       })).then((results) => mergeScopedSearchResults(results, candidateK))
       : Promise.resolve({ ok: true, candidates: [] });
@@ -6589,7 +6669,17 @@ export async function handleTeamSharingApi(req, res, url, deps) {
               searchMode,
               modeBias: intent.modeBias,
             }).catch((error) => ({ ok: false, error: error?.message || 'Team sharing keyword search failed.' }));
-            if (remote?.ok) return annotateScopedCandidates(remote, scope, currentChannelId);
+            if (remote?.ok) {
+              const rawFallback = localKeywordSearch({
+                ...scopedSearchBase(scope),
+                documents: rawSessionSearchDocuments(teamSharingState),
+                query: intent.query,
+                keywordQuery: intent.keywordQuery,
+                keywords: intent.keywords,
+                topics: intent.topics,
+              });
+              return annotateScopedCandidates(mergeScopedSearchResults([remote, rawFallback], candidateK), scope, currentChannelId);
+            }
             const fallback = localKeywordSearch({
               ...scopedSearchBase(scope),
               query: intent.query,

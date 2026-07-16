@@ -87,6 +87,9 @@ test('thread drawer exposes Team Sharing workspace files for session messages', 
   );
   assert.doesNotMatch(copyFileLinkSource, /render\(\)/);
   assert.match(clickSource, /\/api\/team-sharing\/workspace\/\$\{encodeURIComponent\(sessionId\)\}/);
+  assert.match(clickSource, /threadMessageId = message\.id/);
+  assert.match(clickSource, /markThreadRead\(threadMessageId\)/);
+  assert.match(clickSource, /render\(\);\s*refreshThreadSelection\(threadMessageId\);/);
   assert.doesNotMatch(app, /'open-team-sharing-workspace-file': \['Loading workspace file\.\.\.'/);
   assert.doesNotMatch(app, /'copy-team-sharing-workspace-file-link': \[/);
   assert.match(app, /'jump-team-sharing-workspace-heading'/);

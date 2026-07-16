@@ -398,6 +398,44 @@ test('team sharing sync acknowledges receipt before asynchronous processing comp
   assert.ok(deps.persistCalls.some((call) => call.reason === 'team_sharing_sync_processed'));
 });
 
+test('team sharing sync falls back cleanly when the summary provider throws', async () => {
+  const scheduled = [];
+  const indexed = [];
+  const deps = routeDeps({
+    readJson: async () => syncBody(),
+    scheduleTeamSharingProcessing: (task) => scheduled.push(task),
+    summarizeSession: async () => {
+      throw new Error('summary provider unavailable');
+    },
+    indexTeamSharingDocuments: async ({ documents }) => {
+      indexed.push(...documents);
+      return { count: documents.length };
+    },
+  });
+
+  const syncRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    syncRes,
+    new URL('http://local/api/team-sharing/sync'),
+    deps,
+  ), true);
+  assert.equal(syncRes.statusCode, 202);
+  assert.equal(scheduled.length, 1);
+
+  await scheduled[0]();
+
+  const receipt = deps.state.teamSharing.syncReceipts[syncRes.data.receiptId];
+  assert.equal(receipt.status, 'completed');
+  assert.equal(receipt.stages.summary.status, 'completed');
+  assert.equal(receipt.stages.summary.detail, 'Fallback summary generated after summary provider error.');
+  assert.equal(receipt.stages.summary.warning.message, 'summary provider unavailable');
+  assert.equal(receipt.stages.indexing.status, 'completed');
+  assert.ok(indexed.some((doc) => doc.sessionId === 'sess_route' && doc.layer === 'L0'));
+  assert.match(deps.state.teamSharing.abstracts.sess_route.abstractMarkdown, /MagClaw rerank route session/);
+  assert.equal(deps.events.some((event) => event.type === 'team_sharing_sync_process_error'), false);
+});
+
 test('team sharing route sync redacts local paths and accounts before storing or indexing', async () => {
   const indexed = [];
   const windowsProject = String.raw`D:\公司\正式项目\memory-experiment`;
@@ -679,6 +717,98 @@ test('team sharing route exposes a session workspace with abstract, topics, and 
     { ...deps, currentActor: () => ({ member: { workspaceId: 'ws_other', humanId: 'hum_other' } }) },
   ), true);
   assert.equal(deniedRes.statusCode, 403);
+});
+
+test('team sharing raw sessions remain searchable and expose a workspace before summary processing', async () => {
+  const scheduled = [];
+  const deps = routeDeps({
+    currentActor: () => ({
+      member: {
+        workspaceId: 'ws_route',
+        humanId: 'hum_jhb',
+        name: '蒋海波',
+        email: 'jhb@example.com',
+      },
+    }),
+    scheduleTeamSharingProcessing: (task) => scheduled.push(task),
+    vectorSearch: null,
+    keywordSearch: null,
+    rerank: null,
+  });
+  deps.state.humans = [{ id: 'hum_jhb', name: '蒋海波', email: 'jhb@example.com' }];
+  deps.state.cloud.workspaceMembers = [
+    { workspaceId: 'ws_route', humanId: 'hum_jhb', email: 'jhb@example.com', status: 'active' },
+  ];
+
+  const syncRes = await syncRouteSession(deps, {
+    ...syncBody(),
+    sessionId: 'sess_jhb_raw',
+    idempotencyKey: 'route:raw:jhb',
+    title: '蒋海波尚未摘要的会话',
+    events: [
+      { eventId: 'evt_jhb_raw_1', ordinal: 1, role: 'user', text: '原始消息里讨论了 workspace 打不开和检索缺失。', createdAt: '2026-06-01T09:58:00.000Z' },
+      { eventId: 'evt_jhb_raw_2', ordinal: 2, role: 'assistant', text: '先保证原话立即可查，再异步生成摘要。', createdAt: '2026-06-01T09:59:00.000Z' },
+    ],
+  });
+  assert.equal(scheduled.length, 1);
+  assert.equal(deps.state.teamSharing.abstracts.sess_jhb_raw, undefined);
+  assert.equal(deps.state.teamSharing.vectorDocuments.some((doc) => doc.sessionId === 'sess_jhb_raw'), false);
+
+  const workspaceRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    workspaceRes,
+    new URL('http://local/api/team-sharing/workspace/sess_jhb_raw'),
+    deps,
+  ), true);
+  assert.equal(workspaceRes.statusCode, 200);
+  assert.equal(workspaceRes.data.session.workspaceStatus, 'raw');
+  const abstractFile = workspaceRes.data.files.find((file) => file.path === 'abstract.md');
+  assert.match(abstractFile.content, /摘要与索引仍在处理中/);
+  assert.match(abstractFile.content, /workspace 打不开和检索缺失/);
+  assert.match(abstractFile.content, /\[原文\]\(\/team-sharing\/context\/sess_jhb_raw\?anchorEventId=evt_jhb_raw_1/);
+
+  const searchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    searchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      readJson: async () => ({
+        query: '蒋海波今天说了什么内容',
+        channelId: 'chan_team',
+        sort: 'recent',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.equal(searchRes.statusCode, 200);
+  assert.equal(searchRes.data.memberResolution.status, 'matched');
+  assert.equal(searchRes.data.timePreference, 'today');
+  assert.ok(searchRes.data.results.some((item) => item.sessionId === 'sess_jhb_raw' && item.vectorDocumentId === 'sess_jhb_raw:RAW'));
+  assert.equal(searchRes.data.results.find((item) => item.sessionId === 'sess_jhb_raw').uploader.name, '蒋海波');
+
+  const remoteSearchRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST' },
+    remoteSearchRes,
+    new URL('http://local/api/team-sharing/search'),
+    {
+      ...deps,
+      vectorSearch: async () => ({ ok: true, candidates: [] }),
+      keywordSearch: async () => ({ ok: true, candidates: [] }),
+      zillizReady: () => true,
+      keywordSearchReady: () => true,
+      readJson: async () => ({
+        query: 'workspace 打不开',
+        channelId: 'chan_team',
+        limit: 5,
+      }),
+    },
+  ), true);
+  assert.ok(remoteSearchRes.data.results.some((item) => item.vectorDocumentId === 'sess_jhb_raw:RAW'));
+  assert.equal(deps.state.teamSharing.syncReceipts[syncRes.data.receiptId].status, 'queued');
 });
 
 test('team sharing workspace normalizes legacy standalone original-context links', async () => {
