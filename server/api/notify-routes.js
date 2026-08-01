@@ -402,8 +402,16 @@ export async function handleNotifyApi(req, res, url, deps) {
     if (computer) {
       const delivery = await daemonRelay.deliverNotifyRequest(computer, request);
       request.deliveryId = delivery?.delivery?.id || '';
-      request.status = delivery?.queued ? 'queued' : 'awaiting_configuration';
-      if (!delivery?.queued) request.publicReason = 'Notify delivery computer is unavailable.';
+      // A fast local handler can report its terminal/configuration result before
+      // deliverNotifyRequest resolves. Do not replace that newer result with the
+      // transport-level queued state from this submission path.
+      if (!request.result) {
+        request.status = delivery?.queued ? 'queued' : 'awaiting_configuration';
+        if (!delivery?.queued) {
+          request.publicReason = 'Notify delivery computer is unavailable.';
+          request.completedAt = now();
+        }
+      }
     }
     token.lastUsedAt = now();
     token.updatedAt = now();

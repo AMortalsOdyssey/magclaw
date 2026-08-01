@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { handleNotifyApi } from '../server/api/notify-routes.js';
 import {
+  applyNotifyResult,
   normalizeNotifySubmission,
   notifyRecords,
   notifyTokenForRequest,
@@ -126,10 +127,30 @@ test('Notify device login issues a machine-bound token and submits an external-s
   assert.deepEqual(Object.keys(submitted.res.body.request).sort(), ['completedAt', 'createdAt', 'id', 'reason', 'status', 'target', 'title', 'updatedAt'].sort());
   assert.equal(JSON.stringify(submitted.res.body).includes('cmp_1'), false);
 
+  deps.daemonRelay.deliverNotifyRequest = async (_computer, request) => {
+    applyNotifyResult(state, {
+      requestId: request.id,
+      status: 'awaiting_configuration',
+      publicReason: 'Notify groups are not configured.',
+    }, deps.now);
+    return { queued: true, delivery: { id: `adl_${request.id}` } };
+  };
+  const fastResult = await callRoute(deps, 'POST', '/api/notify/requests', {
+    headers: { ...headers, 'idempotency-key': 'session-1:turn-2:研发群' },
+    body: {
+      explicitUserAuthorization: true,
+      target: { group: '研发群' },
+      content: { title: '快速回写', markdown: '- 本地配置尚未完成' },
+      context: { sessionId: 'session-1', turnId: 'turn-2' },
+    },
+  });
+  assert.equal(fastResult.res.body.request.status, 'awaiting_configuration');
+  assert.equal(fastResult.res.body.request.reason, 'Notify groups are not configured.');
+
   const token = notifyTokenForRequest(state, { headers }, 'notify:status');
   assert.ok(token);
   assert.equal(token.machineFingerprint, fingerprint);
-  assert.equal(notifyRecords(state).filter((record) => record.type === 'request').length, 1);
+  assert.equal(notifyRecords(state).filter((record) => record.type === 'request').length, 2);
 });
 
 test('Notify browser approval cannot cross MagClaw workspaces', async () => {
