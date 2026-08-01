@@ -8,8 +8,9 @@
 
 It does **not** connect to a MagClaw Server, Computer, workspace, or the existing
 `@magclaw/daemon`. Both sender and owner connect only to a shared Notify Relay.
-The Relay never receives the owner's Feishu Chat IDs, Open IDs, application
-credentials, local directory, or IP address exposed to other users.
+The Relay never receives local routing Chat IDs, directory person Open IDs,
+application credentials, the local directory, or an owner IP exposed to other
+users. It keeps only the limited Feishu login identity required for access audit.
 
 ## Owner: create an independent Notify Daemon
 
@@ -38,7 +39,13 @@ magclaw-notify daemon configure \
   --delivery-provider lark-cli-feishu \
   --delivery-command /path/to/lark-cli \
   --delivery-account monkey \
-  --delivery-enabled true
+  --delivery-enabled true \
+  --confirmation-provider lark-cli-feishu \
+  --confirmation-command /path/to/lark-cli \
+  --confirmation-account monkey \
+  --confirmation-target OWNER_OPEN_ID \
+  --owner-open-id OWNER_OPEN_ID \
+  --confirmation-enabled true
 
 magclaw-notify daemon add-group \
   --name "测试monkey" \
@@ -61,6 +68,12 @@ magclaw-notify daemon status
 Use `magclaw-notify daemon run` for a foreground process and
 `magclaw-notify daemon stop` to stop the background process. Local state is
 stored under `~/.magclaw/notify/daemon/` with owner-only permissions.
+
+For approval buttons, enable `card.action.trigger` in the Monkey application's
+Feishu Developer Console and grant `im:message:readonly`. The independent
+Daemon consumes those events over Feishu's outbound WebSocket connection; it
+does not expose a callback URL or local IP. The callback handler checks that the
+operator Open ID equals the locally configured owner Open ID.
 
 ## Sender: install with the owner-provided Setup Token
 
@@ -130,6 +143,55 @@ confirmation.
 magclaw-notify status nreq_example
 ```
 
+The immediate response is intentionally two-phase:
+
+- `processing`: the owner Daemon received the request and found an active
+  user-by-group grant. Agent parsing and Feishu delivery continue asynchronously.
+- `awaiting_owner_approval`: the owner Daemon stored the request and sent one
+  private approval card to the owner. Approval automatically resumes delivery.
+- `sent`, `failed`, `rejected`, or `approval_expired`: final status returned by
+  a later `status` call.
+
+The HTTPS request waits only for the local Daemon's permission decision, for at
+most five seconds. It never waits for OpenClaw, another Agent provider, or the
+final Feishu send.
+
+Once the owner has permanently approved at least one target for the current
+sender, the sender can list only those approved names:
+
+```sh
+magclaw-notify targets
+```
+
+This command never reveals configured-but-unapproved groups, Chat IDs, or local
+aliases.
+
+## Group authorization batches
+
+Authorization is scoped to one authenticated Feishu user and one resolved local
+group. A first request creates a 48-hour batch. Additional requests from the
+same user to the same group join that batch without sending another owner card.
+
+The owner card offers:
+
+- **Allow once**: deliver only the first request in the batch; reject the rest.
+- **Always allow**: deliver the entire pending batch, create the user-by-group
+  grant, and accept future requests directly.
+- **Reject**: reject the entire pending batch and create no grant.
+
+If the owner does not act within 48 hours, the batch becomes
+`approval_expired`. No grant is created, and the next explicitly authorized
+request starts a new approval batch.
+
+Owners can audit or revoke local target grants independently from sender login
+access:
+
+```sh
+magclaw-notify daemon grants list
+magclaw-notify daemon grants list --all
+magclaw-notify daemon grants revoke --grant-id ntg_example
+```
+
 ## Routing and security model
 
 1. The owner Daemon authenticates with a private, machine-bound Daemon token and
@@ -144,3 +206,6 @@ magclaw-notify status nreq_example
    or stripped before Relay delivery.
 6. Feishu identifiers are injected only by deterministic code on the owner
    machine.
+7. The Relay receives only target labels and lifecycle statuses. Exact group and
+   person resolution, grants, approval batches, Chat IDs, Open IDs, and app
+   credentials remain on the owner machine.

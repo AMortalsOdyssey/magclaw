@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,10 +17,13 @@ import {
   confirmNotifyMapping,
   configureNotifyHandler,
   handleNotifyDelivery,
+  larkCardForTargetApproval,
+  listNotifyTargetGrants,
   larkCardForNotify,
   mergeNotifyMentions,
   resolveNotifyGroup,
   resolveNotifyPeople,
+  prepareNotifyDelivery,
 } from '../notify/src/handler.js';
 import { notifyIdempotencyKey } from '../notify/src/cli.js';
 
@@ -68,6 +71,7 @@ function routeDeps(state, overrides = {}) {
     currentUser: () => user,
     notifyRelay: {
       deliverNotifyRequest: async (request) => ({ queued: true, delivery: { id: `ndl_${request.id}` } }),
+      listNotifyTargets: async () => ({ available: true, targets: [] }),
     },
     getState: () => state,
     makeId: (prefix) => `${prefix}_${++id}`,
@@ -326,9 +330,20 @@ test('Setup token routes an authenticated client request to exactly one independ
   const delivered = [];
   const deps = routeDeps(state, {
     notifyRelay: {
+      listNotifyTargets: async (_relayId, requester) => ({ available: true, targets: [{ group: requester.id === 'usr_1' ? '研发群' : '' }] }),
       deliverNotifyRequest: async (request) => {
         delivered.push(request);
-        return { queued: true, delivery: { id: `ndl_${request.id}` } };
+        return {
+          queued: true,
+          delivery: { id: `ndl_${request.id}` },
+          ack: {
+            status: 'awaiting_owner_approval',
+            publicReason: 'Owner approval is pending.',
+            confirmationExpiresAt: '2027-01-17T08:00:00.000Z',
+            pendingRequestCount: 1,
+            batchedRequestIds: [request.id],
+          },
+        };
       },
     },
   });
@@ -362,11 +377,16 @@ test('Setup token routes an authenticated client request to exactly one independ
     },
   });
   assert.equal(submitted.res.status, 202);
-  assert.equal(submitted.res.body.request.status, 'queued');
+  assert.equal(submitted.res.body.request.status, 'awaiting_owner_approval');
+  assert.equal(submitted.res.body.request.approval.pendingRequestCount, 1);
   assert.equal(delivered.length, 1);
   assert.equal(delivered[0].relayId, installation.id);
   assert.equal(delivered[0].computerId, undefined);
   assert.equal(JSON.stringify(submitted.res.body).includes(installation.id), false);
+
+  const targets = await callRoute(deps, 'GET', '/api/notify/targets', { headers });
+  assert.deepEqual(targets.res.body.targets, [{ group: '研发群' }]);
+  assert.equal(JSON.stringify(targets.res.body).includes('oc_'), false);
 
   const token = notifyTokenForRequest(state, { headers }, 'notify:status');
   assert.equal(token.relayId, installation.id);
@@ -431,7 +451,7 @@ test('Notify OpenClaw delivery never silently drops a requested Feishu mention',
     agentProvider: { command: path.join(root, 'missing-agent') },
     deliveryProvider: { kind: 'openclaw-feishu', account: 'monkey', enabled: true },
   });
-  const result = await handleNotifyDelivery(profilePaths, {
+  const request = {
     id: 'nreq_openclaw_mention',
     requester: { id: 'hum_remote', name: '李四' },
     payload: {
@@ -440,9 +460,12 @@ test('Notify OpenClaw delivery never silently drops a requested Feishu mention',
       mentions: ['张三'],
       context: {},
     },
-  });
-  assert.equal(result.status, 'failed');
-  assert.equal(result.publicReason, 'Notify delivery failed.');
+  };
+  const awaiting = await handleNotifyDelivery(profilePaths, request);
+  assert.equal(awaiting.status, 'awaiting_owner_approval');
+  const approved = await confirmNotifyMapping(profilePaths, awaiting.confirmationId, 'once');
+  assert.equal(approved.result.status, 'failed');
+  assert.equal(approved.result.publicReason, 'Notify delivery failed.');
 });
 
 test('Notify owner confirmation persists a fuzzy group alias and resumes the stored request', async () => {
@@ -465,10 +488,81 @@ test('Notify owner confirmation persists a fuzzy group alias and resumes the sto
   const pending = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
   const confirmed = await confirmNotifyMapping(profilePaths, pending[0].id, 'approve');
   assert.equal(confirmed.confirmation.status, 'approved');
-  assert.equal(confirmed.result.status, 'awaiting_configuration');
+  assert.equal(confirmed.result.status, 'awaiting_owner_approval');
   assert.equal(confirmed.cloudReport.reported, false);
+  const pendingAfterAlias = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
+  const targetApproval = pendingAfterAlias.find((record) => record.kind === 'target_access' && record.status === 'pending');
+  const targetApproved = await confirmNotifyMapping(profilePaths, targetApproval.id, 'once');
+  assert.equal(targetApproved.result.status, 'awaiting_configuration');
   const directory = JSON.parse(await readFile(path.join(root, 'notify', 'directory.json'), 'utf8'));
   assert.deepEqual(directory.groups[0].confirmedAliases, ['研发群']);
+});
+
+test('Notify target approval batches per user and group with once, permanent, owner-only, and 48-hour semantics', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-target-access-'));
+  const profilePaths = { dir: root, profile: 'target-access', config: path.join(root, 'daemon-config.json') };
+  await configureNotifyHandler(profilePaths, {
+    agentProvider: { command: path.join(root, 'missing-agent') },
+    confirmationProvider: { ownerOpenId: 'ou_owner' },
+  });
+  await addNotifyGroup(profilePaths, { name: '测试monkey', chatId: 'oc_local_only', aliases: ['测试'] });
+  const makeRequest = (id, requesterId = 'usr_sender') => ({
+    id,
+    requester: { id: requesterId, name: '李四' },
+    payload: {
+      target: { group: '测试' },
+      content: { title: `本轮更新 ${id}`, markdown: '- 完成修复' },
+      mentions: [],
+      context: {},
+    },
+  });
+
+  const first = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_1'));
+  const second = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_2'));
+  const third = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_3'));
+  assert.equal(first.status, 'awaiting_owner_approval');
+  assert.equal(first.promptNeeded, true);
+  assert.equal(second.confirmationId, first.confirmationId);
+  assert.equal(second.promptNeeded, false);
+  assert.equal(third.pendingRequestCount, 3);
+  const pending = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
+  const batch = pending.find((record) => record.id === first.confirmationId);
+  assert.ok(Math.abs((Date.parse(batch.expiresAt) - Date.parse(batch.createdAt)) - 48 * 60 * 60 * 1000) < 1000);
+  const card = larkCardForTargetApproval(batch);
+  assert.deepEqual(card.body.elements.slice(1, 4).map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
+
+  await assert.rejects(
+    confirmNotifyMapping(profilePaths, first.confirmationId, 'always', { operatorId: 'ou_not_owner' }),
+    /Only the configured Notify owner/i,
+  );
+  const once = await confirmNotifyMapping(profilePaths, first.confirmationId, 'once', { operatorId: 'ou_owner' });
+  assert.deepEqual(once.results.map((result) => result.status), ['awaiting_configuration', 'rejected', 'rejected']);
+  assert.equal((await listNotifyTargetGrants(profilePaths)).length, 0);
+
+  const next = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_4'));
+  const nextAgain = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_5'));
+  assert.notEqual(next.confirmationId, first.confirmationId);
+  assert.equal(nextAgain.confirmationId, next.confirmationId);
+  const always = await confirmNotifyMapping(profilePaths, next.confirmationId, 'always', { operatorId: 'ou_owner' });
+  assert.deepEqual(always.results.map((result) => result.status), ['awaiting_configuration', 'awaiting_configuration']);
+  const grants = await listNotifyTargetGrants(profilePaths, { userId: 'usr_sender' });
+  assert.equal(grants.length, 1);
+  assert.equal(grants[0].target.group, '测试monkey');
+  const direct = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_6'));
+  assert.equal(direct.status, 'processing');
+  assert.equal(direct.shouldProcess, true);
+
+  const expiring = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired', 'usr_other'));
+  const pendingPath = path.join(root, 'notify', 'pending-confirmations.json');
+  const expiringRecords = JSON.parse(await readFile(pendingPath, 'utf8'));
+  const expiringRecord = expiringRecords.find((record) => record.id === expiring.confirmationId);
+  expiringRecord.expiresAt = new Date(Date.now() - 1000).toISOString();
+  await writeFile(pendingPath, `${JSON.stringify(expiringRecords, null, 2)}\n`);
+  await assert.rejects(confirmNotifyMapping(profilePaths, expiring.confirmationId, 'always', { operatorId: 'ou_owner' }), /expired/i);
+  const afterExpiry = JSON.parse(await readFile(pendingPath, 'utf8'));
+  assert.equal(afterExpiry.find((record) => record.id === expiring.confirmationId).result.status, 'approval_expired');
+  const retry = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired_retry', 'usr_other'));
+  assert.notEqual(retry.confirmationId, expiring.confirmationId);
 });
 
 test('Notify Daemon result reporting updates only its own Relay request', async () => {

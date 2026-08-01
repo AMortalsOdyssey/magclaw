@@ -688,6 +688,21 @@ export async function handleNotifyApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/notify/targets') {
+    const token = notifyTokenForRequest(state, req, 'notify:status');
+    if (!token) {
+      sendError(res, 401, 'Notify authorization is required.');
+      return true;
+    }
+    const listed = await notifyRelay.listNotifyTargets(token.relayId, token.user || {});
+    if (!listed.available) {
+      sendJson(res, 200, { ok: true, available: false, targets: [], reason: 'Notify Daemon is offline or unavailable.' });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, available: true, targets: listed.targets });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/notify/requests') {
     const token = notifyTokenForRequest(state, req, 'notify:submit');
     if (!token) {
@@ -737,6 +752,23 @@ export async function handleNotifyApi(req, res, url, deps) {
       request.status = 'awaiting_configuration';
       request.publicReason = 'Notify Daemon is offline or not configured.';
       request.completedAt = now();
+    } else if (delivery.ack) {
+      const ackStatuses = new Set(['processing', 'awaiting_owner_approval', 'awaiting_confirmation', 'target_unavailable', 'awaiting_configuration', 'failed', 'rejected']);
+      request.status = ackStatuses.has(delivery.ack.status) ? delivery.ack.status : 'queued';
+      request.publicReason = compactNotifyText(delivery.ack.publicReason || '', 240);
+      request.updatedAt = now();
+      if (request.status === 'awaiting_owner_approval') {
+        request.approvalExpiresAt = compactNotifyText(delivery.ack.confirmationExpiresAt || '', 80);
+        request.pendingRequestCount = Math.max(1, Number(delivery.ack.pendingRequestCount || 1));
+        for (const requestId of Array.isArray(delivery.ack.batchedRequestIds) ? delivery.ack.batchedRequestIds : []) {
+          const batched = notifyRequest(state, String(requestId || ''));
+          if (!batched || batched.relayId !== token.relayId) continue;
+          batched.approvalExpiresAt = request.approvalExpiresAt;
+          batched.pendingRequestCount = request.pendingRequestCount;
+          batched.updatedAt = request.updatedAt;
+        }
+      }
+      if (['target_unavailable', 'awaiting_configuration', 'failed', 'rejected'].includes(request.status)) request.completedAt = request.updatedAt;
     }
     token.lastUsedAt = now();
     token.updatedAt = now();

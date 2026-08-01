@@ -29,11 +29,12 @@ magclaw-notify send --group "USER_GROUP" --title "TITLE" --markdown-file "FILE" 
 ```
 
 Add `--mentions`, `--session-id`, `--turn-id`, `--source-agent`, and `--repository` when known. Keep the idempotency key stable when retrying the same turn.
-6. Report the returned request ID and external-safe status. `awaiting_confirmation` and `awaiting_configuration` mean nothing was sent yet.
+6. Report the returned request ID and external-safe status. `processing` means the owner Daemon accepted it for asynchronous work, not that Feishu delivery is complete. `awaiting_owner_approval`, `awaiting_confirmation`, and `awaiting_configuration` mean nothing was sent yet. Claim success only after a later status result is `sent`.
 
 ## Safety
 
 - Never pass raw Chat IDs, Open IDs, App IDs, secrets, `<at>` markup, or `@all`.
 - Never substitute a different group after `target_unavailable`.
 - Never claim success unless status is `sent`.
+- Never poll or retry an `awaiting_owner_approval` request as a new send. The owner decision automatically resumes the stored request.
 - Do not retry ambiguous targets automatically.

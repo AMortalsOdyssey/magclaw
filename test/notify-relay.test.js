@@ -40,7 +40,16 @@ test('independent Notify Relay routes each request to only the token-bound Daemo
   const firstDelivery = new Promise((resolve) => {
     first.on('message', (raw) => {
       const message = JSON.parse(String(raw));
-      if (message.type === 'notify:deliver') resolve(message);
+      if (message.type === 'notify:deliver') {
+        first.send(JSON.stringify({
+          type: 'notify:deliver:ack',
+          commandId: message.commandId,
+          requestId: message.request.id,
+          status: 'awaiting_owner_approval',
+          publicReason: 'Owner approval is pending.',
+        }));
+        resolve(message);
+      }
     });
   });
   let secondReceivedDelivery = false;
@@ -52,6 +61,8 @@ test('independent Notify Relay routes each request to only the token-bound Daemo
   const message = await firstDelivery;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(queued.queued, true);
+  assert.equal(queued.acknowledged, true);
+  assert.equal(queued.ack.status, 'awaiting_owner_approval');
   assert.equal(message.request.id, 'nreq_1');
   assert.equal(secondReceivedDelivery, false);
 

@@ -239,6 +239,14 @@ async function status(flags, positional) {
   });
 }
 
+async function targets(flags) {
+  const auth = await authenticated(flags);
+  return requestJson(auth.config.relayUrl, '/api/notify/targets', {
+    token: auth.config.token,
+    fingerprint: auth.config.machineFingerprint,
+  });
+}
+
 async function whoami(flags) {
   const auth = await authenticated(flags);
   return requestJson(auth.config.relayUrl, '/api/notify/auth/whoami', { token: auth.config.token, fingerprint: auth.config.machineFingerprint });
@@ -259,6 +267,7 @@ function help() {
     '  magclaw-notify login RELAY_URL --token SETUP_TOKEN',
     '  magclaw-notify send --group NAME --markdown-file FILE --authorized-current-turn',
     '  magclaw-notify status REQUEST_ID',
+    '  magclaw-notify targets',
     '  magclaw-notify whoami',
     '  magclaw-notify install-skill [--targets codex,claude-code]',
     '  magclaw-notify logout',
@@ -268,6 +277,8 @@ function help() {
     '  magclaw-notify daemon add-person --name NAME --open-id OPEN_ID',
     '  magclaw-notify daemon access list [--all]',
     '  magclaw-notify daemon access revoke --access-id ID',
+    '  magclaw-notify daemon grants list [--all]',
+    '  magclaw-notify daemon grants revoke --grant-id ID',
     '  magclaw-notify daemon setup-token rotate [--revoke-existing]',
     '  magclaw-notify daemon start|run|status|stop', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
@@ -281,6 +292,7 @@ export async function runNotifyCli(argv = process.argv) {
   else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
   else if (command === 'send') result = await send(flags);
   else if (command === 'status') result = await status(flags, positional);
+  else if (command === 'targets') result = await targets(flags);
   else if (command === 'whoami') result = await whoami(flags);
   else if (command === 'logout') result = await logout(flags);
   else if (command === 'install-skill') result = { installedSkills: await installSkill(flags) };

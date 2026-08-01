@@ -11,7 +11,7 @@ const TERMINAL_STATUSES = new Set([
   'rejected',
   'target_unavailable',
   'awaiting_configuration',
-  'awaiting_confirmation',
+  'approval_expired',
 ]);
 
 export function notifyRecords(state = {}) {
@@ -187,6 +187,7 @@ export function publicNotifyRequest(record = {}) {
     updatedAt: record.updatedAt,
     completedAt: record.completedAt || null,
     reason: record.publicReason || '',
+    ...(record.approvalExpiresAt ? { approval: { status: 'pending', expiresAt: record.approvalExpiresAt, pendingRequestCount: Number(record.pendingRequestCount || 1) } } : {}),
   };
 }
 
@@ -201,6 +202,9 @@ export function applyNotifyResult(state = {}, message = {}, now = () => new Date
     'target_unavailable',
     'awaiting_configuration',
     'awaiting_confirmation',
+    'awaiting_owner_approval',
+    'processing',
+    'approval_expired',
   ]);
   const status = allowed.has(String(message.status || '')) ? String(message.status) : 'failed';
   record.status = status;
@@ -212,6 +216,10 @@ export function applyNotifyResult(state = {}, message = {}, now = () => new Date
     localReceiptId: compactNotifyText(message.localReceiptId || '', 160),
   };
   record.updatedAt = now();
+  if (status !== 'awaiting_owner_approval') {
+    delete record.approvalExpiresAt;
+    delete record.pendingRequestCount;
+  }
   if (TERMINAL_STATUSES.has(status)) record.completedAt = record.updatedAt;
   return record;
 }

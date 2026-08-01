@@ -15,6 +15,7 @@ export function createNotifyRelay(options = {}) {
   const now = options.now || (() => new Date().toISOString());
   const persistState = options.persistState || (async () => {});
   const connections = new Map();
+  const pendingAcks = new Map();
   const wss = new WebSocketServer({ noServer: true, clientTracking: false });
   let onResult = async () => {};
   let draining = false;
@@ -28,7 +29,15 @@ export function createNotifyRelay(options = {}) {
     let message;
     try { message = JSON.parse(String(raw)); } catch { return; }
     connection.lastSeenAt = now();
-    if (message.type === 'notify:pong' || message.type === 'notify:daemon:ready' || message.type === 'notify:deliver:ack') return;
+    if (message.type === 'notify:deliver:ack' || message.type === 'notify:targets:result') {
+      const pending = pendingAcks.get(String(message.commandId || ''));
+      if (!pending || pending.connection !== connection) return;
+      clearTimeout(pending.timer);
+      pendingAcks.delete(String(message.commandId || ''));
+      pending.resolve(message);
+      return;
+    }
+    if (message.type === 'notify:pong' || message.type === 'notify:daemon:ready') return;
     if (message.type !== 'notify:result') return;
     await onResult({
       ...message,
@@ -71,6 +80,12 @@ export function createNotifyRelay(options = {}) {
       }));
       ws.on('close', () => {
         if (connections.get(connection.relayId) === connection) connections.delete(connection.relayId);
+        for (const [id, pending] of pendingAcks) {
+          if (pending.connection !== connection) continue;
+          clearTimeout(pending.timer);
+          pendingAcks.delete(id);
+          pending.resolve(null);
+        }
       });
       ws.on('error', (error) => {
         console.warn(`[notify-relay] socket error relay=${clean(connection.relayId)} error=${clean(error.message)}`);
@@ -84,8 +99,47 @@ export function createNotifyRelay(options = {}) {
     const connection = connectionFor(request?.relayId);
     if (!connection) return { queued: false, reason: 'notify_daemon_offline' };
     const id = commandId();
-    connection.socket.send(JSON.stringify({ type: 'notify:deliver', commandId: id, request }));
-    return { queued: true, delivery: { id, queuedAt: now() } };
+    const queuedAt = now();
+    const ack = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingAcks.delete(id);
+        resolve(null);
+      }, Math.max(250, Number(options.ackTimeoutMs || 5_000)));
+      pendingAcks.set(id, { connection, resolve, timer });
+      connection.socket.send(JSON.stringify({ type: 'notify:deliver', commandId: id, request }), (error) => {
+        if (!error) return;
+        const pending = pendingAcks.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingAcks.delete(id);
+        resolve(null);
+      });
+    });
+    return { queued: true, acknowledged: Boolean(ack), ack, delivery: { id, queuedAt } };
+  }
+
+  async function listNotifyTargets(relayId, requester) {
+    const connection = connectionFor(relayId);
+    if (!connection) return { available: false, reason: 'notify_daemon_offline', targets: [] };
+    const id = commandId();
+    const response = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingAcks.delete(id);
+        resolve(null);
+      }, Math.max(250, Number(options.ackTimeoutMs || 5_000)));
+      pendingAcks.set(id, { connection, resolve, timer });
+      connection.socket.send(JSON.stringify({ type: 'notify:targets:list', commandId: id, requester }), (error) => {
+        if (!error) return;
+        const pending = pendingAcks.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingAcks.delete(id);
+        resolve(null);
+      });
+    });
+    return response
+      ? { available: true, targets: Array.isArray(response.targets) ? response.targets : [] }
+      : { available: false, reason: 'notify_daemon_ack_timeout', targets: [] };
   }
 
   function setResultHandler(handler) {
@@ -104,6 +158,11 @@ export function createNotifyRelay(options = {}) {
     draining = true;
     for (const connection of connections.values()) connection.socket.close(1001, 'Notify Relay draining');
     connections.clear();
+    for (const [id, pending] of pendingAcks) {
+      clearTimeout(pending.timer);
+      pendingAcks.delete(id);
+      pending.resolve(null);
+    }
   }
 
   const heartbeat = setInterval(() => {
@@ -113,5 +172,5 @@ export function createNotifyRelay(options = {}) {
   }, 25_000);
   heartbeat.unref?.();
 
-  return { beginDrain, deliverNotifyRequest, handleUpgrade, setResultHandler, status };
+  return { beginDrain, deliverNotifyRequest, handleUpgrade, listNotifyTargets, setResultHandler, status };
 }

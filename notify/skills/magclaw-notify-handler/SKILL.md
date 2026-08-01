@@ -36,12 +36,22 @@ The Daemon resolves exact targets, injects identity tags, creates cards, records
 
 ## Owner confirmation replies
 
+Target access approval is handled by deterministic Monkey card buttons. The
+owner can allow only the first queued request, permanently allow the exact
+sender-by-group pair, or reject the whole batch. Never interpret chat text as a
+target access approval.
+
+The commands below are a local administrative fallback for alias and person
+mapping confirmations, not a natural-language trigger.
+
 When the owner replies in the same private Feishu message/thread as a MagClaw
 Notify confirmation, use the exact confirmation ID embedded in that prompt.
 Only an unambiguous approval or rejection tied to that prompt is valid:
 
 ```sh
 magclaw-notify daemon confirm --id CONFIRMATION_ID --approve
+magclaw-notify daemon confirm --id CONFIRMATION_ID --once
+magclaw-notify daemon confirm --id CONFIRMATION_ID --always
 magclaw-notify daemon confirm --id CONFIRMATION_ID --reject
 ```
 

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
@@ -10,10 +11,17 @@ import {
   addNotifyPerson,
   configureNotifyHandler,
   confirmNotifyMapping,
-  handleNotifyDelivery,
+  expireNotifyConfirmations,
+  handleNotifyCardAction,
   installNotifyHandlerSkill,
+  listNotifyTargetGrants,
   notifyHandlerStatus,
+  prepareNotifyDelivery,
+  processAuthorizedNotifyDelivery,
+  revokeNotifyTargetGrant,
+  sendNotifyConfirmationPrompt,
   syncNotifyDirectory,
+  updateNotifyApprovalCard,
 } from './handler.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -229,20 +237,57 @@ async function connectOnce(paths, config, signal) {
         socket.send(JSON.stringify({ type: 'notify:pong', at: new Date().toISOString() }));
         return;
       }
+      if (message.type === 'notify:targets:list') {
+        const grants = await listNotifyTargetGrants(paths.handler, { userId: message.requester?.id || '' });
+        socket.send(JSON.stringify({
+          type: 'notify:targets:result',
+          commandId: message.commandId,
+          targets: grants.map((grant) => grant.target),
+        }));
+        return;
+      }
       if (message.type !== 'notify:deliver') return;
-      socket.send(JSON.stringify({ type: 'notify:deliver:ack', commandId: message.commandId, status: 'queued' }));
       try {
-        const result = await handleNotifyDelivery(paths.handler, message.request || {});
-        socket.send(JSON.stringify({ type: 'notify:result', commandId: message.commandId, ...result }));
+        const prepared = await prepareNotifyDelivery(paths.handler, message.request || {});
+        socket.send(JSON.stringify({
+          type: 'notify:deliver:ack',
+          commandId: message.commandId,
+          requestId: message.request?.id || '',
+          status: prepared.status,
+          publicReason: prepared.publicReason || '',
+          confirmationExpiresAt: prepared.confirmationExpiresAt || '',
+          pendingRequestCount: prepared.pendingRequestCount || 0,
+          batchedRequestIds: prepared.batchedRequestIds || [],
+          receivedAt: new Date().toISOString(),
+        }));
+        if (prepared.promptNeeded && prepared.confirmationId) {
+          sendNotifyConfirmationPrompt(paths.handler, prepared.confirmationId).catch((error) => {
+            process.stderr.write(`[magclaw-notify] approval prompt failed: ${clean(error.message, 500)}\n`);
+          });
+        }
+        if (prepared.shouldProcess) {
+          processAuthorizedNotifyDelivery(paths.handler, message.request || {}).then((result) => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'notify:result', commandId: message.commandId, ...result }));
+          }).catch((error) => {
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+              type: 'notify:result',
+              commandId: message.commandId,
+              requestId: message.request?.id || '',
+              status: 'failed',
+              publicReason: 'Notify delivery failed.',
+            }));
+            process.stderr.write(`[magclaw-notify] delivery failed: ${clean(error.message, 500)}\n`);
+          });
+        }
       } catch (error) {
         socket.send(JSON.stringify({
-          type: 'notify:result',
+          type: 'notify:deliver:ack',
           commandId: message.commandId,
           requestId: message.request?.id || '',
           status: 'failed',
           publicReason: 'Notify delivery failed.',
         }));
-        process.stderr.write(`[magclaw-notify] delivery failed: ${clean(error.message, 500)}\n`);
+        process.stderr.write(`[magclaw-notify] delivery preparation failed: ${clean(error.message, 500)}\n`);
       }
     });
     socket.on('error', (error) => {
@@ -257,6 +302,59 @@ async function connectOnce(paths, config, signal) {
   });
 }
 
+async function startNotifyApprovalListener(paths, signal) {
+  const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
+  const provider = handlerConfig.confirmationProvider || {};
+  if (provider.kind !== 'lark-cli-feishu' || !provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) {
+    return { running: false, stop() {} };
+  }
+  const command = clean(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
+  const child = spawn(command, [
+    '--profile', String(provider.account),
+    'event', 'consume', 'card.action.trigger',
+    '--as', 'bot', '--quiet',
+  ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: process.env });
+  const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const seenEvents = new Set();
+  let chain = Promise.resolve();
+  lines.on('line', (line) => {
+    chain = chain.then(async () => {
+      let event;
+      try { event = JSON.parse(line); } catch { return; }
+      if (event.event_id && seenEvents.has(event.event_id)) return;
+      if (event.event_id) {
+        seenEvents.add(event.event_id);
+        if (seenEvents.size > 500) seenEvents.delete(seenEvents.values().next().value);
+      }
+      const handled = await handleNotifyCardAction(paths.handler, event);
+      if (!handled.handled) return;
+      await updateNotifyApprovalCard(paths.handler, event, handled).catch((error) => {
+        process.stderr.write(`[magclaw-notify] approval card update failed: ${clean(error.message, 500)}\n`);
+      });
+      process.stdout.write(`[magclaw-notify] owner approval completed id=${clean(handled.confirmation?.id, 120)} decision=${clean(handled.action?.decision, 40)}\n`);
+    }).catch((error) => {
+      process.stderr.write(`[magclaw-notify] approval event failed: ${clean(error.message, 500)}\n`);
+    });
+  });
+  child.stderr.on('data', (chunk) => {
+    const message = clean(chunk, 500);
+    if (message) process.stderr.write(`[magclaw-notify] approval listener: ${message}\n`);
+  });
+  child.on('error', (error) => {
+    process.stderr.write(`[magclaw-notify] approval listener failed: ${clean(error.message, 500)}\n`);
+  });
+  child.on('exit', (code, childSignal) => {
+    if (!signal.aborted) process.stderr.write(`[magclaw-notify] approval listener exited code=${code ?? childSignal}\n`);
+  });
+  const stop = () => {
+    lines.close();
+    if (!child.killed) child.kill('SIGTERM');
+  };
+  signal.addEventListener('abort', stop, { once: true });
+  process.stdout.write(`[magclaw-notify] Monkey approval listener started account=${clean(provider.account, 80)}\n`);
+  return { running: true, child, stop };
+}
+
 export async function runNotifyDaemon(flags = {}) {
   const paths = notifyDaemonPaths();
   const config = await readJson(paths.config, {});
@@ -265,17 +363,30 @@ export async function runNotifyDaemon(flags = {}) {
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  const approvalListener = await startNotifyApprovalListener(paths, controller.signal);
+  const expiryTimer = setInterval(() => {
+    expireNotifyConfirmations(paths.handler).catch((error) => {
+      process.stderr.write(`[magclaw-notify] approval expiry sweep failed: ${clean(error.message, 500)}\n`);
+    });
+  }, 60_000);
+  expiryTimer.unref?.();
   let delay = DEFAULT_RECONNECT_MIN_MS;
-  while (!controller.signal.aborted) {
-    try {
-      await connectOnce(paths, config, controller.signal);
-      delay = DEFAULT_RECONNECT_MIN_MS;
-    } catch (error) {
-      process.stderr.write(`[magclaw-notify] connection failed: ${clean(error.message, 500)}\n`);
+  try {
+    await expireNotifyConfirmations(paths.handler);
+    while (!controller.signal.aborted) {
+      try {
+        await connectOnce(paths, config, controller.signal);
+        delay = DEFAULT_RECONNECT_MIN_MS;
+      } catch (error) {
+        process.stderr.write(`[magclaw-notify] connection failed: ${clean(error.message, 500)}\n`);
+      }
+      if (controller.signal.aborted || flags.once) break;
+      await sleep(delay);
+      delay = Math.min(DEFAULT_RECONNECT_MAX_MS, delay * 2);
     }
-    if (controller.signal.aborted || flags.once) break;
-    await sleep(delay);
-    delay = Math.min(DEFAULT_RECONNECT_MAX_MS, delay * 2);
+  } finally {
+    clearInterval(expiryTimer);
+    approvalListener.stop();
   }
   return { stopped: true };
 }
@@ -345,6 +456,12 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
     if (action === 'revoke') return revokeNotifyAccess(paths, flags);
     throw new Error(`Unknown Notify access command: ${action}`);
   }
+  if (command === 'grants') {
+    const action = positional[1] || 'list';
+    if (action === 'list') return { grants: await listNotifyTargetGrants(paths.handler, { userId: flags.userId, includeRevoked: flags.all === true }) };
+    if (action === 'revoke') return revokeNotifyTargetGrant(paths.handler, { grantId: flags.grantId || flags.id, userId: flags.userId, group: flags.group });
+    throw new Error(`Unknown Notify grants command: ${action}`);
+  }
   if (command === 'setup-token') {
     const action = positional[1] || '';
     if (action === 'rotate') return rotateNotifySetupToken(paths, flags);
@@ -375,6 +492,7 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
         ...(flags.confirmationCommand ? { command: flags.confirmationCommand } : {}),
         ...(flags.confirmationAccount !== undefined ? { account: flags.confirmationAccount } : {}),
         ...(flags.confirmationTarget !== undefined ? { target: flags.confirmationTarget } : {}),
+        ...(flags.ownerOpenId !== undefined ? { ownerOpenId: flags.ownerOpenId } : {}),
         ...(flags.confirmationEnabled !== undefined ? { enabled: flags.confirmationEnabled !== 'false' } : {}),
       },
     });
@@ -384,8 +502,9 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'sync-directory') return syncNotifyDirectory(paths.handler);
   if (command === 'install-handler-skill') return installNotifyHandlerSkill({ targets: commaList(flags.targets || flags.target || 'openclaw') });
   if (command === 'confirm') {
-    if (Boolean(flags.approve) === Boolean(flags.reject)) throw new Error('Choose exactly one of --approve or --reject.');
-    return confirmNotifyMapping(paths.handler, flags.id, flags.approve ? 'approve' : 'reject', { personMappings: commaList(flags.personMap || flags.personMaps) });
+    const decisions = [['approve', flags.approve], ['once', flags.once], ['always', flags.always], ['reject', flags.reject]].filter(([, enabled]) => enabled === true);
+    if (decisions.length !== 1) throw new Error('Choose exactly one of --approve, --once, --always, or --reject.');
+    return confirmNotifyMapping(paths.handler, flags.id, decisions[0][0], { personMappings: commaList(flags.personMap || flags.personMaps) });
   }
   throw new Error(`Unknown Notify Daemon command: ${command}`);
 }
