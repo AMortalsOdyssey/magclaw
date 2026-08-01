@@ -30,7 +30,9 @@
     "cli-core:pack": "npm pack --dry-run --json ./cli-core",
     "daemon:pack": "npm pack --dry-run --json ./daemon",
     "computer:pack": "npm pack --dry-run --json ./computer",
-    "team-sharing:pack": "npm pack --dry-run --json ./team-sharing"
+    "team-sharing:pack": "npm pack --dry-run --json ./team-sharing",
+    "notify:pack": "npm pack --dry-run --json ./notify",
+    "notify:smoke:openclaw": "node scripts/notify-openclaw-smoke.mjs"
   },
   "engines": {
     "node": ">=20"

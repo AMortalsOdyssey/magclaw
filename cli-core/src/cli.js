@@ -10,6 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { parseCli } from './cli-core/args.js';
 import { runExternalTeamSharingCommand } from './cli-core/team-sharing-delegate.js';
 import { renderListProfiles, shouldUseColor } from './list-renderer.js';
+import {
+  ensureNotifyHandlerState,
+  handleNotifyDelivery,
+  installNotifyHandlerSkill,
+} from './notify-handler.js';
 
 export { parseCli } from './cli-core/args.js';
 
@@ -60,6 +65,7 @@ export const CAPABILITIES = [
   'agent:deliver',
   'agent:stop',
   'agent:skills:list',
+  'notify:deliver',
   'daemon:upgrade',
   'daemon:close',
   'daemon:release_notice',
@@ -1456,6 +1462,10 @@ function cliShimTargets({ packageSpec = '@magclaw/cli-core@latest', computerPack
       command: 'magclaw-computer',
       packageSpec: String(computerPackageSpec || '@magclaw/computer@latest').trim() || '@magclaw/computer@latest',
     },
+    {
+      command: 'magclaw-notify-handler',
+      packageSpec: String(packageSpec || '@magclaw/cli-core@latest').trim() || '@magclaw/cli-core@latest',
+    },
   ];
 }
 
@@ -1646,8 +1656,9 @@ async function installCliShim(options = {}, env = process.env) {
   }
   const existing = await existingDurableMagclawCommand('magclaw', env);
   const existingComputer = await existingDurableMagclawCommand('magclaw-computer', env);
-  const target = (existing || existingComputer) && !options.binDir && !options.cliBinDir && !options.force
-    ? { dir: path.dirname(existing || existingComputer), explicit: false, pathReady: true }
+  const existingNotifyHandler = await existingDurableMagclawCommand('magclaw-notify-handler', env);
+  const target = (existing || existingComputer || existingNotifyHandler) && !options.binDir && !options.cliBinDir && !options.force
+    ? { dir: path.dirname(existing || existingComputer || existingNotifyHandler), explicit: false, pathReady: true }
     : await chooseCliShimBinDir(options, env);
   await mkdir(target.dir, { recursive: true });
   const npmPath = String(options.npmPath || defaultCliNpmPath(env)).trim() || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
@@ -1676,7 +1687,7 @@ async function installCliShim(options = {}, env = process.env) {
   return {
     ok: true,
     command: 'magclaw',
-    commands: ['magclaw', 'magclaw-computer'],
+    commands: ['magclaw', 'magclaw-computer', 'magclaw-notify-handler'],
     installed: changedShims.length > 0,
     updated: changedShims.length > 0,
     binDir: target.dir,
@@ -5014,6 +5025,12 @@ class MagClawDaemon {
   }
 
   async sendReady() {
+    const notifyState = await ensureNotifyHandlerState(this.paths);
+    if (notifyState.config.enabled) {
+      await installNotifyHandlerSkill({ targets: [notifyState.config.agentProvider.kind] }).catch((error) => {
+        logWarning('notify', `Failed to install Notify handler skill: ${error.message}`);
+      });
+    }
     const payload = await this.readyPayload();
     const sent = this.send(payload);
     logInfo(
@@ -5242,6 +5259,9 @@ class MagClawDaemon {
         break;
       case 'agent:deliver':
         await this.handleAgentDeliver(message);
+        break;
+      case 'notify:deliver':
+        await this.handleNotifyDeliver(message);
         break;
       case 'agent:stop':
         await this.handleAgentStop(message);
@@ -5513,6 +5533,48 @@ class MagClawDaemon {
     } catch (error) {
       if (message.commandId) await this.markDelivery(message.commandId, 'failed', { agentId: agent.id, error: error.message }).catch(() => {});
       this.send({ type: 'agent:error', commandId: message.commandId, agentId: agent.id, error: error.message });
+    }
+  }
+
+  async handleNotifyDeliver(message) {
+    const bridge = { id: message.agentId || 'magclaw-notify', name: 'MagClaw Notify Bridge' };
+    try {
+      const accepted = await this.acceptDelivery(message, bridge);
+      if (accepted.duplicate) {
+        this.send({
+          type: 'notify:deliver:ack',
+          commandId: message.commandId,
+          deliveryId: message.commandId || null,
+          duplicate: true,
+          deliveryStatus: accepted.record?.status || 'accepted',
+        });
+        if (accepted.record?.resultFrame) this.send(accepted.record.resultFrame);
+        return;
+      }
+      this.send({ type: 'notify:deliver:ack', commandId: message.commandId, deliveryId: message.commandId || null, status: 'queued' });
+      const request = message.payload?.request || {};
+      const result = await handleNotifyDelivery(this.paths, request);
+      const frame = {
+        type: 'notify:result',
+        commandId: message.commandId,
+        deliveryId: message.commandId || null,
+        requestId: request.id || result.requestId || '',
+        ...result,
+      };
+      await this.markDelivery(message.commandId, 'completed', { resultFrame: frame });
+      this.send(frame);
+    } catch (error) {
+      const frame = {
+        type: 'notify:result',
+        commandId: message.commandId,
+        deliveryId: message.commandId || null,
+        requestId: message.payload?.request?.id || '',
+        status: 'failed',
+        publicReason: 'Notify handler failed.',
+        error: error.message,
+      };
+      await this.markDelivery(message.commandId, 'failed', { error: error.message, resultFrame: frame }).catch(() => {});
+      this.send(frame);
     }
   }
 

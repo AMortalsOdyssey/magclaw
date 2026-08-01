@@ -11,3 +11,5 @@ Public entry commands:
 - `magclaw`: daemon/profile operations.
 - `magclaw-computer`: browser-approved Computer setup and control-plane
   operations.
+- `magclaw-notify-handler`: deterministic local Notify configuration,
+  directory synchronization, confirmation, and delivery support.

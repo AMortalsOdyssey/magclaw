@@ -346,6 +346,7 @@ export function createDaemonRelay(deps) {
   const handlers = {
     onAgentMessage: null,
     onAgentMessageDelta: null,
+    onNotifyResult: null,
   };
 
   function nowMs() {
@@ -2308,6 +2309,30 @@ export function createDaemonRelay(deps) {
     return true;
   }
 
+  async function deliverNotifyRequest(computer, request) {
+    const workspaceId = String(request?.workspaceId || computer?.workspaceId || '').trim();
+    const bridge = {
+      id: `notify_${workspaceId || 'local'}`,
+      name: 'MagClaw Notify Bridge',
+      workspaceId,
+      computerId: computer?.id || '',
+    };
+    const result = queueAgentCommand(bridge, 'notify:deliver', {
+      workspaceId,
+      request: {
+        id: request?.id || '',
+        requester: request?.requester || {},
+        payload: request?.payload || {},
+        createdAt: request?.createdAt || now(),
+      },
+    });
+    if (result.queued) {
+      await persistRuntimeState(workspaceId, 'notify_delivery_queued');
+      broadcastState();
+    }
+    return result;
+  }
+
   async function revokeComputerToken(computerId, tokenId = '') {
     const matches = cloud().computerTokens.filter((item) => (
       item.computerId === computerId
@@ -2898,8 +2923,30 @@ export function createDaemonRelay(deps) {
         break;
       case 'agent:start:ack':
       case 'agent:deliver:ack':
+      case 'notify:deliver:ack':
       case 'agent:ack':
         await handleAck(connection, message);
+        break;
+      case 'notify:result':
+        {
+          const deliveryId = String(message.commandId || message.deliveryId || '');
+          const failed = String(message.status || '') === 'failed';
+          markDeliveryFinished(deliveryId, failed ? 'failed' : 'completed', failed ? String(message.reason || message.publicReason || 'Notify delivery failed.') : '');
+          if (typeof handlers.onNotifyResult === 'function') {
+            await handlers.onNotifyResult({ ...message, computerId: connection.computerId });
+          }
+          recordDaemonEvent('notify_result', `Notify request ${message.requestId || 'unknown'} finished with ${message.status || 'unknown'}.`, {
+            computerId: connection.computerId,
+            deliveryId,
+            requestId: message.requestId || null,
+            status: message.status || null,
+          });
+          await persistRuntimeState(
+            workspaceIdForComputer(findComputer(connection.computerId), connection),
+            'notify_result',
+          );
+          broadcastState();
+        }
         break;
       case 'daemon:release_notice:ack':
         recordDaemonEvent('daemon_release_notice_acked', 'Daemon acknowledged release notice.', {
@@ -3532,6 +3579,7 @@ export function createDaemonRelay(deps) {
     createPairingToken,
     createComputerSetupRequest,
     deliverToAgent,
+    deliverNotifyRequest,
     disconnectComputer,
     handleUpgrade,
     probeStaleAgentHeartbeats,

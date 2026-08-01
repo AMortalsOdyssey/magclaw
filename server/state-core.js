@@ -165,6 +165,7 @@ export function createStateCore(deps) {
         fallback: 'rules',
         cardSource: 'workspace_markdown',
       },
+      notifyRecords: [],
       humans: [
         {
           id: 'hum_local',
@@ -514,6 +515,7 @@ export function createStateCore(deps) {
     for (const key of ['workspaces', 'workspaceMembers', 'users', 'sessions', 'invitations', 'pairingTokens', 'computerTokens', 'agentDeliveries', 'daemonEvents', 'realtimeEvents']) {
       if (!Array.isArray(state.cloud[key])) state.cloud[key] = fresh.cloud[key] || [];
     }
+    if (!Array.isArray(state.notifyRecords)) state.notifyRecords = [];
     if (!state.cloud.workspaces.length) state.cloud.workspaces = fresh.cloud.workspaces;
     for (const workspace of state.cloud.workspaces) {
       workspace.updatedAt = workspace.updatedAt || workspace.createdAt || now();

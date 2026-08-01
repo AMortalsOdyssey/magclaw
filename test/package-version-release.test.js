@@ -128,6 +128,15 @@ test('collect release packages allows team-sharing to publish without cli-core d
   ]);
 });
 
+test('collect release packages allows Notify to publish independently', async () => {
+  const packages = await collectReleasePackages({
+    root: new URL('..', import.meta.url).pathname,
+    packageNames: ['@magclaw/notify'],
+  });
+  assert.deepEqual(packages.map((pkg) => pkg.name), ['@magclaw/notify']);
+  assert.equal(packages[0].version, '0.1.0');
+});
+
 test('package release runner publishes packages and verifies npm latest without DB access', async () => {
   const calls = [];
 

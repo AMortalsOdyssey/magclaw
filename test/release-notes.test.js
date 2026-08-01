@@ -31,11 +31,11 @@ test('release notes expose independent Web, Daemon, and Computer version catalog
   assert.match(notes.web.releases[0].title, /Package update API/);
   assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
   assert.equal(notes.web.releases[1].version, '0.4.0');
-  assert.equal(notes.daemon.releases[0].version, '0.1.45');
-  assert.match(notes.daemon.releases[0].title, /Windows daemon reliability/);
+  assert.equal(notes.daemon.releases[0].version, '0.1.46');
+  assert.match(notes.daemon.releases[0].title, /MagClaw Notify bridge/);
   assert.match(notes.teamSharing.releases[0].title, /Unattended upgrade hardening/i);
   assert.match(notes.teamSharing.releases[0].bugFix[0], /POSIX quoting/i);
-  assert.match(notes.cliCore.releases[0].title, /Windows daemon reliability/);
+  assert.match(notes.cliCore.releases[0].title, /MagClaw Notify bridge/);
 });
 
 test('release notes normalization keeps the seeded catalog authoritative', () => {
@@ -63,9 +63,9 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.deepEqual(notes.web.releases.map((release) => release.version).slice(0, 3), ['0.4.1', '0.4.0', '0.3.8']);
   assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
   assert.equal(notes.web.releases[10].features[0], 'Feishu authorization login is now supported.');
-  assert.equal(notes.daemon.releases[0].version, '0.1.45');
+  assert.equal(notes.daemon.releases[0].version, '0.1.46');
   assert.ok(notes.daemon.releases.some((release) => release.version === '0.1.17'));
-  assert.equal(notes.computer.releases[0].version, '0.1.45');
+  assert.equal(notes.computer.releases[0].version, '0.1.46');
   assert.ok(notes.computer.releases.some((release) => release.version === '0.1.23'));
   assert.equal(notes.teamSharing.releases[0].version, '0.2.15');
 });

@@ -124,6 +124,34 @@ function createRelay(options = {}) {
   return { broadcasts, cloud, persistCalls, relay, state };
 }
 
+test('daemon relay queues Notify on the selected computer without cloud Feishu routing data', async () => {
+  const { cloud, relay, state } = createRelay();
+  const computer = {
+    id: 'cmp_notify',
+    workspaceId: 'wsp_test',
+    name: 'Notify bridge computer',
+    status: 'offline',
+    connectedVia: 'daemon',
+  };
+  state.computers.push(computer);
+  const result = await relay.deliverNotifyRequest(computer, {
+    id: 'nreq_test',
+    workspaceId: 'wsp_test',
+    requester: { id: 'hum_remote', name: '李四' },
+    payload: {
+      target: { group: '研发群' },
+      content: { title: '本轮更新', markdown: '- 完成修复' },
+    },
+  });
+  assert.equal(result.queued, true);
+  assert.equal(result.sent, false);
+  assert.equal(cloud.agentDeliveries.length, 1);
+  assert.equal(cloud.agentDeliveries[0].commandType, 'notify:deliver');
+  assert.equal(cloud.agentDeliveries[0].computerId, 'cmp_notify');
+  assert.equal(cloud.agentDeliveries[0].payload.request.payload.target.group, '研发群');
+  assert.equal(JSON.stringify(cloud.agentDeliveries[0]).includes('chatId'), false);
+});
+
 test('daemon relay rejects new daemon websockets while draining', async () => {
   const { relay } = createRelay({ isDraining: () => true });
   const socket = new FakeSocket();

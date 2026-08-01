@@ -1,11 +1,12 @@
 {
   "name": "@magclaw/cli-core",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "description": "Shared local MagClaw CLI implementation used by daemon and computer packages.",
   "type": "module",
   "bin": {
     "magclaw": "bin/magclaw.js",
-    "magclaw-daemon": "bin/magclaw-daemon.js"
+    "magclaw-daemon": "bin/magclaw-daemon.js",
+    "magclaw-notify-handler": "bin/magclaw-notify-handler.js"
   },
   "publishConfig": {
     "access": "public"
@@ -13,6 +14,7 @@
   "files": [
     "bin/",
     "src/",
+    "skills/",
     "RELEASE_NOTES.md",
     "README.md"
   ],

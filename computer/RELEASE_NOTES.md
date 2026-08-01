@@ -1,5 +1,9 @@
 # @magclaw/computer Release Notes
 
+## 0.1.46 - 2026-08-01 - MagClaw Notify bridge alignment
+### new
+- Ships with the shared CLI core release that supports the generic local MagClaw Notify bridge.
+
 ## 0.1.45 - 2026-07-07 - Windows daemon reliability
 ### bug fix
 - Background services started by Windows scheduled tasks now launch correctly (npm.cmd is spawned through a shell).

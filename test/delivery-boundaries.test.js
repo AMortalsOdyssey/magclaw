@@ -15,6 +15,7 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   assert.equal(rootPackage.scripts['web:start'], 'node server/index.js');
   assert.equal(rootPackage.scripts['web:docker:build'], 'docker build -f web/Dockerfile -t magclaw-web .');
   assert.equal(rootPackage.scripts['daemon:pack'], 'npm pack --dry-run --json ./daemon');
+  assert.equal(rootPackage.scripts['notify:pack'], 'npm pack --dry-run --json ./notify');
 
   const webPackage = await readJson('web/package.json');
   assert.equal(webPackage.name, '@magclaw/web');
@@ -26,7 +27,12 @@ test('root exposes separate web service and daemon delivery scripts', async () =
 
   const cliCorePackage = await readJson('cli-core/package.json');
   assert.equal(cliCorePackage.name, '@magclaw/cli-core');
-  assert.deepEqual(cliCorePackage.files, ['bin/', 'src/', 'RELEASE_NOTES.md', 'README.md']);
+  assert.deepEqual(cliCorePackage.files, ['bin/', 'src/', 'skills/', 'RELEASE_NOTES.md', 'README.md']);
+
+  const notifyPackage = await readJson('notify/package.json');
+  assert.equal(notifyPackage.name, '@magclaw/notify');
+  assert.equal(notifyPackage.publishConfig.access, 'public');
+  assert.deepEqual(notifyPackage.files, ['bin/', 'src/', 'skills/', 'README.md']);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
@@ -64,6 +70,21 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('public/')), false);
   assert.equal(files.some((file) => file.startsWith('web/')), false);
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
+});
+
+test('Notify package includes only one-way client code and explicit Skill assets', () => {
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', './notify'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const packed = JSON.parse(result.stdout)[0];
+  const files = packed.files.map((file) => file.path);
+  assert.ok(files.includes('bin/magclaw-notify.js'));
+  assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('skills/magclaw-notify/SKILL.md'));
+  assert.equal(files.some((file) => file.startsWith('server/')), false);
+  assert.equal(files.some((file) => file.includes('config.json')), false);
 });
 
 test('team-sharing package includes install-time plugin bundle and hook templates', () => {

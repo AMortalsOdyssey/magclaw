@@ -11,6 +11,7 @@ const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/daemon', 'daemon'],
   ['@magclaw/computer', 'computer'],
   ['@magclaw/team-sharing', 'team-sharing'],
+  ['@magclaw/notify', 'notify'],
 ]);
 const MAGCLAW_RELEASE_PACKAGE_NAMES = Object.freeze(DEFAULT_PACKAGE_DIRS.map(([name]) => name));
 const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';

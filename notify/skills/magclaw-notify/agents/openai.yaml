@@ -1,0 +1,6 @@
+interface:
+  display_name: "MagClaw Notify"
+  short_description: "Send an explicitly authorized turn summary via MagClaw."
+  default_prompt: "Use MagClaw Notify only because I explicitly asked in this turn. Send the current turn summary to the exact group I named."
+policy:
+  allow_implicit_invocation: false

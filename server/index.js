@@ -132,6 +132,7 @@ import { handleProjectApi } from './api/project-routes.js';
 import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
 import { handleTeamSharingApi } from './api/team-sharing-routes.js';
+import { applyNotifyDaemonResult, handleNotifyApi } from './api/notify-routes.js';
 import { handleKnowledgeApi } from './api/knowledge-routes.js';
 import {
   createGeminiLiveDemoUpgradeHandler,
@@ -1643,7 +1644,28 @@ daemonRelay.setHandlers({
       broadcastState();
     }
   },
+  onNotifyResult: async (message) => {
+    const request = applyNotifyDaemonResult(state, message, now);
+    if (!request) return;
+    await persistState({ workspaceId: request.workspaceId, reason: 'notify_daemon_result' });
+  },
 });
+
+function notifyApiDeps() {
+  return {
+    authenticateDaemonRequest: (req) => daemonRelay.authenticateHttpRequest(req),
+    currentActor: (req) => cloudAuth.currentActor(req),
+    currentUser: (req) => cloudAuth.currentUser(req),
+    daemonRelay,
+    getState: () => state,
+    makeId,
+    now,
+    persistState,
+    readJson,
+    sendError,
+    sendJson,
+  };
+}
 
 function projectApiDeps() {
   return {
@@ -1737,6 +1759,7 @@ function appApiAuthIsBypassed(url) {
   return url.pathname.startsWith('/api/cloud/')
     || url.pathname.startsWith('/api/auth/')
     || url.pathname.startsWith('/api/team-sharing/')
+    || url.pathname.startsWith('/api/notify/')
     || url.pathname.startsWith('/api/gemini-live/')
     || url.pathname.startsWith('/api/knowledge/')
     || url.pathname.startsWith('/api/console/')
@@ -2238,6 +2261,8 @@ async function handleApi(req, res, url) {
 
   if (await handleTeamSharingApi(req, res, url, teamSharingApiDeps())) return true;
 
+  if (await handleNotifyApi(req, res, url, notifyApiDeps())) return true;
+
   if (await handleMessageApi(req, res, url, messageApiDeps())) return true;
 
   return false;
@@ -2403,6 +2428,9 @@ async function handleRequest(req, res) {
       || url.pathname.startsWith('/share/')
     ) {
       if (await handleTeamSharingApi(req, res, url, teamSharingApiDeps())) return;
+    }
+    if (url.pathname.startsWith('/notify/')) {
+      if (await handleNotifyApi(req, res, url, notifyApiDeps())) return;
     }
     await serveStatic(req, res, url);
   } catch (error) {
