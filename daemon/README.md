@@ -83,7 +83,7 @@ connection.
 
 ## Notify bridge
 
-Daemon `0.1.46` adds the one-way `notify:deliver` bridge used by
+Daemon `0.1.47` includes the one-way `notify:deliver` bridge used by
 `@magclaw/notify`. The public client authenticates to MagClaw Cloud and never
 receives local Feishu routing data. The Daemon keeps group/person mappings,
 pending confirmations, request context, memory, and delivery receipts under:

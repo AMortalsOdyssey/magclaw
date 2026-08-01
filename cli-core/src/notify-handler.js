@@ -31,6 +31,22 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+export function mergeNotifyMentions(...mentionSets) {
+  const mentions = [];
+  const seen = new Set();
+  for (const mentionSet of mentionSets) {
+    for (const value of safeArray(mentionSet)) {
+      const mention = cleanText(value, 80);
+      const key = mention.toLocaleLowerCase();
+      if (!mention || seen.has(key)) continue;
+      seen.add(key);
+      mentions.push(mention);
+      if (mentions.length >= 20) return mentions;
+    }
+  }
+  return mentions;
+}
+
 async function readJson(file, fallback = {}) {
   try {
     return JSON.parse(await readFile(file, 'utf8'));
@@ -372,7 +388,7 @@ async function analyzeNotifyRequest(request, state) {
         .replace(/@all\b/gi, '')
         .replace(/@everyone\b/gi, '')
         .trim(),
-      mentions: safeArray(output?.mentions).map((name) => cleanText(name, 80)).filter(Boolean).slice(0, 20),
+      mentions: mergeNotifyMentions(fallback.mentions, output?.mentions),
       groupAliasProposal: cleanText(output?.groupAliasProposal || '', 120),
       personAliasProposals: safeArray(output?.personAliasProposals).map((item) => ({
         alias: cleanText(item?.alias, 80),

@@ -1,5 +1,9 @@
 # @magclaw/cli-core Release Notes
 
+## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
+### bug fix
+- Explicitly requested people are preserved when the local Agent returns an empty or partial mention list, so deterministic Feishu cards still contain real mentions.
+
 ## 0.1.46 - 2026-08-01 - MagClaw Notify bridge
 ### new
 - Adds the generic Notify provider registry for OpenClaw, Codex CLI, Claude Code, and Hermes Agent.

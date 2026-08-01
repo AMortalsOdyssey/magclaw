@@ -1,5 +1,9 @@
 # @magclaw/computer Release Notes
 
+## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
+### bug fix
+- Ships the shared Notify handler fix that preserves user-requested Feishu mentions through Agent analysis.
+
 ## 0.1.46 - 2026-08-01 - MagClaw Notify bridge alignment
 ### new
 - Ships with the shared CLI core release that supports the generic local MagClaw Notify bridge.

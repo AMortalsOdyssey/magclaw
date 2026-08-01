@@ -17,6 +17,7 @@ import {
   configureNotifyHandler,
   handleNotifyDelivery,
   larkCardForNotify,
+  mergeNotifyMentions,
   resolveNotifyGroup,
   resolveNotifyPeople,
 } from '../cli-core/src/notify-handler.js';
@@ -193,6 +194,14 @@ test('Notify lark-cli card injects only locally resolved Feishu mentions', () =>
   assert.equal(card.header.title.content, '修复完成');
   assert.match(card.body.elements[0].content, /^<at id=ou_local_only><\/at>/);
   assert.match(card.body.elements[2].content, /由 李四/);
+});
+
+test('Notify analysis cannot drop explicitly requested mentions', () => {
+  assert.deepEqual(mergeNotifyMentions(['蒋海波'], []), ['蒋海波']);
+  assert.deepEqual(
+    mergeNotifyMentions(['蒋海波'], ['蒋海波', '张三']),
+    ['蒋海波', '张三'],
+  );
 });
 
 test('Notify handler records local context and stops at empty group configuration', async () => {

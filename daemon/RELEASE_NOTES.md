@@ -1,5 +1,9 @@
 # @magclaw/daemon Release Notes
 
+## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
+### bug fix
+- Ships the shared Notify handler fix that prevents local Agent analysis from dropping user-requested Feishu mentions.
+
 ## 0.1.46 - 2026-08-01 - MagClaw Notify bridge
 ### new
 - Adds reliable `notify:deliver` handling over the existing queued Daemon WebSocket relay.
