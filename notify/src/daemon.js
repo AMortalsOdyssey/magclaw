@@ -70,6 +70,7 @@ async function requestJson(relayUrl, pathname, options = {}) {
       accept: 'application/json',
       ...(options.body !== undefined ? { 'content-type': 'application/json' } : {}),
       ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      ...(options.fingerprint ? { 'x-magclaw-machine-fingerprint': options.fingerprint } : {}),
     },
     ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
     signal: AbortSignal.timeout(options.timeoutMs || 20_000),
@@ -79,6 +80,51 @@ async function requestJson(relayUrl, pathname, options = {}) {
   try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
   if (!response.ok) throw new Error(body.error || body.reason || `Notify Relay returned HTTP ${response.status}.`);
   return body;
+}
+
+async function daemonOwnerRequest(paths, pathname, options = {}) {
+  const config = await readJson(paths.config, {});
+  if (!config.relayUrl || !config.relayId || !config.token) {
+    throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
+  }
+  return {
+    config,
+    result: await requestJson(config.relayUrl, pathname, {
+      ...options,
+      token: config.token,
+      fingerprint: config.machineFingerprint,
+    }),
+  };
+}
+
+async function listNotifyAccess(paths, flags = {}) {
+  const query = flags.all ? '?include_revoked=1' : '';
+  const { result } = await daemonOwnerRequest(paths, `/api/notify/daemon/access${query}`);
+  return result;
+}
+
+async function revokeNotifyAccess(paths, flags = {}) {
+  const accessId = clean(flags.accessId || flags.id || '', 160);
+  const userId = clean(flags.userId || '', 160);
+  if (!accessId && !userId) throw new Error('access revoke requires --access-id ID or --user-id ID --all.');
+  if (userId && flags.all !== true) throw new Error('Revoking every device for a user requires --all.');
+  const { result } = await daemonOwnerRequest(paths, '/api/notify/daemon/access/revoke', {
+    method: 'POST',
+    body: { accessId, userId, all: flags.all === true },
+  });
+  return result;
+}
+
+async function rotateNotifySetupToken(paths, flags = {}) {
+  const { config, result } = await daemonOwnerRequest(paths, '/api/notify/daemon/setup-token/rotate', {
+    method: 'POST',
+    body: { revokeExisting: flags.revokeExisting === true },
+  });
+  config.inviteToken = result.setupToken;
+  config.inviteTokenUpdatedAt = result.rotatedAt;
+  config.updatedAt = new Date().toISOString();
+  await writeJson(paths.config, config);
+  return result;
 }
 
 function openBrowser(url) {
@@ -293,6 +339,17 @@ function commaList(value = '') {
 export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
   const paths = notifyDaemonPaths();
+  if (command === 'access') {
+    const action = positional[1] || 'list';
+    if (action === 'list') return listNotifyAccess(paths, flags);
+    if (action === 'revoke') return revokeNotifyAccess(paths, flags);
+    throw new Error(`Unknown Notify access command: ${action}`);
+  }
+  if (command === 'setup-token') {
+    const action = positional[1] || '';
+    if (action === 'rotate') return rotateNotifySetupToken(paths, flags);
+    throw new Error(`Unknown Notify setup-token command: ${action || '[missing]'}`);
+  }
   if (command === 'login' || command === 'setup') return loginNotifyDaemon(flags);
   if (command === 'run') return runNotifyDaemon(flags);
   if (command === 'start') return startNotifyDaemonBackground();

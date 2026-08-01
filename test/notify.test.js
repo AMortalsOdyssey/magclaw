@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { handleNotifyApi } from '../server/api/notify-routes.js';
 import {
+  NOTIFY_TOKEN_TTL_MS,
   hashNotifySecret,
   normalizeNotifySubmission,
   notifyRecords,
@@ -33,14 +34,38 @@ function responseRecorder() {
   };
 }
 
+function feishuUser(id = 'usr_1', name = '张三', tenantKey = 'tenant_1') {
+  return {
+    id,
+    name,
+    email: `${id}@example.com`,
+    thirdPartyProvider: 'feishu',
+    metadata: {
+      oauth: {
+        feishu: {
+          providerAccountId: `union_${id}`,
+          tenantKey,
+          openId: `ou_${id}`,
+          unionId: `union_${id}`,
+          userId: `feishu_${id}`,
+          linkedAt: '2026-08-01T00:00:00.000Z',
+          lastLoginAt: '2026-08-01T00:00:00.000Z',
+          accessToken: 'raw_feishu_access_token_must_not_be_copied',
+        },
+      },
+    },
+  };
+}
+
 function routeDeps(state, overrides = {}) {
   let id = 0;
+  const user = feishuUser();
   return {
     currentActor: () => ({
-      user: { id: 'usr_1', name: '张三', email: 'zhangsan@example.com' },
+      user,
       member: { workspaceId: 'ws_1', humanId: 'hum_1', role: 'member' },
     }),
-    currentUser: () => ({ id: 'usr_1', name: '张三', email: 'zhangsan@example.com' }),
+    currentUser: () => user,
     notifyRelay: {
       deliverNotifyRequest: async (request) => ({ queued: true, delivery: { id: `ndl_${request.id}` } }),
     },
@@ -133,6 +158,161 @@ test('Standalone Notify Daemon creates a stable handle and one-time setup token'
     authorization: `Bearer ${approved.res.body.token}`,
     'x-magclaw-machine-fingerprint': fingerprint,
   } }, 'notify:daemon'));
+  const daemonToken = notifyRecords(state).find((record) => record.type === 'auth_token' && record.authMode === 'daemon');
+  assert.equal(JSON.stringify(daemonToken).includes('raw_feishu_access_token_must_not_be_copied'), false);
+  assert.equal(daemonToken.user.identity.openId, 'ou_usr_1');
+});
+
+test('Notify sender authorization lasts 90 days and is limited to the owner Feishu tenant', async () => {
+  assert.equal(NOTIFY_TOKEN_TTL_MS, 90 * 24 * 60 * 60 * 1000);
+  const daemonFingerprint = `mfp_${'1'.repeat(64)}`;
+  const state = {
+    connection: { workspaceId: 'ws_1' },
+    cloud: { workspaces: [{ id: 'ws_1' }], users: [] },
+    notifyRecords: [],
+  };
+  let currentUser = feishuUser('usr_owner', 'Owner', 'tenant_owner');
+  const deps = routeDeps(state, {
+    currentUser: () => currentUser,
+    currentActor: () => ({ user: currentUser, member: { workspaceId: 'ws_1', humanId: 'hum_owner', role: 'owner' } }),
+  });
+  const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint },
+  });
+  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
+  });
+
+  currentUser = feishuUser('usr_outside', 'Outside', 'tenant_outside');
+  const denied = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: `mfp_${'2'.repeat(64)}` },
+  });
+  assert.equal(denied.res.status, 403);
+  assert.match(denied.res.body.error, /owner's Feishu tenant/i);
+
+  currentUser = feishuUser('usr_sender', 'Sender', 'tenant_owner');
+  const before = Date.now();
+  const clientStart = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: `mfp_${'3'.repeat(64)}` },
+  });
+  const clientAuth = await callRoute(deps, 'POST', '/api/notify/auth/token', {
+    body: { deviceCode: clientStart.res.body.deviceCode, machineFingerprint: `mfp_${'3'.repeat(64)}` },
+  });
+  const lifetime = Date.parse(clientAuth.res.body.tokenExpiresAt) - before;
+  assert.ok(lifetime <= NOTIFY_TOKEN_TTL_MS && lifetime >= NOTIFY_TOKEN_TTL_MS - 2000);
+});
+
+test('Notify owner can list and revoke sender access and rotate a leaked Setup Token', async () => {
+  const daemonFingerprint = `mfp_${'4'.repeat(64)}`;
+  const firstClientFingerprint = `mfp_${'5'.repeat(64)}`;
+  const secondClientFingerprint = `mfp_${'6'.repeat(64)}`;
+  const state = {
+    connection: { workspaceId: 'ws_1' },
+    cloud: { workspaces: [{ id: 'ws_1' }], users: [] },
+    notifyRecords: [],
+  };
+  const ownerUser = feishuUser('usr_owner', 'Owner', 'tenant_owner');
+  const senderUser = feishuUser('usr_sender', 'Sender', 'tenant_owner');
+  let currentUser = ownerUser;
+  const deps = routeDeps(state, {
+    currentUser: () => currentUser,
+    currentActor: () => ({ user: currentUser, member: { workspaceId: 'ws_1', humanId: 'hum_dynamic', role: 'owner' } }),
+  });
+  const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint, client: { hostname: 'owner-mac', platform: 'darwin', arch: 'arm64' } },
+  });
+  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
+  });
+  const daemonHeaders = {
+    authorization: `Bearer ${daemonAuth.res.body.token}`,
+    'x-magclaw-machine-fingerprint': daemonFingerprint,
+  };
+
+  currentUser = senderUser;
+  const loginClient = async (fingerprint, hostname) => {
+    const started = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+      body: {
+        inviteToken: daemonAuth.res.body.inviteToken,
+        machineFingerprint: fingerprint,
+        client: { hostname, platform: 'darwin', arch: 'arm64' },
+      },
+    });
+    return callRoute(deps, 'POST', '/api/notify/auth/token', {
+      body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
+    });
+  };
+  const firstClient = await loginClient(firstClientFingerprint, 'sender-one');
+  const secondClient = await loginClient(secondClientFingerprint, 'sender-two');
+  const pendingFingerprint = `mfp_${'9'.repeat(64)}`;
+  const pendingFromOldSetupToken = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: {
+      inviteToken: daemonAuth.res.body.inviteToken,
+      machineFingerprint: pendingFingerprint,
+      client: { hostname: 'pending-sender', platform: 'darwin', arch: 'arm64' },
+    },
+  });
+  const firstHeaders = {
+    authorization: `Bearer ${firstClient.res.body.token}`,
+    'x-magclaw-machine-fingerprint': firstClientFingerprint,
+  };
+  const secondHeaders = {
+    authorization: `Bearer ${secondClient.res.body.token}`,
+    'x-magclaw-machine-fingerprint': secondClientFingerprint,
+  };
+
+  const listed = await callRoute(deps, 'GET', '/api/notify/daemon/access', { headers: daemonHeaders });
+  assert.equal(listed.res.status, 200);
+  assert.equal(listed.res.body.counts.active, 2);
+  assert.deepEqual(listed.res.body.access.map((record) => record.device.hostname).sort(), ['sender-one', 'sender-two']);
+  assert.equal(listed.res.body.access[0].user.identity.openId, 'ou_usr_sender');
+  assert.equal(JSON.stringify(listed.res.body).includes('raw_feishu_access_token_must_not_be_copied'), false);
+
+  const clientCannotManage = await callRoute(deps, 'GET', '/api/notify/daemon/access', { headers: firstHeaders });
+  assert.equal(clientCannotManage.res.status, 401);
+
+  const firstAccess = listed.res.body.access.find((record) => record.device.hostname === 'sender-one');
+  const revoked = await callRoute(deps, 'POST', '/api/notify/daemon/access/revoke', {
+    headers: daemonHeaders,
+    body: { accessId: firstAccess.id },
+  });
+  assert.equal(revoked.res.body.revoked, 1);
+  const firstWhoami = await callRoute(deps, 'GET', '/api/notify/auth/whoami', { headers: firstHeaders });
+  assert.equal(firstWhoami.res.status, 401);
+  const secondWhoami = await callRoute(deps, 'GET', '/api/notify/auth/whoami', { headers: secondHeaders });
+  assert.equal(secondWhoami.res.status, 200);
+
+  const oldSetupToken = daemonAuth.res.body.inviteToken;
+  const rotated = await callRoute(deps, 'POST', '/api/notify/daemon/setup-token/rotate', {
+    headers: daemonHeaders,
+    body: { revokeExisting: true },
+  });
+  assert.equal(rotated.res.status, 200);
+  assert.notEqual(rotated.res.body.setupToken, oldSetupToken);
+  assert.equal(rotated.res.body.revokedExistingAccess, 1);
+  assert.equal(JSON.stringify(state).includes(rotated.res.body.setupToken), false);
+
+  const oldTokenDenied = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: oldSetupToken, machineFingerprint: `mfp_${'7'.repeat(64)}` },
+  });
+  assert.equal(oldTokenDenied.res.status, 404);
+  const pendingTokenDenied = await callRoute(deps, 'POST', '/api/notify/auth/token', {
+    body: { deviceCode: pendingFromOldSetupToken.res.body.deviceCode, machineFingerprint: pendingFingerprint },
+  });
+  assert.equal(pendingTokenDenied.res.body.status, 'rejected');
+  assert.equal(pendingTokenDenied.res.body.reason, 'setup_token_rotated');
+  const newTokenAccepted = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: rotated.res.body.setupToken, machineFingerprint: `mfp_${'8'.repeat(64)}` },
+  });
+  assert.equal(newTokenAccepted.res.status, 201);
+  const secondWhoamiAfterRotation = await callRoute(deps, 'GET', '/api/notify/auth/whoami', { headers: secondHeaders });
+  assert.equal(secondWhoamiAfterRotation.res.status, 401);
+
+  const audit = await callRoute(deps, 'GET', '/api/notify/daemon/access?include_revoked=1', { headers: daemonHeaders });
+  assert.equal(audit.res.body.counts.revoked, 2);
+  assert.equal(audit.res.body.access.every((record) => record.status === 'revoked'), true);
 });
 
 test('Setup token routes an authenticated client request to exactly one independent Notify Relay', async () => {

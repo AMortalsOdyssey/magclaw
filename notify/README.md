@@ -71,9 +71,43 @@ npx @magclaw/notify@latest login \
 ```
 
 The CLI opens browser approval for the sender's Feishu-backed account, saves a
-machine-bound submit token, and installs the `magclaw-notify` Skill for supported
-local Agents. The Setup Token is exchanged once and is not stored in the sender
-profile.
+machine-bound submit token valid for 90 days, and installs the
+`magclaw-notify` Skill for supported local Agents. The Setup Token is exchanged
+once and is not stored in the sender profile. Only a Feishu-linked MagClaw
+identity from the owner's tenant can approve access.
+
+## Owner: manage sender access
+
+List active sender devices and the Feishu identities that approved them:
+
+```sh
+magclaw-notify daemon access list
+magclaw-notify daemon access list --all
+```
+
+Revoke one device, or every device belonging to one authenticated user:
+
+```sh
+magclaw-notify daemon access revoke --access-id nat_example
+magclaw-notify daemon access revoke --user-id usr_example --all
+```
+
+`access revoke` is the canonical command name. Revoked clients must complete
+the browser authorization flow again before they can submit or inspect a
+request.
+
+If the shared Setup Token leaks, rotate it. The old Setup Token stops working
+immediately. Existing sender sessions remain valid unless they are explicitly
+revoked at the same time:
+
+```sh
+magclaw-notify daemon setup-token rotate
+magclaw-notify daemon setup-token rotate --revoke-existing
+```
+
+The Relay stores only Notify token hashes plus a limited audit record: Feishu
+identity, device summary, issue/use/expiry/revocation times, and access scope.
+It never copies the user's Feishu access token into Notify storage.
 
 ## Send an explicitly requested summary
 

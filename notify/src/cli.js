@@ -266,6 +266,9 @@ function help() {
     '  magclaw-notify daemon configure --agent-provider openclaw --delivery-provider lark-cli-feishu',
     '  magclaw-notify daemon add-group --name NAME --chat-id CHAT_ID',
     '  magclaw-notify daemon add-person --name NAME --open-id OPEN_ID',
+    '  magclaw-notify daemon access list [--all]',
+    '  magclaw-notify daemon access revoke --access-id ID',
+    '  magclaw-notify daemon setup-token rotate [--revoke-existing]',
     '  magclaw-notify daemon start|run|status|stop', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
   ].join('\n');

@@ -62,13 +62,98 @@ function findDeviceRequest(state, deviceCode = '', userCode = '', authMode = '')
   )) || null;
 }
 
+function jsonObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function feishuIdentity(user = {}) {
+  user = jsonObject(user);
+  const metadata = jsonObject(user.metadata);
+  const oauth = jsonObject(metadata.oauth);
+  const feishu = jsonObject(oauth.feishu);
+  const provider = String(user.thirdPartyProvider || user.third_party_provider || '').trim().toLowerCase();
+  const providerAccountId = compactNotifyText(feishu.providerAccountId || '', 180);
+  const openId = compactNotifyText(feishu.openId || '', 180);
+  const userId = compactNotifyText(feishu.userId || '', 180);
+  const unionId = compactNotifyText(feishu.unionId || '', 180);
+  if (provider !== 'feishu' && !providerAccountId && !openId && !userId && !unionId) return null;
+  return {
+    provider: 'feishu',
+    providerAccountId: providerAccountId || unionId || userId || openId,
+    tenantKey: compactNotifyText(feishu.tenantKey || '', 180),
+    openId,
+    userId,
+    unionId,
+    linkedAt: compactNotifyText(feishu.linkedAt || '', 80),
+    lastLoginAt: compactNotifyText(feishu.lastLoginAt || user.lastLoginAt || '', 80),
+  };
+}
+
 function publicAuthUser(user = {}) {
+  const identity = feishuIdentity(user);
   return {
     id: user.id || '',
     authUserId: user.id || '',
     name: compactNotifyText(user.name || user.email || '', 120),
     email: compactNotifyText(user.email || '', 180),
+    ...(identity ? { identity } : {}),
   };
+}
+
+function userForId(state, userId = '') {
+  return state.cloud?.users?.find((user) => user.id === String(userId || '').trim()) || null;
+}
+
+function ownerIdentityForInstallation(state, installation) {
+  return feishuIdentity(userForId(state, installation?.ownerUserId))
+    || jsonObject(installation?.owner?.identity);
+}
+
+function feishuAccessAllowed(state, installation, user) {
+  const senderIdentity = feishuIdentity(user);
+  if (!senderIdentity) return { allowed: false, reason: 'A Feishu-authenticated MagClaw login is required.' };
+  const ownerIdentity = ownerIdentityForInstallation(state, installation);
+  if (
+    ownerIdentity?.tenantKey
+    && senderIdentity.tenantKey
+    && ownerIdentity.tenantKey !== senderIdentity.tenantKey
+  ) {
+    return { allowed: false, reason: 'This Notify Setup Token is limited to the owner\'s Feishu tenant.' };
+  }
+  return { allowed: true, identity: senderIdentity };
+}
+
+function publicSenderAccess(record = {}, timestamp = Date.now()) {
+  const expiresAt = Date.parse(record.expiresAt || '');
+  const status = record.revokedAt
+    ? 'revoked'
+    : Number.isFinite(expiresAt) && expiresAt <= timestamp
+      ? 'expired'
+      : 'active';
+  const fingerprint = String(record.machineFingerprint || '');
+  return {
+    id: record.id,
+    status,
+    user: record.user || {},
+    profile: record.profile || 'default',
+    device: {
+      hostname: compactNotifyText(record.client?.hostname || '', 120),
+      platform: compactNotifyText(record.client?.platform || '', 40),
+      arch: compactNotifyText(record.client?.arch || '', 40),
+      fingerprintSuffix: fingerprint ? fingerprint.slice(-8) : '',
+    },
+    createdAt: record.createdAt || null,
+    lastUsedAt: record.lastUsedAt || null,
+    expiresAt: record.expiresAt || null,
+    revokedAt: record.revokedAt || null,
+  };
+}
+
+function daemonOwnerToken(state, req) {
+  const token = notifyTokenForRequest(state, req, 'notify:daemon');
+  const installation = token?.relayId ? notifyInstallation(state, token.relayId) : null;
+  if (!token || !installation || installation.ownerUserId !== token.user?.id) return null;
+  return { token, installation };
 }
 
 function relayHandlePart(value = '') {
@@ -93,6 +178,10 @@ function installationForInviteToken(state, rawToken = '') {
       && record.enabled !== false
       && record.inviteTokenHash === tokenHash
   )) || null;
+}
+
+function setupTokenVersion(installation) {
+  return Math.max(1, Number(installation?.setupTokenVersion || 1));
 }
 
 export async function handleNotifyApi(req, res, url, deps) {
@@ -175,6 +264,11 @@ export async function handleNotifyApi(req, res, url, deps) {
       res.end();
       return true;
     }
+    const feishuAccess = feishuAccessAllowed(state, null, browserUser);
+    if (!feishuAccess.allowed) {
+      sendError(res, 403, feishuAccess.reason);
+      return true;
+    }
     let installation = request.relayId ? notifyInstallation(state, request.relayId) : null;
     if (!installation) {
       installation = notifyRecords(state).find((record) => (
@@ -199,6 +293,7 @@ export async function handleNotifyApi(req, res, url, deps) {
         name: request.relayName || 'MagClaw Notify',
         handle: relayHandle(request.relayName, request.machineFingerprint),
         machineFingerprint: request.machineFingerprint,
+        setupTokenVersion: 1,
         enabled: true,
         createdAt: now(),
         updatedAt: now(),
@@ -206,6 +301,8 @@ export async function handleNotifyApi(req, res, url, deps) {
       notifyRecords(state).push(installation);
     }
     request.workspaceId = installation.workspaceId || actorWorkspaceId;
+    installation.owner = publicAuthUser(browserUser);
+    installation.updatedAt = now();
     request.relayId = installation.id;
     request.status = 'approved';
     request.approvedUser = publicAuthUser(browserUser);
@@ -248,6 +345,8 @@ export async function handleNotifyApi(req, res, url, deps) {
     if (!installation.inviteTokenHash) {
       inviteToken = `mcn_inv_${installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
       installation.inviteTokenHash = hashNotifySecret(inviteToken);
+      installation.setupTokenVersion = setupTokenVersion(installation);
+      installation.inviteTokenRotatedAt = now();
       installation.updatedAt = now();
     }
     const tokenRecord = {
@@ -259,6 +358,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       tokenHash: hashNotifySecret(token),
       machineFingerprint: request.machineFingerprint || fingerprint,
       user: request.approvedUser,
+      client: request.client || {},
       scopes: ['notify:daemon'],
       createdAt: now(),
       updatedAt: now(),
@@ -277,6 +377,113 @@ export async function handleNotifyApi(req, res, url, deps) {
       inviteToken,
       user: tokenRecord.user,
       scopes: tokenRecord.scopes,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/notify/daemon/access') {
+    const owner = daemonOwnerToken(state, req);
+    if (!owner) {
+      sendError(res, 401, 'Notify owner authorization is required.');
+      return true;
+    }
+    const includeRevoked = ['1', 'true', 'yes'].includes(String(url.searchParams.get('include_revoked') || '').toLowerCase());
+    const access = notifyRecordsForRelay(state, owner.token.relayId)
+      .filter((record) => record.type === 'auth_token' && record.authMode === 'client')
+      .map((record) => publicSenderAccess(record))
+      .filter((record) => includeRevoked || record.status === 'active')
+      .sort((left, right) => Date.parse(right.createdAt || '') - Date.parse(left.createdAt || ''));
+    console.info(`[notify] owner access list relay=${owner.installation.handle} active=${access.filter((item) => item.status === 'active').length} total=${access.length}`);
+    sendJson(res, 200, {
+      ok: true,
+      relayHandle: owner.installation.handle,
+      access,
+      counts: {
+        active: access.filter((item) => item.status === 'active').length,
+        revoked: access.filter((item) => item.status === 'revoked').length,
+        expired: access.filter((item) => item.status === 'expired').length,
+      },
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/access/revoke') {
+    const owner = daemonOwnerToken(state, req);
+    if (!owner) {
+      sendError(res, 401, 'Notify owner authorization is required.');
+      return true;
+    }
+    const body = await readJson(req);
+    const accessId = compactNotifyText(body.accessId || body.access_id || '', 160);
+    const userId = compactNotifyText(body.userId || body.user_id || '', 160);
+    const revokeAllForUser = body.all === true || body.revokeAll === true || body.revoke_all === true;
+    if (!accessId && !userId) {
+      sendError(res, 400, 'accessId or userId is required.');
+      return true;
+    }
+    if (userId && !revokeAllForUser) {
+      sendError(res, 400, 'Revoking by userId requires all=true.');
+      return true;
+    }
+    const selected = notifyRecordsForRelay(state, owner.token.relayId).filter((record) => (
+      record.type === 'auth_token'
+      && record.authMode === 'client'
+      && (accessId ? record.id === accessId : record.user?.id === userId)
+    ));
+    if (!selected.length) {
+      sendError(res, 404, 'Notify sender access was not found.');
+      return true;
+    }
+    let revoked = 0;
+    for (const record of selected) {
+      if (record.revokedAt) continue;
+      record.revokedAt = now();
+      record.revokedBy = owner.token.user;
+      record.updatedAt = now();
+      revoked += 1;
+    }
+    await persistState({ workspaceId: owner.token.workspaceId, reason: 'notify_owner_access_revoke' });
+    console.info(`[notify] owner access revoked relay=${owner.installation.handle} access=${accessId || '[user]'} user=${userId || selected[0]?.user?.id || ''} count=${revoked}`);
+    sendJson(res, 200, {
+      ok: true,
+      revoked,
+      access: selected.map((record) => publicSenderAccess(record)),
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/setup-token/rotate') {
+    const owner = daemonOwnerToken(state, req);
+    if (!owner) {
+      sendError(res, 401, 'Notify owner authorization is required.');
+      return true;
+    }
+    const body = await readJson(req);
+    const revokeExisting = body.revokeExisting === true || body.revoke_existing === true;
+    const setupToken = `mcn_inv_${owner.installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
+    owner.installation.inviteTokenHash = hashNotifySecret(setupToken);
+    owner.installation.inviteTokenRotatedAt = now();
+    owner.installation.setupTokenVersion = setupTokenVersion(owner.installation) + 1;
+    owner.installation.updatedAt = now();
+    let revoked = 0;
+    if (revokeExisting) {
+      for (const record of notifyRecordsForRelay(state, owner.token.relayId)) {
+        if (record.type !== 'auth_token' || record.authMode !== 'client' || record.revokedAt) continue;
+        record.revokedAt = now();
+        record.revokedBy = owner.token.user;
+        record.updatedAt = now();
+        revoked += 1;
+      }
+    }
+    await persistState({ workspaceId: owner.token.workspaceId, reason: 'notify_owner_setup_token_rotate' });
+    console.info(`[notify] setup token rotated relay=${owner.installation.handle} revokeExisting=${revokeExisting} revoked=${revoked}`);
+    sendJson(res, 200, {
+      ok: true,
+      relayHandle: owner.installation.handle,
+      setupToken,
+      setupTokenVersion: owner.installation.setupTokenVersion,
+      rotatedAt: owner.installation.inviteTokenRotatedAt,
+      revokedExistingAccess: revoked,
     });
     return true;
   }
@@ -307,6 +514,13 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendError(res, 404, 'Notify setup token is invalid or unavailable.');
       return true;
     }
+    if (browserUser) {
+      const feishuAccess = feishuAccessAllowed(state, installation, browserUser);
+      if (!feishuAccess.allowed) {
+        sendError(res, 403, feishuAccess.reason);
+        return true;
+      }
+    }
     const relayId = installation.id;
     if (!consumeRate(state, { workspaceId: installation.workspaceId || relayId, key: `auth:${requestIp(req)}`, limit: START_LIMIT, now })) {
       sendError(res, 429, 'Too many Notify login attempts.');
@@ -320,6 +534,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       authMode: 'client',
       workspaceId: installation.workspaceId,
       relayId,
+      setupTokenVersion: setupTokenVersion(installation),
       deviceCodeHash: hashNotifySecret(deviceCode),
       userCode,
       machineFingerprint: normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || ''),
@@ -361,6 +576,19 @@ export async function handleNotifyApi(req, res, url, deps) {
       res.end();
       return true;
     }
+    const installation = notifyInstallation(state, request.relayId);
+    if (installation && setupTokenVersion(installation) !== Number(request.setupTokenVersion || 1)) {
+      request.status = 'rejected';
+      request.updatedAt = now();
+      await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_setup_token_rotated' });
+      sendError(res, 403, 'Notify Setup Token was rotated. Start login again with the new Setup Token.');
+      return true;
+    }
+    const feishuAccess = feishuAccessAllowed(state, installation, browserUser);
+    if (!installation || !feishuAccess.allowed) {
+      sendError(res, installation ? 403 : 404, installation ? feishuAccess.reason : 'Notify Relay installation is unavailable.');
+      return true;
+    }
     request.status = 'approved';
     request.approvedUser = publicAuthUser(browserUser);
     request.approvedAt = now();
@@ -392,8 +620,15 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendError(res, 401, 'Notify login was requested from another machine.');
       return true;
     }
-    const token = randomNotifySecret('mcn');
     const installation = notifyInstallation(state, request.relayId);
+    if (!installation || setupTokenVersion(installation) !== Number(request.setupTokenVersion || 1)) {
+      request.status = 'rejected';
+      request.updatedAt = now();
+      await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_setup_token_rotated' });
+      sendJson(res, 200, { ok: true, status: 'rejected', reason: 'setup_token_rotated' });
+      return true;
+    }
+    const token = randomNotifySecret('mcn');
     const tokenRecord = {
       id: makeId('nat'),
       type: 'auth_token',
@@ -405,6 +640,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       machineFingerprint: request.machineFingerprint || fingerprint,
       profile: request.profile || 'default',
       user: request.approvedUser,
+      client: request.client || {},
       scopes: ['notify:submit', 'notify:status'],
       createdAt: now(),
       updatedAt: now(),
@@ -434,6 +670,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     token.lastUsedAt = now();
     token.updatedAt = now();
+    await persistState({ workspaceId: token.workspaceId, reason: 'notify_auth_whoami' });
     sendJson(res, 200, { ok: true, relayHandle: token.relayHandle, profile: token.profile, user: token.user, scopes: token.scopes });
     return true;
   }

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-export const NOTIFY_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+export const NOTIFY_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 90;
 export const NOTIFY_DEVICE_TTL_MS = 1000 * 60 * 10;
 export const NOTIFY_REQUEST_RETENTION_MS = 1000 * 60 * 60 * 24 * 30;
 export const NOTIFY_MAX_MARKDOWN_BYTES = 96 * 1024;
