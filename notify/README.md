@@ -1,21 +1,84 @@
 # @magclaw/notify
 
-`@magclaw/notify` is the one-way, explicitly authorized client for MagClaw Notify. It sends a structured work summary to MagClaw Cloud over HTTPS; MagClaw relays the request to the owner's Daemon, where local group and people directories are resolved and the selected Agent/provider prepares the final notification.
+`@magclaw/notify` is a standalone, one-way notification package. It contains:
 
-The client never receives the owner's group list, Feishu Chat IDs, Open IDs, App ID, or App Secret. A request is rejected unless the user explicitly authorized it in the current Agent turn and the CLI is called with `--authorized-current-turn`.
+- an explicitly authorized sender CLI and Agent Skill;
+- an independent owner-side Notify Daemon;
+- local Agent, group, person, alias, confirmation, and Feishu delivery logic.
 
-## Install and sign in
+It does **not** connect to a MagClaw Server, Computer, workspace, or the existing
+`@magclaw/daemon`. Both sender and owner connect only to a shared Notify Relay.
+The Relay never receives the owner's Feishu Chat IDs, Open IDs, application
+credentials, local directory, or IP address exposed to other users.
+
+## Owner: create an independent Notify Daemon
 
 ```sh
-npx @magclaw/notify@latest login https://your-magclaw.example.com --server your-server-slug
+npx @magclaw/notify@latest daemon login \
+  --relay-url https://notify.example.com \
+  --name Monkey
 ```
 
-The CLI opens a browser for MagClaw account approval, saves a machine-bound token with owner-only file permissions, and installs the `magclaw-notify` Skill for supported local Agents.
+`--name` is optional and defaults to `MagClaw`. The Relay creates a stable,
+human-readable handle such as `monkey-a31f7c2`; the seven-character suffix is
+derived from the local machine fingerprint and selected name. The same machine
+and name produce the same handle. A different name creates a separate handle.
+
+The login returns a one-time Setup Token. Its readable prefix contains the
+handle, while its random secret prevents enumeration. Give this Setup Token only
+to people who are allowed to submit notifications to this Daemon.
+
+Configure the local Agent and Feishu delivery provider:
+
+```sh
+magclaw-notify daemon configure \
+  --agent-provider openclaw \
+  --agent-command /path/to/openclaw \
+  --agent-id silver-member \
+  --delivery-provider lark-cli-feishu \
+  --delivery-command /path/to/lark-cli \
+  --delivery-account monkey \
+  --delivery-enabled true
+
+magclaw-notify daemon add-group \
+  --name "测试monkey" \
+  --aliases "测试" \
+  --chat-id "LOCAL_CHAT_ID"
+
+magclaw-notify daemon add-person \
+  --name "蒋海波" \
+  --open-id "LOCAL_OPEN_ID" \
+  --group-chat-ids "LOCAL_CHAT_ID"
+```
+
+Start the independent background process:
+
+```sh
+magclaw-notify daemon start
+magclaw-notify daemon status
+```
+
+Use `magclaw-notify daemon run` for a foreground process and
+`magclaw-notify daemon stop` to stop the background process. Local state is
+stored under `~/.magclaw/notify/daemon/` with owner-only permissions.
+
+## Sender: install with the owner-provided Setup Token
+
+```sh
+npx @magclaw/notify@latest login \
+  https://notify.example.com \
+  --token 'OWNER_PROVIDED_SETUP_TOKEN'
+```
+
+The CLI opens browser approval for the sender's Feishu-backed account, saves a
+machine-bound submit token, and installs the `magclaw-notify` Skill for supported
+local Agents. The Setup Token is exchanged once and is not stored in the sender
+profile.
 
 ## Send an explicitly requested summary
 
 ```sh
-npx @magclaw/notify@latest send \
+magclaw-notify send \
   --group "研发群" \
   --title "修复登录回调重复执行" \
   --markdown-file ./turn-summary.md \
@@ -25,17 +88,25 @@ npx @magclaw/notify@latest send \
   --authorized-current-turn
 ```
 
-The group name is matched only on the owner's machine. Unknown or ambiguous groups return a generic unavailable/confirmation status and never reveal configured alternatives.
+The group and person names are resolved only on the owner machine. Unknown or
+ambiguous names never reveal the local directory and may require owner
+confirmation.
 
 ```sh
-npx @magclaw/notify@latest status nreq_example
+magclaw-notify status nreq_example
 ```
 
-## Safety boundary
+## Routing and security model
 
-- The user must explicitly request Notify in the current turn and name the target group.
-- The package has no background listener and does not expose the owner's IP address.
-- Raw `chat_id`, `open_id`, app credentials, `<at>` tags, and `@all` are rejected or stripped by the service.
-- Group/person aliases are stored locally and new ambiguous aliases require owner confirmation.
-- Owner confirmation is tied to an exact confirmation ID; approved mappings resume the stored request and update its Cloud status.
-- Feishu IDs are injected only by deterministic local delivery code.
+1. The owner Daemon authenticates with a private, machine-bound Daemon token and
+   keeps one outbound WebSocket connection to `/notify/connect`.
+2. A sender exchanges the owner-provided Setup Token for a machine-bound sender
+   token after browser identity approval.
+3. Each sender token is bound to exactly one Relay installation. The Relay sends
+   its requests only to that installation's connected Daemon.
+4. The current Agent turn must explicitly invoke Notify, name the group, and pass
+   `--authorized-current-turn`.
+5. Raw `chat_id`, `open_id`, app credentials, `<at>` tags, and `@all` are rejected
+   or stripped before Relay delivery.
+6. Feishu identifiers are injected only by deterministic code on the owner
+   machine.

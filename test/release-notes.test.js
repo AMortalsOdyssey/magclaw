@@ -27,10 +27,10 @@ test('release notes expose independent Web, Daemon, and Computer version catalog
   assert.equal(notes.computer.packageName, '@magclaw/computer');
   assert.equal(notes.teamSharing.packageName, '@magclaw/team-sharing');
   assert.equal(notes.cliCore.packageName, '@magclaw/cli-core');
-  assert.equal(notes.web.releases[0].version, '0.4.1');
-  assert.match(notes.web.releases[0].title, /Package update API/);
-  assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
-  assert.equal(notes.web.releases[1].version, '0.4.0');
+  assert.equal(notes.web.releases[0].version, '0.4.2');
+  assert.match(notes.web.releases[0].title, /Standalone Notify Relay/);
+  assert.match(notes.web.releases[0].new[0], /independently from MagClaw Server/i);
+  assert.equal(notes.web.releases[1].version, '0.4.1');
   assert.equal(notes.daemon.releases[0].version, '0.1.47');
   assert.match(notes.daemon.releases[0].title, /Explicit Notify mention preservation/);
   assert.match(notes.teamSharing.releases[0].title, /Unattended upgrade hardening/i);
@@ -59,10 +59,10 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
     },
   });
 
-  assert.equal(notes.web.currentVersion, '0.4.1');
-  assert.deepEqual(notes.web.releases.map((release) => release.version).slice(0, 3), ['0.4.1', '0.4.0', '0.3.8']);
-  assert.match(notes.web.releases[0].new[0], /package-specific update metadata/i);
-  assert.equal(notes.web.releases[10].features[0], 'Feishu authorization login is now supported.');
+  assert.equal(notes.web.currentVersion, '0.4.2');
+  assert.deepEqual(notes.web.releases.map((release) => release.version).slice(0, 3), ['0.4.2', '0.4.1', '0.4.0']);
+  assert.match(notes.web.releases[0].new[0], /independently from MagClaw Server/i);
+  assert.equal(notes.web.releases[11].features[0], 'Feishu authorization login is now supported.');
   assert.equal(notes.daemon.releases[0].version, '0.1.47');
   assert.ok(notes.daemon.releases.some((release) => release.version === '0.1.17'));
   assert.equal(notes.computer.releases[0].version, '0.1.47');
@@ -74,16 +74,16 @@ test('release notes can normalize one component without loading the whole catalo
   const root = new URL('..', import.meta.url).pathname;
   const webDefaults = defaultReleaseNotesForComponent('web', {
     root,
-    env: { MAGCLAW_WEB_VERSION: '0.4.1' },
+    env: { MAGCLAW_WEB_VERSION: '0.4.2' },
   });
   const web = normalizeReleaseNotesForComponent('web', {
     currentVersion: '0.2.0',
     releases: [{ version: '0.2.0', title: 'Custom', features: ['custom'] }],
   }, webDefaults);
 
-  assert.equal(web.currentVersion, '0.4.1');
+  assert.equal(web.currentVersion, '0.4.2');
   assert.equal(web.packageName, '@magclaw/web');
-  assert.deepEqual(web.releases.map((release) => release.version).slice(0, 2), ['0.4.1', '0.4.0']);
+  assert.deepEqual(web.releases.map((release) => release.version).slice(0, 2), ['0.4.2', '0.4.1']);
 });
 
 test('release notes can render compact package update markdown', () => {

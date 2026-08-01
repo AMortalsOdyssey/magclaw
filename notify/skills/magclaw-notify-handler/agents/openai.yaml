@@ -1,0 +1,4 @@
+interface:
+  display_name: "MagClaw Notify Handler"
+  short_description: "Safely resolve and deliver MagClaw Notify requests."
+  default_prompt: "Process this MagClaw Notify request using only configured local targets and deterministic delivery tools."

@@ -24,12 +24,25 @@ export function notifyRecordsForWorkspace(state = {}, workspaceId = '') {
   return notifyRecords(state).filter((record) => String(record?.workspaceId || '').trim() === cleanWorkspaceId);
 }
 
+export function notifyRecordsForRelay(state = {}, relayId = '') {
+  const cleanRelayId = String(relayId || '').trim();
+  return notifyRecords(state).filter((record) => String(record?.relayId || '').trim() === cleanRelayId);
+}
+
 export function notifyRecord(state = {}, type = '', id = '') {
   return notifyRecords(state).find((record) => record?.type === type && record?.id === id) || null;
 }
 
 export function notifyRequest(state = {}, requestId = '') {
   return notifyRecord(state, 'request', String(requestId || '').trim());
+}
+
+export function notifyInstallation(state = {}, relayId = '') {
+  return notifyRecords(state).find((record) => (
+    record?.type === 'installation'
+      && record?.id === String(relayId || '').trim()
+      && record?.enabled !== false
+  )) || null;
 }
 
 export function hashNotifySecret(value = '') {
@@ -59,6 +72,10 @@ function safeEqual(left = '', right = '') {
 
 export function notifyTokenForRequest(state = {}, req, requiredScope = '') {
   const raw = bearerToken(req);
+  return notifyTokenForRaw(state, raw, requiredScope, req);
+}
+
+export function notifyTokenForRaw(state = {}, raw = '', requiredScope = '', req = null) {
   if (!raw) return null;
   const tokenHash = hashNotifySecret(raw);
   const fingerprint = normalizeMachineFingerprint(
@@ -203,6 +220,7 @@ export function pruneNotifyRecords(state = {}, timestamp = Date.now()) {
   const before = notifyRecords(state).length;
   state.notifyRecords = notifyRecords(state).filter((record) => {
     const time = Date.parse(record.updatedAt || record.createdAt || record.expiresAt || '');
+    if (record.type === 'installation') return record.enabled !== false;
     if (record.type === 'request') return !time || timestamp - time < NOTIFY_REQUEST_RETENTION_MS;
     if (record.type === 'auth_device') return !record.expiresAt || Date.parse(record.expiresAt) > timestamp - 60_000;
     if (record.type === 'auth_token') {

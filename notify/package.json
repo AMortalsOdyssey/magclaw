@@ -1,7 +1,7 @@
 {
   "name": "@magclaw/notify",
-  "version": "0.1.0",
-  "description": "Explicit, authenticated one-way Notify client for MagClaw.",
+  "version": "0.2.0",
+  "description": "Standalone explicit Notify client and owner-side delivery daemon.",
   "type": "module",
   "bin": {
     "magclaw-notify": "bin/magclaw-notify.js"
@@ -9,10 +9,14 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
   "files": [
     "bin/",
     "src/",
     "skills/",
+    "RELEASE_NOTES.md",
     "README.md"
   ],
   "engines": {

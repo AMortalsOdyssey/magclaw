@@ -32,7 +32,7 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   const notifyPackage = await readJson('notify/package.json');
   assert.equal(notifyPackage.name, '@magclaw/notify');
   assert.equal(notifyPackage.publishConfig.access, 'public');
-  assert.deepEqual(notifyPackage.files, ['bin/', 'src/', 'skills/', 'README.md']);
+  assert.deepEqual(notifyPackage.files, ['bin/', 'src/', 'skills/', 'RELEASE_NOTES.md', 'README.md']);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
@@ -72,7 +72,7 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
 });
 
-test('Notify package includes only one-way client code and explicit Skill assets', () => {
+test('Notify package includes the standalone client, Daemon, handler, and explicit Skill assets', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './notify'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -82,7 +82,10 @@ test('Notify package includes only one-way client code and explicit Skill assets
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/magclaw-notify.js'));
   assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('src/daemon.js'));
+  assert.ok(files.includes('src/handler.js'));
   assert.ok(files.includes('skills/magclaw-notify/SKILL.md'));
+  assert.ok(files.includes('skills/magclaw-notify-handler/SKILL.md'));
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.includes('config.json')), false);
 });

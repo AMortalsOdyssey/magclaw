@@ -111,6 +111,7 @@ import { createMarkdownOperationApplier } from './markdown-operations.js';
 import { createCloudAuth } from './cloud/auth.js';
 import { createCloudSync } from './cloud-sync.js';
 import { createDaemonRelay } from './cloud/daemon-relay.js';
+import { createNotifyRelay } from './notify-relay.js';
 import { createRoutingEngine } from './routing-engine.js';
 import { createMissionRunner } from './mission-runner.js';
 import { createOnboardingManager } from './onboarding.js';
@@ -133,6 +134,7 @@ import { handleSystemApi } from './api/system-routes.js';
 import { handleTaskApi } from './api/task-routes.js';
 import { handleTeamSharingApi } from './api/team-sharing-routes.js';
 import { applyNotifyDaemonResult, handleNotifyApi } from './api/notify-routes.js';
+import { notifyRequest } from './notify.js';
 import { handleKnowledgeApi } from './api/knowledge-routes.js';
 import {
   createGeminiLiveDemoUpgradeHandler,
@@ -978,6 +980,11 @@ const daemonRelay = createDaemonRelay({
   root: ROOT,
   setAgentStatus,
 });
+const notifyRelay = createNotifyRelay({
+  getState: () => state,
+  now,
+  persistState,
+});
 
 let feishuConnectGateway = null;
 async function syncExternalThreadReply(reply, options = {}) {
@@ -994,6 +1001,7 @@ function beginDrain(reason = 'manual') {
     drainingSince: serverDrainingSince,
   });
   daemonRelay.beginDrain?.(reason);
+  notifyRelay.beginDrain?.(reason);
   for (const res of sseClients) {
     try {
       res.write(`event: state-resync-required\ndata: ${JSON.stringify({
@@ -1651,12 +1659,19 @@ daemonRelay.setHandlers({
   },
 });
 
+notifyRelay.setResultHandler(async (message) => {
+  const existing = notifyRequest(state, message.requestId);
+  if (!existing || existing.relayId !== message.relayId) return;
+  const request = applyNotifyDaemonResult(state, message, now);
+  if (!request) return;
+  await persistState({ workspaceId: request.workspaceId, reason: 'notify_relay_result' });
+});
+
 function notifyApiDeps() {
   return {
-    authenticateDaemonRequest: (req) => daemonRelay.authenticateHttpRequest(req),
     currentActor: (req) => cloudAuth.currentActor(req),
     currentUser: (req) => cloudAuth.currentUser(req),
-    daemonRelay,
+    notifyRelay,
     getState: () => state,
     makeId,
     now,
@@ -2518,7 +2533,10 @@ server.on('upgrade', (req, socket, head) => {
     console.warn(`[server] upgrade socket error path=${upgradeRequestPath(req)} code=${code} message=${message}`);
   });
   if (geminiLiveDemoUpgrade.handleUpgrade(req, socket, head)) return;
-  daemonRelay.handleUpgrade(req, socket).then((handled) => {
+  notifyRelay.handleUpgrade(req, socket, head).then((notifyHandled) => {
+    if (notifyHandled) return true;
+    return daemonRelay.handleUpgrade(req, socket);
+  }).then((handled) => {
     if (!handled) {
       safeUpgradeEnd(socket, 'HTTP/1.1 404 Not Found\r\n\r\n');
     }

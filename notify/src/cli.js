@@ -4,10 +4,11 @@ import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from '
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runNotifyDaemonCommand } from './daemon.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_SOURCE = path.join(PACKAGE_ROOT, 'skills', 'magclaw-notify');
-const DEFAULT_SERVER_URL = 'https://magclaw.multiego.me';
+const DEFAULT_RELAY_URL = 'https://magclaw.multiego.me';
 
 function parseArgs(argv) {
   const positional = [];
@@ -53,16 +54,16 @@ function machineFingerprint() {
   return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir()].join('|')).digest('hex')}`;
 }
 
-function normalizeServerUrl(value = '') {
-  const url = new URL(String(value || DEFAULT_SERVER_URL));
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Notify server URL must use HTTPS or HTTP.');
+function normalizeRelayUrl(value = '') {
+  const url = new URL(String(value || DEFAULT_RELAY_URL));
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Notify Relay URL must use HTTPS or HTTP.');
   const loopback = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !loopback) throw new Error('Notify server URL must use HTTPS outside local loopback development.');
+  if (url.protocol !== 'https:' && !loopback) throw new Error('Notify Relay URL must use HTTPS outside local loopback development.');
   return url.toString().replace(/\/+$/, '');
 }
 
-async function requestJson(serverUrl, pathname, options = {}) {
-  const response = await fetch(new URL(pathname, `${serverUrl}/`), {
+async function requestJson(relayUrl, pathname, options = {}) {
+  const response = await fetch(new URL(pathname, `${relayUrl}/`), {
     method: options.method || 'GET',
     headers: {
       accept: 'application/json',
@@ -76,7 +77,7 @@ async function requestJson(serverUrl, pathname, options = {}) {
   const text = await response.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text }; }
-  if (!response.ok) throw new Error(data.error || data.reason || `Notify server returned HTTP ${response.status}.`);
+  if (!response.ok) throw new Error(data.error || data.reason || `Notify Relay returned HTTP ${response.status}.`);
   return data;
 }
 
@@ -138,27 +139,27 @@ async function login(flags, positional) {
   const profile = profileName(flags.profile || 'default');
   const paths = pathsFor(profile);
   const previous = await readJson(paths.config, {});
-  const serverUrl = normalizeServerUrl(flags.serverUrl || positional[0] || previous.serverUrl || DEFAULT_SERVER_URL);
-  const requestedWorkspace = String(flags.server || flags.serverSlug || flags.workspaceId || previous.workspaceId || '').trim();
-  if (!requestedWorkspace) throw new Error('Notify login requires --server with the MagClaw Server slug.');
+  const relayUrl = normalizeRelayUrl(flags.relayUrl || positional[0] || previous.relayUrl || DEFAULT_RELAY_URL);
+  const inviteToken = String(flags.token || flags.inviteToken || flags.setupToken || positional[1] || '').trim();
+  if (!inviteToken) throw new Error('Notify login requires --token with the owner-provided Notify setup token.');
   const fingerprint = machineFingerprint();
-  const started = await requestJson(serverUrl, '/api/notify/auth/start', {
+  const started = await requestJson(relayUrl, '/api/notify/auth/start', {
     method: 'POST',
     body: {
-      workspaceId: requestedWorkspace,
+      inviteToken,
       profile,
       machineFingerprint: fingerprint,
       client: { hostname: os.hostname(), platform: os.platform(), arch: os.arch() },
     },
   });
-  const verificationUrl = new URL(started.verificationUri, `${serverUrl}/`).toString();
+  const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
   process.stderr.write(`Approve MagClaw Notify login:\n${verificationUrl}\nCode: ${started.userCode}\n`);
   if (!flags.noOpen) openBrowser(verificationUrl);
   const deadline = Date.now() + Math.max(30_000, Number(flags.timeoutSeconds || 600) * 1000);
   const interval = Math.max(1000, Number(started.intervalMs || 2000));
   let approved;
   while (Date.now() < deadline) {
-    approved = await requestJson(serverUrl, '/api/notify/auth/token', {
+    approved = await requestJson(relayUrl, '/api/notify/auth/token', {
       method: 'POST',
       body: { deviceCode: started.deviceCode, machineFingerprint: fingerprint },
     });
@@ -170,8 +171,8 @@ async function login(flags, positional) {
   const config = {
     version: 1,
     profile,
-    serverUrl,
-    workspaceId: approved.workspaceId,
+    relayUrl,
+    relayHandle: approved.relayHandle,
     machineFingerprint: fingerprint,
     token: approved.token,
     tokenExpiresAt: approved.tokenExpiresAt,
@@ -181,14 +182,14 @@ async function login(flags, positional) {
   };
   await writeJson(paths.config, config);
   const installedSkills = flags.noSkill ? [] : await installSkill(flags);
-  return { profile, serverUrl, workspaceId: config.workspaceId, user: config.user, installedSkills };
+  return { profile, relayUrl, relayHandle: config.relayHandle, user: config.user, installedSkills };
 }
 
 async function authenticated(flags) {
   const profile = profileName(flags.profile || 'default');
   const paths = pathsFor(profile);
   const config = await readJson(paths.config, {});
-  if (!config.serverUrl || !config.token) throw new Error(`Profile ${profile} is not logged in. Run magclaw-notify login first.`);
+  if (!config.relayUrl || !config.token) throw new Error(`Profile ${profile} is not logged in. Run magclaw-notify login first.`);
   return { profile, paths, config };
 }
 
@@ -210,7 +211,7 @@ async function send(flags) {
   if (!markdown) throw new Error('--markdown or --markdown-file is required.');
   const idempotencySource = String(flags.idempotencyKey || [flags.sessionId, flags.turnId, group].filter(Boolean).join(':') || crypto.randomUUID());
   const idempotencyKey = notifyIdempotencyKey(idempotencySource);
-  return requestJson(auth.config.serverUrl, '/api/notify/requests', {
+  return requestJson(auth.config.relayUrl, '/api/notify/requests', {
     method: 'POST',
     token: auth.config.token,
     fingerprint: auth.config.machineFingerprint,
@@ -232,7 +233,7 @@ async function status(flags, positional) {
   const auth = await authenticated(flags);
   const requestId = String(flags.requestId || positional[0] || '').trim();
   if (!requestId) throw new Error('Notify request id is required.');
-  return requestJson(auth.config.serverUrl, `/api/notify/requests/${encodeURIComponent(requestId)}`, {
+  return requestJson(auth.config.relayUrl, `/api/notify/requests/${encodeURIComponent(requestId)}`, {
     token: auth.config.token,
     fingerprint: auth.config.machineFingerprint,
   });
@@ -240,12 +241,12 @@ async function status(flags, positional) {
 
 async function whoami(flags) {
   const auth = await authenticated(flags);
-  return requestJson(auth.config.serverUrl, '/api/notify/auth/whoami', { token: auth.config.token, fingerprint: auth.config.machineFingerprint });
+  return requestJson(auth.config.relayUrl, '/api/notify/auth/whoami', { token: auth.config.token, fingerprint: auth.config.machineFingerprint });
 }
 
 async function logout(flags) {
   const auth = await authenticated(flags);
-  await requestJson(auth.config.serverUrl, '/api/notify/auth/revoke', {
+  await requestJson(auth.config.relayUrl, '/api/notify/auth/revoke', {
     method: 'POST', token: auth.config.token, fingerprint: auth.config.machineFingerprint, body: {},
   }).catch(() => {});
   await rm(auth.paths.config, { force: true });
@@ -255,12 +256,17 @@ async function logout(flags) {
 function help() {
   return [
     'MagClaw Notify', '',
-    '  magclaw-notify login [server-url] --server SERVER_SLUG',
+    '  magclaw-notify login RELAY_URL --token SETUP_TOKEN',
     '  magclaw-notify send --group NAME --markdown-file FILE --authorized-current-turn',
     '  magclaw-notify status REQUEST_ID',
     '  magclaw-notify whoami',
     '  magclaw-notify install-skill [--targets codex,claude-code]',
-    '  magclaw-notify logout', '',
+    '  magclaw-notify logout',
+    '  magclaw-notify daemon login --relay-url URL [--name NAME]',
+    '  magclaw-notify daemon configure --agent-provider openclaw --delivery-provider lark-cli-feishu',
+    '  magclaw-notify daemon add-group --name NAME --chat-id CHAT_ID',
+    '  magclaw-notify daemon add-person --name NAME --open-id OPEN_ID',
+    '  magclaw-notify daemon start|run|status|stop', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
   ].join('\n');
 }
@@ -268,7 +274,8 @@ function help() {
 export async function runNotifyCli(argv = process.argv) {
   const { command, positional, flags } = parseArgs(argv);
   let result;
-  if (['login', 'setup'].includes(command)) result = await login(flags, positional);
+  if (command === 'daemon') result = await runNotifyDaemonCommand(positional, flags);
+  else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
   else if (command === 'send') result = await send(flags);
   else if (command === 'status') result = await status(flags, positional);
   else if (command === 'whoami') result = await whoami(flags);

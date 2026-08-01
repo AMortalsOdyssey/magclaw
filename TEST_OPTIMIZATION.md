@@ -5,6 +5,7 @@ This note is the running map for making MagClaw's tests faster without hollowing
 ## Current Suite Shape
 
 - `test:quick`: default engineering loop for current production contracts.
+  Standalone Notify Relay socket isolation and token-bound Daemon routing run in this default batch.
 - `test:ui`: static/browser-UI contract surface for render helpers and DOM-stability rules.
 - `test:flow`: heavier end-to-end daemon, cloud auth relay, and runtime flow coverage.
 - `test:pg`: PostgreSQL persistence and optional live-PG auth coverage.

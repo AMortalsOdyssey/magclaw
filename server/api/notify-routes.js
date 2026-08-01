@@ -7,8 +7,9 @@ import {
   hashNotifySecret,
   normalizeMachineFingerprint,
   normalizeNotifySubmission,
+  notifyInstallation,
   notifyRecords,
-  notifyRecordsForWorkspace,
+  notifyRecordsForRelay,
   notifyRequest,
   notifyTokenForRequest,
   pruneNotifyRecords,
@@ -51,49 +52,46 @@ function workspaceIdFromActor(actor, state) {
   return String(actor?.member?.workspaceId || state.connection?.workspaceId || state.cloud?.workspaces?.[0]?.id || 'local').trim();
 }
 
-function resolveNotifyWorkspaceId(state, requested, fallback) {
-  const clean = String(requested || '').trim().toLowerCase();
-  if (!clean) return String(fallback || '').trim();
-  const workspace = (Array.isArray(state.cloud?.workspaces) ? state.cloud.workspaces : []).find((item) => (
-    !item.deletedAt
-      && [item.id, item.slug].some((value) => String(value || '').trim().toLowerCase() === clean)
-  ));
-  return String(workspace?.id || '').trim();
-}
-
-function requestUser(actor) {
-  return {
-    id: actor?.member?.humanId || actor?.user?.id || '',
-    authUserId: actor?.user?.id || '',
-    name: compactNotifyText(actor?.user?.name || actor?.user?.email || '', 120),
-    email: compactNotifyText(actor?.user?.email || '', 180),
-  };
-}
-
-function chooseNotifyComputer(state, workspaceId) {
-  const records = notifyRecordsForWorkspace(state, workspaceId);
-  const route = records.find((item) => item.type === 'route') || null;
-  if (route?.enabled === false) return null;
-  const computers = (Array.isArray(state.computers) ? state.computers : []).filter((computer) => (
-    String(computer.workspaceId || '') === workspaceId
-      && !computer.disabledAt
-      && String(computer.status || '').toLowerCase() !== 'disabled'
-  ));
-  if (route?.computerId) {
-    const configured = computers.find((computer) => computer.id === route.computerId);
-    if (configured) return configured;
-  }
-  return computers.find((computer) => String(computer.status || '').toLowerCase() === 'connected')
-    || computers.find((computer) => computer.connectedVia === 'daemon')
-    || null;
-}
-
-function findDeviceRequest(state, deviceCode = '', userCode = '') {
+function findDeviceRequest(state, deviceCode = '', userCode = '', authMode = '') {
   const deviceHash = deviceCode ? hashNotifySecret(deviceCode) : '';
   const cleanUserCode = String(userCode || '').trim().toUpperCase();
   return notifyRecords(state).find((record) => (
     record.type === 'auth_device'
+      && (!authMode || record.authMode === authMode)
       && ((deviceHash && record.deviceCodeHash === deviceHash) || (cleanUserCode && record.userCode === cleanUserCode))
+  )) || null;
+}
+
+function publicAuthUser(user = {}) {
+  return {
+    id: user.id || '',
+    authUserId: user.id || '',
+    name: compactNotifyText(user.name || user.email || '', 120),
+    email: compactNotifyText(user.email || '', 180),
+  };
+}
+
+function relayHandlePart(value = '') {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32) || 'notify';
+}
+
+function relayHandle(name = '', machineFingerprint = '') {
+  const label = relayHandlePart(name);
+  const suffix = crypto.createHash('sha256').update(`${machineFingerprint}:${label}`).digest('hex').slice(0, 7);
+  return `${label}-${suffix}`;
+}
+
+function installationForInviteToken(state, rawToken = '') {
+  const tokenHash = hashNotifySecret(rawToken);
+  return notifyRecords(state).find((record) => (
+    record.type === 'installation'
+      && record.enabled !== false
+      && record.inviteTokenHash === tokenHash
   )) || null;
 }
 
@@ -101,8 +99,7 @@ export async function handleNotifyApi(req, res, url, deps) {
   const {
     currentActor = () => null,
     currentUser = () => null,
-    authenticateDaemonRequest = () => null,
-    daemonRelay,
+    notifyRelay,
     getState,
     makeId,
     now,
@@ -117,97 +114,201 @@ export async function handleNotifyApi(req, res, url, deps) {
   const browserUser = currentUser(req) || actor?.user || null;
   const actorWorkspaceId = workspaceIdFromActor(actor, state);
 
-  if (req.method === 'POST' && url.pathname === '/api/notify/internal/result') {
-    const daemonAuth = authenticateDaemonRequest(req);
-    if (!daemonAuth) {
-      sendError(res, 401, 'Notify result reporting requires a machine token.');
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/start') {
+    const body = await readJson(req);
+    const requestedRelayId = compactNotifyText(body.relayId || body.relay_id || '', 160);
+    const installation = requestedRelayId ? notifyInstallation(state, requestedRelayId) : null;
+    if (requestedRelayId && !installation) {
+      sendError(res, 404, 'Notify Relay installation is unavailable.');
+      return true;
+    }
+    const storageWorkspaceId = installation?.workspaceId || actorWorkspaceId;
+    if (!consumeRate(state, { workspaceId: storageWorkspaceId || 'notify', key: `daemon-auth:${requestIp(req)}`, limit: START_LIMIT, now })) {
+      sendError(res, 429, 'Too many Notify Daemon login attempts.');
+      return true;
+    }
+    const deviceCode = randomNotifySecret('mcn_daemon_dev');
+    const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const request = {
+      id: makeId('nau'),
+      type: 'auth_device',
+      authMode: 'daemon',
+      workspaceId: storageWorkspaceId,
+      relayId: installation?.id || '',
+      relayName: compactNotifyText(body.relayName || body.relay_name || 'MagClaw', 120),
+      deviceCodeHash: hashNotifySecret(deviceCode),
+      userCode,
+      machineFingerprint: normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || ''),
+      client: {
+        hostname: compactNotifyText(body.client?.hostname || '', 120),
+        platform: compactNotifyText(body.client?.platform || '', 40),
+        arch: compactNotifyText(body.client?.arch || '', 40),
+      },
+      status: 'pending',
+      createdAt: now(),
+      updatedAt: now(),
+      expiresAt: new Date(Date.now() + NOTIFY_DEVICE_TTL_MS).toISOString(),
+    };
+    notifyRecords(state).push(request);
+    await persistState(storageWorkspaceId ? { workspaceId: storageWorkspaceId, reason: 'notify_daemon_auth_start' } : undefined);
+    sendJson(res, 201, {
+      ok: true,
+      deviceCode,
+      userCode,
+      verificationUri: `/notify/daemon/auth/approve?user_code=${encodeURIComponent(userCode)}`,
+      expiresAt: request.expiresAt,
+      intervalMs: 2000,
+      status: request.status,
+    });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/notify/daemon/auth/approve') {
+    const request = findDeviceRequest(state, '', url.searchParams.get('user_code'), 'daemon');
+    if (!request || Date.parse(request.expiresAt || '') <= Date.now()) {
+      sendError(res, 404, 'Notify Daemon login request not found or expired.');
+      return true;
+    }
+    if (!browserUser) {
+      const returnTo = encodeURIComponent(url.pathname + url.search);
+      res.writeHead(302, { location: `/?returnTo=${returnTo}`, 'cache-control': 'no-store' });
+      res.end();
+      return true;
+    }
+    let installation = request.relayId ? notifyInstallation(state, request.relayId) : null;
+    if (!installation) {
+      installation = notifyRecords(state).find((record) => (
+        record.type === 'installation'
+          && record.enabled !== false
+          && record.ownerUserId === browserUser.id
+          && record.machineFingerprint === request.machineFingerprint
+          && relayHandlePart(record.name) === relayHandlePart(request.relayName)
+      )) || null;
+    }
+    if (installation && installation.ownerUserId !== browserUser.id) {
+      sendError(res, 403, 'Only the Notify Relay owner can approve this Daemon.');
+      return true;
+    }
+    if (!installation) {
+      installation = {
+        id: makeId('nrl'),
+        type: 'installation',
+        workspaceId: actorWorkspaceId,
+        ownerUserId: browserUser.id || '',
+        owner: publicAuthUser(browserUser),
+        name: request.relayName || 'MagClaw Notify',
+        handle: relayHandle(request.relayName, request.machineFingerprint),
+        machineFingerprint: request.machineFingerprint,
+        enabled: true,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      notifyRecords(state).push(installation);
+    }
+    request.workspaceId = installation.workspaceId || actorWorkspaceId;
+    request.relayId = installation.id;
+    request.status = 'approved';
+    request.approvedUser = publicAuthUser(browserUser);
+    request.approvedAt = now();
+    request.updatedAt = now();
+    await persistState(request.workspaceId ? { workspaceId: request.workspaceId, reason: 'notify_daemon_auth_approve' } : undefined);
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(approvalHtml(request));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/token') {
+    const body = await readJson(req);
+    const request = findDeviceRequest(state, body.deviceCode || body.device_code || '', '', 'daemon');
+    if (!request) {
+      sendJson(res, 200, { ok: true, status: 'pending' });
+      return true;
+    }
+    if (Date.parse(request.expiresAt || '') <= Date.now()) {
+      request.status = 'expired';
+      sendJson(res, 200, { ok: true, status: 'expired' });
+      return true;
+    }
+    if (request.status !== 'approved') {
+      sendJson(res, 200, { ok: true, status: request.status || 'pending' });
+      return true;
+    }
+    const fingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
+    if (request.machineFingerprint && request.machineFingerprint !== fingerprint) {
+      sendError(res, 401, 'Notify Daemon login was requested from another machine.');
+      return true;
+    }
+    const token = randomNotifySecret('mcn_daemon');
+    const installation = notifyInstallation(state, request.relayId);
+    if (!installation) {
+      sendError(res, 404, 'Notify Relay installation is unavailable.');
+      return true;
+    }
+    let inviteToken = '';
+    if (!installation.inviteTokenHash) {
+      inviteToken = `mcn_inv_${installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
+      installation.inviteTokenHash = hashNotifySecret(inviteToken);
+      installation.updatedAt = now();
+    }
+    const tokenRecord = {
+      id: makeId('nat'),
+      type: 'auth_token',
+      authMode: 'daemon',
+      workspaceId: request.workspaceId,
+      relayId: request.relayId,
+      tokenHash: hashNotifySecret(token),
+      machineFingerprint: request.machineFingerprint || fingerprint,
+      user: request.approvedUser,
+      scopes: ['notify:daemon'],
+      createdAt: now(),
+      updatedAt: now(),
+      expiresAt: new Date(Date.now() + NOTIFY_TOKEN_TTL_MS).toISOString(),
+    };
+    notifyRecords(state).push(tokenRecord);
+    notifyRecords(state).splice(notifyRecords(state).indexOf(request), 1);
+    await persistState({ workspaceId: tokenRecord.workspaceId, reason: 'notify_daemon_auth_token' });
+    sendJson(res, 200, {
+      ok: true,
+      status: 'approved',
+      token,
+      tokenExpiresAt: tokenRecord.expiresAt,
+      relayId: tokenRecord.relayId,
+      relayHandle: installation.handle,
+      inviteToken,
+      user: tokenRecord.user,
+      scopes: tokenRecord.scopes,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/result') {
+    const daemonToken = notifyTokenForRequest(state, req, 'notify:daemon');
+    if (!daemonToken?.relayId) {
+      sendError(res, 401, 'Notify result reporting requires a Notify Daemon token.');
       return true;
     }
     const body = await readJson(req);
     const request = notifyRequest(state, compactNotifyText(body.requestId || '', 160));
-    if (
-      !request
-      || request.workspaceId !== daemonAuth.workspaceId
-      || (request.computerId && request.computerId !== daemonAuth.computerId)
-    ) {
+    if (!request || request.relayId !== daemonToken.relayId) {
       sendError(res, 404, 'Notify request not found.');
       return true;
     }
     const updated = applyNotifyResult(state, body, now);
-    await persistState({ workspaceId: request.workspaceId, reason: 'notify_local_confirmation_result' });
+    await persistState({ workspaceId: request.workspaceId, reason: 'notify_daemon_confirmation_result' });
     sendJson(res, 200, { ok: true, request: publicNotifyRequest(updated) });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/notify/internal/route') {
-    const daemonAuth = authenticateDaemonRequest(req);
-    if (!daemonAuth) {
-      sendError(res, 401, 'Notify route registration requires a machine token.');
-      return true;
-    }
-    const computer = (Array.isArray(state.computers) ? state.computers : []).find((item) => (
-      item.id === daemonAuth.computerId && item.workspaceId === daemonAuth.workspaceId && !item.disabledAt
-    ));
-    if (!computer) {
-      sendError(res, 404, 'Notify delivery computer is unavailable.');
-      return true;
-    }
-    const records = notifyRecords(state);
-    let route = records.find((item) => item.type === 'route' && item.workspaceId === daemonAuth.workspaceId);
-    if (route?.computerId && route.computerId !== computer.id) {
-      sendError(res, 409, 'Notify already has another delivery computer. An owner must change it in MagClaw.');
-      return true;
-    }
-    if (!route) {
-      route = { id: makeId('nrt'), type: 'route', workspaceId: daemonAuth.workspaceId, createdAt: now() };
-      records.push(route);
-    }
-    route.computerId = computer.id;
-    route.enabled = true;
-    route.updatedBy = `computer:${computer.id}`;
-    route.updatedAt = now();
-    await persistState({ workspaceId: daemonAuth.workspaceId, reason: 'notify_machine_route_registered' });
-    sendJson(res, 200, { ok: true, route: { registered: true, enabled: true, updatedAt: route.updatedAt } });
-    return true;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/notify/admin/route') {
-    if (!actor || !['owner', 'admin'].includes(String(actor.member?.role || ''))) {
-      sendError(res, 403, 'Notify route configuration requires a workspace owner or admin.');
-      return true;
-    }
-    const body = await readJson(req);
-    const computerId = compactNotifyText(body.computerId || '', 160);
-    const computer = (Array.isArray(state.computers) ? state.computers : []).find((item) => (
-      item.id === computerId && item.workspaceId === actorWorkspaceId && !item.disabledAt
-    ));
-    if (!computer) {
-      sendError(res, 404, 'Notify delivery computer is unavailable.');
-      return true;
-    }
-    const records = notifyRecords(state);
-    let route = records.find((item) => item.type === 'route' && item.workspaceId === actorWorkspaceId);
-    if (!route) {
-      route = { id: makeId('nrt'), type: 'route', workspaceId: actorWorkspaceId, createdAt: now() };
-      records.push(route);
-    }
-    route.computerId = computer.id;
-    route.enabled = body.enabled !== false;
-    route.updatedBy = actor.member?.humanId || actor.user?.id || '';
-    route.updatedAt = now();
-    await persistState({ workspaceId: actorWorkspaceId, reason: 'notify_route_configured' });
-    sendJson(res, 200, { ok: true, route: { computerId: route.computerId, enabled: route.enabled, updatedAt: route.updatedAt } });
     return true;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/notify/auth/start') {
     const body = await readJson(req);
-    const workspaceId = resolveNotifyWorkspaceId(state, body.workspaceId, actorWorkspaceId);
-    if (!workspaceId) {
-      sendError(res, 404, 'Notify workspace is unavailable.');
+    const inviteToken = compactNotifyText(body.inviteToken || body.invite_token || body.token || '', 500);
+    const installation = installationForInviteToken(state, inviteToken);
+    if (!installation) {
+      sendError(res, 404, 'Notify setup token is invalid or unavailable.');
       return true;
     }
-    if (!consumeRate(state, { workspaceId, key: `auth:${requestIp(req)}`, limit: START_LIMIT, now })) {
+    const relayId = installation.id;
+    if (!consumeRate(state, { workspaceId: installation.workspaceId || relayId, key: `auth:${requestIp(req)}`, limit: START_LIMIT, now })) {
       sendError(res, 429, 'Too many Notify login attempts.');
       return true;
     }
@@ -216,7 +317,9 @@ export async function handleNotifyApi(req, res, url, deps) {
     const request = {
       id: makeId('nau'),
       type: 'auth_device',
-      workspaceId,
+      authMode: 'client',
+      workspaceId: installation.workspaceId,
+      relayId,
       deviceCodeHash: hashNotifySecret(deviceCode),
       userCode,
       machineFingerprint: normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || ''),
@@ -226,19 +329,19 @@ export async function handleNotifyApi(req, res, url, deps) {
         platform: compactNotifyText(body.client?.platform || '', 40),
         arch: compactNotifyText(body.client?.arch || '', 40),
       },
-      status: actor?.member?.workspaceId === workspaceId ? 'approved' : 'pending',
-      approvedUser: actor?.member?.workspaceId === workspaceId ? requestUser(actor) : null,
+      status: browserUser ? 'approved' : 'pending',
+      approvedUser: browserUser ? publicAuthUser(browserUser) : null,
       createdAt: now(),
       updatedAt: now(),
       expiresAt: new Date(Date.now() + NOTIFY_DEVICE_TTL_MS).toISOString(),
     };
     notifyRecords(state).push(request);
-    await persistState({ workspaceId, reason: 'notify_auth_start' });
+    await persistState({ workspaceId: installation.workspaceId, reason: 'notify_auth_start' });
     sendJson(res, 201, {
       ok: true,
       deviceCode,
       userCode,
-      verificationUri: `/notify/auth/approve?user_code=${encodeURIComponent(userCode)}&workspaceId=${encodeURIComponent(workspaceId)}`,
+      verificationUri: `/notify/auth/approve?user_code=${encodeURIComponent(userCode)}`,
       expiresAt: request.expiresAt,
       intervalMs: 2000,
       status: request.status,
@@ -247,30 +350,19 @@ export async function handleNotifyApi(req, res, url, deps) {
   }
 
   if (req.method === 'GET' && url.pathname === '/notify/auth/approve') {
-    const request = findDeviceRequest(state, '', url.searchParams.get('user_code'));
+    const request = findDeviceRequest(state, '', url.searchParams.get('user_code'), 'client');
     if (!request || Date.parse(request.expiresAt || '') <= Date.now()) {
       sendError(res, 404, 'Notify login request not found or expired.');
       return true;
     }
-    const workspaceReq = {
-      ...req,
-      headers: { ...(req.headers || {}), 'x-magclaw-workspace-id': request.workspaceId },
-    };
-    const actorForWorkspace = actor?.member?.workspaceId === request.workspaceId ? actor : currentActor(workspaceReq);
-    const approvalActor = actorForWorkspace?.member?.workspaceId === request.workspaceId ? actorForWorkspace : null;
-    const approvalUser = browserUser || currentUser(workspaceReq);
-    if (!approvalActor) {
-      if (approvalUser) {
-        sendError(res, 403, 'Join this MagClaw workspace before approving Notify login.');
-      } else {
-        const returnTo = encodeURIComponent(url.pathname + url.search);
-        res.writeHead(302, { location: `/?returnTo=${returnTo}`, 'cache-control': 'no-store' });
-        res.end();
-      }
+    if (!browserUser) {
+      const returnTo = encodeURIComponent(url.pathname + url.search);
+      res.writeHead(302, { location: `/?returnTo=${returnTo}`, 'cache-control': 'no-store' });
+      res.end();
       return true;
     }
     request.status = 'approved';
-    request.approvedUser = requestUser(approvalActor);
+    request.approvedUser = publicAuthUser(browserUser);
     request.approvedAt = now();
     request.updatedAt = now();
     await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_approve' });
@@ -281,7 +373,7 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/notify/auth/token') {
     const body = await readJson(req);
-    const request = findDeviceRequest(state, body.deviceCode || body.device_code || '', '');
+    const request = findDeviceRequest(state, body.deviceCode || body.device_code || '', '', 'client');
     if (!request) {
       sendJson(res, 200, { ok: true, status: 'pending' });
       return true;
@@ -301,10 +393,14 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     const token = randomNotifySecret('mcn');
+    const installation = notifyInstallation(state, request.relayId);
     const tokenRecord = {
       id: makeId('nat'),
       type: 'auth_token',
+      authMode: 'client',
       workspaceId: request.workspaceId,
+      relayId: request.relayId,
+      relayHandle: installation?.handle || '',
       tokenHash: hashNotifySecret(token),
       machineFingerprint: request.machineFingerprint || fingerprint,
       profile: request.profile || 'default',
@@ -322,7 +418,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       status: 'approved',
       token,
       tokenExpiresAt: tokenRecord.expiresAt,
-      workspaceId: tokenRecord.workspaceId,
+      relayHandle: tokenRecord.relayHandle,
       profile: tokenRecord.profile,
       user: tokenRecord.user,
       scopes: tokenRecord.scopes,
@@ -338,7 +434,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     token.lastUsedAt = now();
     token.updatedAt = now();
-    sendJson(res, 200, { ok: true, workspaceId: token.workspaceId, profile: token.profile, user: token.user, scopes: token.scopes });
+    sendJson(res, 200, { ok: true, relayHandle: token.relayHandle, profile: token.profile, user: token.user, scopes: token.scopes });
     return true;
   }
 
@@ -373,7 +469,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     const idempotencyKey = compactNotifyText(req.headers?.['idempotency-key'] || '', 200);
-    const duplicate = idempotencyKey && notifyRecordsForWorkspace(state, token.workspaceId).find((record) => (
+    const duplicate = idempotencyKey && notifyRecordsForRelay(state, token.relayId).find((record) => (
       record.type === 'request'
         && record.requesterTokenId === token.id
         && record.idempotencyKey === idempotencyKey
@@ -382,36 +478,28 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, deduped: true, request: publicNotifyRequest(duplicate) });
       return true;
     }
-    const computer = chooseNotifyComputer(state, token.workspaceId);
     const request = {
       id: makeId('nreq'),
       type: 'request',
       workspaceId: token.workspaceId,
+      relayId: token.relayId,
       requesterTokenId: token.id,
       requester: token.user,
-      computerId: computer?.id || '',
       idempotencyKey,
-      status: computer ? 'queued' : 'awaiting_configuration',
-      publicReason: computer ? '' : 'Notify delivery computer is not configured.',
+      status: 'queued',
+      publicReason: '',
       payload,
       createdAt: now(),
       updatedAt: now(),
-      completedAt: computer ? null : now(),
+      completedAt: null,
     };
     notifyRecords(state).push(request);
-    if (computer) {
-      const delivery = await daemonRelay.deliverNotifyRequest(computer, request);
-      request.deliveryId = delivery?.delivery?.id || '';
-      // A fast local handler can report its terminal/configuration result before
-      // deliverNotifyRequest resolves. Do not replace that newer result with the
-      // transport-level queued state from this submission path.
-      if (!request.result) {
-        request.status = delivery?.queued ? 'queued' : 'awaiting_configuration';
-        if (!delivery?.queued) {
-          request.publicReason = 'Notify delivery computer is unavailable.';
-          request.completedAt = now();
-        }
-      }
+    const delivery = await notifyRelay.deliverNotifyRequest(request);
+    request.deliveryId = delivery?.delivery?.id || '';
+    if (!delivery?.queued) {
+      request.status = 'awaiting_configuration';
+      request.publicReason = 'Notify Daemon is offline or not configured.';
+      request.completedAt = now();
     }
     token.lastUsedAt = now();
     token.updatedAt = now();
@@ -424,7 +512,7 @@ export async function handleNotifyApi(req, res, url, deps) {
   if (req.method === 'GET' && requestMatch) {
     const token = notifyTokenForRequest(state, req, 'notify:status');
     const request = notifyRequest(state, decodeURIComponent(requestMatch[1]));
-    if (!token || !request || request.workspaceId !== token.workspaceId || request.requesterTokenId !== token.id) {
+    if (!token || !request || request.relayId !== token.relayId || request.requesterTokenId !== token.id) {
       sendError(res, 404, 'Notify request not found.');
       return true;
     }

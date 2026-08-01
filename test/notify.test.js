@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { handleNotifyApi } from '../server/api/notify-routes.js';
 import {
-  applyNotifyResult,
+  hashNotifySecret,
   normalizeNotifySubmission,
   notifyRecords,
   notifyTokenForRequest,
@@ -20,7 +20,7 @@ import {
   mergeNotifyMentions,
   resolveNotifyGroup,
   resolveNotifyPeople,
-} from '../cli-core/src/notify-handler.js';
+} from '../notify/src/handler.js';
 import { notifyIdempotencyKey } from '../notify/src/cli.js';
 
 function responseRecorder() {
@@ -41,8 +41,8 @@ function routeDeps(state, overrides = {}) {
       member: { workspaceId: 'ws_1', humanId: 'hum_1', role: 'member' },
     }),
     currentUser: () => ({ id: 'usr_1', name: '张三', email: 'zhangsan@example.com' }),
-    daemonRelay: {
-      deliverNotifyRequest: async (_computer, request) => ({ queued: true, delivery: { id: `adl_${request.id}` } }),
+    notifyRelay: {
+      deliverNotifyRequest: async (request) => ({ queued: true, delivery: { id: `ndl_${request.id}` } }),
     },
     getState: () => state,
     makeId: (prefix) => `${prefix}_${++id}`,
@@ -87,31 +87,89 @@ test('Notify idempotency keys are stable ASCII even for Chinese group names', ()
   assert.match(first, /^mcn_[A-Za-z0-9_-]{43}$/);
 });
 
-test('Notify device login issues a machine-bound token and submits an external-safe request', async () => {
+test('Standalone Notify Daemon creates a stable handle and one-time setup token', async () => {
   const fingerprint = `mfp_${'a'.repeat(64)}`;
   const state = {
     connection: { workspaceId: 'ws_1' },
     cloud: { workspaces: [{ id: 'ws_1' }] },
-    computers: [{ id: 'cmp_1', workspaceId: 'ws_1', status: 'connected', connectedVia: 'daemon' }],
     notifyRecords: [],
   };
   const deps = routeDeps(state);
-  const started = await callRoute(deps, 'POST', '/api/notify/auth/start', {
-    body: { workspaceId: 'ws_1', machineFingerprint: fingerprint },
+  const started = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'MagClaw', machineFingerprint: fingerprint },
   });
   assert.equal(started.res.status, 201);
-  assert.equal(started.res.body.status, 'approved');
+  assert.equal(started.res.body.status, 'pending');
 
-  const approved = await callRoute(deps, 'POST', '/api/notify/auth/token', {
+  const approval = await callRoute(deps, 'GET', started.res.body.verificationUri);
+  assert.equal(approval.res.status, 200);
+  const installation = notifyRecords(state).find((record) => record.type === 'installation');
+  assert.match(installation.handle, /^magclaw-[a-f0-9]{7}$/);
+  assert.equal(installation.machineFingerprint, fingerprint);
+  assert.equal(installation.computerId, undefined);
+
+  const repeatedStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { machineFingerprint: fingerprint },
+  });
+  await callRoute(deps, 'GET', repeatedStart.res.body.verificationUri);
+  assert.equal(notifyRecords(state).filter((record) => record.type === 'installation').length, 1);
+
+  const renamedStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Monkey', machineFingerprint: fingerprint },
+  });
+  await callRoute(deps, 'GET', renamedStart.res.body.verificationUri);
+  const installations = notifyRecords(state).filter((record) => record.type === 'installation');
+  assert.equal(installations.length, 2);
+  assert.match(installations[1].handle, /^monkey-[a-f0-9]{7}$/);
+
+  const approved = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
   });
   assert.equal(approved.res.body.status, 'approved');
-  assert.ok(approved.res.body.token.startsWith('mcn_'));
-  assert.equal(JSON.stringify(state).includes(approved.res.body.token), false);
-
-  const headers = {
+  assert.equal(approved.res.body.relayHandle, installation.handle);
+  assert.match(approved.res.body.inviteToken, new RegExp(`^mcn_inv_${installation.handle}_`));
+  assert.equal(JSON.stringify(state).includes(approved.res.body.inviteToken), false);
+  assert.ok(notifyTokenForRequest(state, { headers: {
     authorization: `Bearer ${approved.res.body.token}`,
     'x-magclaw-machine-fingerprint': fingerprint,
+  } }, 'notify:daemon'));
+});
+
+test('Setup token routes an authenticated client request to exactly one independent Notify Relay', async () => {
+  const daemonFingerprint = `mfp_${'b'.repeat(64)}`;
+  const clientFingerprint = `mfp_${'c'.repeat(64)}`;
+  const state = {
+    connection: { workspaceId: 'ws_1' },
+    cloud: { workspaces: [{ id: 'ws_1' }] },
+    notifyRecords: [],
+  };
+  const delivered = [];
+  const deps = routeDeps(state, {
+    notifyRelay: {
+      deliverNotifyRequest: async (request) => {
+        delivered.push(request);
+        return { queued: true, delivery: { id: `ndl_${request.id}` } };
+      },
+    },
+  });
+  const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint },
+  });
+  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
+  });
+  const installation = notifyRecords(state).find((record) => record.type === 'installation');
+
+  const clientStart = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: clientFingerprint },
+  });
+  const clientAuth = await callRoute(deps, 'POST', '/api/notify/auth/token', {
+    body: { deviceCode: clientStart.res.body.deviceCode, machineFingerprint: clientFingerprint },
+  });
+  const headers = {
+    authorization: `Bearer ${clientAuth.res.body.token}`,
+    'x-magclaw-machine-fingerprint': clientFingerprint,
     'idempotency-key': 'session-1:turn-1:研发群',
   };
   const submitted = await callRoute(deps, 'POST', '/api/notify/requests', {
@@ -125,51 +183,13 @@ test('Notify device login issues a machine-bound token and submits an external-s
   });
   assert.equal(submitted.res.status, 202);
   assert.equal(submitted.res.body.request.status, 'queued');
-  assert.deepEqual(Object.keys(submitted.res.body.request).sort(), ['completedAt', 'createdAt', 'id', 'reason', 'status', 'target', 'title', 'updatedAt'].sort());
-  assert.equal(JSON.stringify(submitted.res.body).includes('cmp_1'), false);
-
-  deps.daemonRelay.deliverNotifyRequest = async (_computer, request) => {
-    applyNotifyResult(state, {
-      requestId: request.id,
-      status: 'awaiting_configuration',
-      publicReason: 'Notify groups are not configured.',
-    }, deps.now);
-    return { queued: true, delivery: { id: `adl_${request.id}` } };
-  };
-  const fastResult = await callRoute(deps, 'POST', '/api/notify/requests', {
-    headers: { ...headers, 'idempotency-key': 'session-1:turn-2:研发群' },
-    body: {
-      explicitUserAuthorization: true,
-      target: { group: '研发群' },
-      content: { title: '快速回写', markdown: '- 本地配置尚未完成' },
-      context: { sessionId: 'session-1', turnId: 'turn-2' },
-    },
-  });
-  assert.equal(fastResult.res.body.request.status, 'awaiting_configuration');
-  assert.equal(fastResult.res.body.request.reason, 'Notify groups are not configured.');
+  assert.equal(delivered.length, 1);
+  assert.equal(delivered[0].relayId, installation.id);
+  assert.equal(delivered[0].computerId, undefined);
+  assert.equal(JSON.stringify(submitted.res.body).includes(installation.id), false);
 
   const token = notifyTokenForRequest(state, { headers }, 'notify:status');
-  assert.ok(token);
-  assert.equal(token.machineFingerprint, fingerprint);
-  assert.equal(notifyRecords(state).filter((record) => record.type === 'request').length, 2);
-});
-
-test('Notify browser approval cannot cross MagClaw workspaces', async () => {
-  const state = {
-    connection: { workspaceId: 'ws_1' },
-    cloud: { workspaces: [{ id: 'ws_1' }, { id: 'ws_2' }] },
-    computers: [],
-    notifyRecords: [],
-  };
-  const deps = routeDeps(state);
-  const started = await callRoute(deps, 'POST', '/api/notify/auth/start', {
-    body: { workspaceId: 'ws_2', machineFingerprint: `mfp_${'b'.repeat(64)}` },
-  });
-  assert.equal(started.res.body.status, 'pending');
-  const approvalUrl = `${started.res.body.verificationUri}`;
-  const approval = await callRoute(deps, 'GET', approvalUrl);
-  assert.equal(approval.res.status, 403);
-  assert.equal(notifyRecords(state).find((record) => record.type === 'auth_device').status, 'pending');
+  assert.equal(token.relayId, installation.id);
 });
 
 test('Notify local directory keeps exact aliases deterministic and fuzzy groups confirmation-only', async () => {
@@ -271,55 +291,40 @@ test('Notify owner confirmation persists a fuzzy group alias and resumes the sto
   assert.deepEqual(directory.groups[0].confirmedAliases, ['研发群']);
 });
 
-test('Notify machine result reporting updates only its routed request', async () => {
+test('Notify Daemon result reporting updates only its own Relay request', async () => {
+  const daemonToken = 'mcn_daemon_relay_one';
+  const otherToken = 'mcn_daemon_relay_two';
   const state = {
-    notifyRecords: [{
-      id: 'nreq_result',
-      type: 'request',
-      workspaceId: 'ws_1',
-      computerId: 'cmp_1',
-      requesterTokenId: 'nat_1',
-      status: 'awaiting_confirmation',
-      payload: { target: { group: '研发群' }, content: { title: '本轮更新' } },
-      createdAt: new Date(1_800_000_000_000).toISOString(),
-      updatedAt: new Date(1_800_000_000_000).toISOString(),
-    }],
+    notifyRecords: [
+      {
+        id: 'nat_daemon_1', type: 'auth_token', workspaceId: 'ws_1', relayId: 'nrl_1',
+        tokenHash: hashNotifySecret(daemonToken), scopes: ['notify:daemon'],
+      },
+      {
+        id: 'nat_daemon_2', type: 'auth_token', workspaceId: 'ws_1', relayId: 'nrl_2',
+        tokenHash: hashNotifySecret(otherToken), scopes: ['notify:daemon'],
+      },
+      {
+        id: 'nreq_result', type: 'request', workspaceId: 'ws_1', relayId: 'nrl_1',
+        requesterTokenId: 'nat_1', status: 'awaiting_confirmation',
+        payload: { target: { group: '研发群' }, content: { title: '本轮更新' } },
+        createdAt: new Date(1_800_000_000_000).toISOString(),
+        updatedAt: new Date(1_800_000_000_000).toISOString(),
+      },
+    ],
   };
-  const deps = routeDeps(state, {
-    authenticateDaemonRequest: () => ({ workspaceId: 'ws_1', computerId: 'cmp_1' }),
-  });
-  const reported = await callRoute(deps, 'POST', '/api/notify/internal/result', {
+  const deps = routeDeps(state);
+  const reported = await callRoute(deps, 'POST', '/api/notify/daemon/result', {
+    headers: { authorization: `Bearer ${daemonToken}` },
     body: { requestId: 'nreq_result', status: 'rejected', publicReason: 'Owner rejected the mapping.' },
   });
   assert.equal(reported.res.status, 200);
   assert.equal(reported.res.body.request.status, 'rejected');
-  assert.equal(state.notifyRecords[0].status, 'rejected');
+  assert.equal(state.notifyRecords.find((record) => record.id === 'nreq_result').status, 'rejected');
 
-  deps.authenticateDaemonRequest = () => ({ workspaceId: 'ws_1', computerId: 'cmp_other' });
-  const denied = await callRoute(deps, 'POST', '/api/notify/internal/result', {
+  const denied = await callRoute(deps, 'POST', '/api/notify/daemon/result', {
+    headers: { authorization: `Bearer ${otherToken}` },
     body: { requestId: 'nreq_result', status: 'sent' },
   });
   assert.equal(denied.res.status, 404);
-});
-
-test('Notify machine route registration cannot replace another active computer', async () => {
-  const state = {
-    computers: [
-      { id: 'cmp_1', workspaceId: 'ws_1', status: 'connected' },
-      { id: 'cmp_2', workspaceId: 'ws_1', status: 'connected' },
-    ],
-    notifyRecords: [],
-  };
-  const deps = routeDeps(state, {
-    authenticateDaemonRequest: () => ({ workspaceId: 'ws_1', computerId: 'cmp_1' }),
-  });
-  const registered = await callRoute(deps, 'POST', '/api/notify/internal/route');
-  assert.equal(registered.res.status, 200);
-  assert.equal(registered.res.body.route.registered, true);
-  assert.equal(state.notifyRecords.find((record) => record.type === 'route').computerId, 'cmp_1');
-
-  deps.authenticateDaemonRequest = () => ({ workspaceId: 'ws_1', computerId: 'cmp_2' });
-  const conflict = await callRoute(deps, 'POST', '/api/notify/internal/route');
-  assert.equal(conflict.res.status, 409);
-  assert.equal(state.notifyRecords.find((record) => record.type === 'route').computerId, 'cmp_1');
 });
