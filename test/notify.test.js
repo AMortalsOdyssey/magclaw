@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -26,6 +26,7 @@ import {
   prepareNotifyDelivery,
 } from '../notify/src/handler.js';
 import { notifyIdempotencyKey } from '../notify/src/cli.js';
+import { startNotifyApprovalListener } from '../notify/src/daemon.js';
 
 function responseRecorder() {
   return {
@@ -114,6 +115,37 @@ test('Notify idempotency keys are stable ASCII even for Chinese group names', ()
   const first = notifyIdempotencyKey('session-1:turn-1:研发群');
   assert.equal(first, notifyIdempotencyKey('session-1:turn-1:研发群'));
   assert.match(first, /^mcn_[A-Za-z0-9_-]{43}$/);
+});
+
+test('Notify approval listener keeps lark-cli stdin open until daemon shutdown', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-listener-'));
+  const notifyDir = path.join(root, 'notify');
+  const fakeLark = path.join(root, 'fake-lark-cli.mjs');
+  await mkdir(notifyDir, { recursive: true });
+  await writeFile(path.join(notifyDir, 'config.json'), `${JSON.stringify({
+    confirmationProvider: {
+      kind: 'lark-cli-feishu',
+      command: fakeLark,
+      account: 'monkey',
+      ownerOpenId: 'ou_owner',
+      enabled: true,
+    },
+  })}\n`);
+  await writeFile(fakeLark, [
+    '#!/usr/bin/env node',
+    "process.stdin.resume();",
+    "process.stdin.once('end', () => process.exit(19));",
+    "setInterval(() => {}, 1000);",
+    '',
+  ].join('\n'));
+  await chmod(fakeLark, 0o755);
+
+  const controller = new AbortController();
+  const listener = await startNotifyApprovalListener({ handler: { dir: root } }, controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(listener.child.exitCode, null);
+  controller.abort();
+  await new Promise((resolve) => listener.child.once('exit', resolve));
 });
 
 test('Standalone Notify Daemon creates a stable handle and one-time setup token', async () => {

@@ -302,7 +302,7 @@ async function connectOnce(paths, config, signal) {
   });
 }
 
-async function startNotifyApprovalListener(paths, signal) {
+export async function startNotifyApprovalListener(paths, signal) {
   const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
   const provider = handlerConfig.confirmationProvider || {};
   if (provider.kind !== 'lark-cli-feishu' || !provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) {
@@ -313,7 +313,7 @@ async function startNotifyApprovalListener(paths, signal) {
     '--profile', String(provider.account),
     'event', 'consume', 'card.action.trigger',
     '--as', 'bot', '--quiet',
-  ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: process.env });
+  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: process.env });
   const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
   const seenEvents = new Set();
   let chain = Promise.resolve();
