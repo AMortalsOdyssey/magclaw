@@ -93,6 +93,13 @@ test('Notify package includes the standalone client, Daemon, MCP tool, structure
   assert.equal(files.some((file) => file.includes('config.json')), false);
 });
 
+test('cloud runtime images include the shared Notify summary protocol module', async () => {
+  for (const file of ['Dockerfile', 'web/Dockerfile']) {
+    const source = await readFile(path.join(ROOT, file), 'utf8');
+    assert.match(source, /COPY notify\/src\/summary\.js \.\/notify\/src\/summary\.js/);
+  }
+});
+
 test('team-sharing package includes install-time plugin bundle and hook templates', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './team-sharing'], {
     cwd: ROOT,

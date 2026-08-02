@@ -23,6 +23,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY server ./server
+COPY notify/src/summary.js ./notify/src/summary.js
 COPY public ./public
 COPY scripts ./scripts
 COPY daemon/package.json ./daemon/package.json
