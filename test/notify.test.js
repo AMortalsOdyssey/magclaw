@@ -170,7 +170,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(claudeSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.1', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.2', 'mcp']);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {
@@ -261,12 +261,15 @@ test('Notify instances isolate local state and generate platform autostart servi
     homeDir: '/home/owner',
     nodePath: '/opt/node/bin/node',
     binPath: '/opt/magclaw/notify.js',
+    notifyHome: '/home/owner/.magclaw/notify-product-a',
     logPath: '/home/owner/notify.log',
     errorLogPath: '/home/owner/notify.error.log',
   };
   const mac = notifyDaemonServiceSpec({ ...common, platform: 'darwin' });
   assert.match(mac.file, /io\.magclaw\.notify\.product-a\.plist$/);
   assert.match(mac.content, /<string>product-a<\/string>/);
+  assert.match(mac.content, /<string>--notify-home<\/string>/);
+  assert.match(mac.content, /<string>\/home\/owner\/\.magclaw\/notify-product-a<\/string>/);
   assert.match(mac.content, /<key>RunAtLoad<\/key>/);
   const linux = notifyDaemonServiceSpec({ ...common, platform: 'linux', xdgConfigHome: '/home/owner/.config' });
   assert.match(linux.file, /magclaw-notify-product-a\.service$/);

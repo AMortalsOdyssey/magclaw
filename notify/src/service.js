@@ -24,7 +24,10 @@ export function notifyDaemonServiceSpec(options = {}) {
   const binPath = options.binPath;
   const logPath = options.logPath;
   const errorLogPath = options.errorLogPath;
-  const args = [binPath, 'daemon', 'run', '--instance', instance];
+  const args = [
+    binPath, 'daemon', 'run', '--instance', instance,
+    ...(options.notifyHome ? ['--notify-home', options.notifyHome] : []),
+  ];
   const serviceName = `magclaw-notify-${instance}`;
   if (platform === 'darwin') {
     const label = `io.magclaw.notify.${instance}`;

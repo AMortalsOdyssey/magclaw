@@ -1,5 +1,11 @@
 # @magclaw/notify Release Notes
 
+## 0.3.2 - 2026-08-02 - Persistent custom Daemon homes
+
+### fixed
+
+- Preserves an explicitly selected `MAGCLAW_NOTIFY_HOME` in generated launchd, systemd user, and Windows Scheduled Task commands, so an upgraded background service cannot silently start against an empty default state directory.
+
 ## 0.3.1 - 2026-08-02 - Multi-instance owner services
 
 ### new

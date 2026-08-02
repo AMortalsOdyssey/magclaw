@@ -46,12 +46,18 @@ function notifyHome(env = process.env) {
   return path.resolve(env.MAGCLAW_NOTIFY_HOME || path.join(os.homedir(), '.magclaw', 'notify'));
 }
 
+function notifyEnvironment(flags = {}) {
+  if (!flags.notifyHome) return process.env;
+  return { ...process.env, MAGCLAW_NOTIFY_HOME: path.resolve(clean(flags.notifyHome, 1000)) };
+}
+
 export function notifyDaemonPaths(env = process.env, instance = 'default') {
   const root = instance === 'default'
     ? path.join(notifyHome(env), 'daemon')
     : path.join(notifyHome(env), 'daemons', instance);
   return {
     instance,
+    home: notifyHome(env),
     root,
     config: path.join(root, 'config.json'),
     pid: path.join(root, 'run', 'daemon.pid'),
@@ -173,7 +179,7 @@ function sleep(ms) {
 
 export async function loginNotifyDaemon(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const previous = await readJson(paths.config, {});
   const relayUrl = normalizeRelayUrl(flags.relayUrl || flags.url || previous.relayUrl || '');
   const fingerprint = machineFingerprint();
@@ -415,7 +421,7 @@ export async function processNotifyApprovalEvent(profilePaths, event, dependenci
 
 export async function runNotifyDaemon(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
   const controller = new AbortController();
@@ -461,11 +467,11 @@ async function processIsRunning(pid) {
 
 export async function notifyDaemonStatus(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const config = await readJson(paths.config, {});
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   const handler = await notifyHandlerStatus(paths.handler);
-  const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   const autostart = await notifyDaemonAutostartStatus(service);
   return {
     instance,
@@ -484,20 +490,20 @@ export async function notifyDaemonStatus(flags = {}) {
 
 export async function startNotifyDaemonBackground(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
-  const status = await notifyDaemonStatus({ instance });
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const status = await notifyDaemonStatus({ ...flags, instance });
   if (status.running) return status;
   await mkdir(path.dirname(paths.pid), { recursive: true });
   await mkdir(path.dirname(paths.stdout), { recursive: true });
   if (flags.noAutostart !== true) {
-    const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+    const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
     await enableNotifyDaemonAutostart(service);
     await sleep(500);
-    return notifyDaemonStatus({ instance });
+    return notifyDaemonStatus({ ...flags, instance });
   }
   const stdout = await open(paths.stdout, 'a');
   const stderr = await open(paths.stderr, 'a');
-  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', '--instance', instance], {
+  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', '--instance', instance, '--notify-home', paths.home], {
     detached: true,
     stdio: ['ignore', stdout.fd, stderr.fd],
     windowsHide: true,
@@ -508,13 +514,13 @@ export async function startNotifyDaemonBackground(flags = {}) {
   await stderr.close();
   await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 });
   await sleep(500);
-  return notifyDaemonStatus({ instance });
+  return notifyDaemonStatus({ ...flags, instance });
 }
 
 export async function stopNotifyDaemon(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
-  const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   await stopNotifyDaemonService(service);
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   if (await processIsRunning(pid)) process.kill(pid, 'SIGTERM');
@@ -525,7 +531,7 @@ export async function stopNotifyDaemon(flags = {}) {
 async function manageNotifyDaemonAutostart(paths, positional, flags = {}) {
   const action = positional[1] || 'status';
   const instance = paths.instance;
-  const spec = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  const spec = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   if (action === 'status') return { instance, ...(await notifyDaemonAutostartStatus(spec)) };
   if (action === 'enable') {
     await mkdir(path.dirname(paths.stdout), { recursive: true });
@@ -542,7 +548,7 @@ function commaList(value = '') {
 export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
   const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(process.env, instance);
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   if (command === 'access') {
     const action = positional[1] || 'list';
     if (action === 'list') return listNotifyAccess(paths, flags);
