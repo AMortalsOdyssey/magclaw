@@ -329,7 +329,8 @@ Local audit files are owner-only (`0700` directory, `0600` files), rotate at
 - default owner Daemon: `~/.magclaw/notify/daemon/audit/`;
 - named owner Daemon: `~/.magclaw/notify/daemons/INSTANCE/audit/`;
 - Daemon runtime output: the sibling `logs/daemon.log` and
-  `logs/daemon.error.log` files.
+  `logs/daemon.error.log` files, also enforced as owner-only (`0700` directory,
+  `0600` files).
 
 Inspect the sanitized audit trail without opening the files manually:
 

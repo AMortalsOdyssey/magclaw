@@ -97,6 +97,16 @@ async function writeJson(file, value) {
   await chmod(file, 0o600).catch(() => {});
 }
 
+export async function ensureNotifyRuntimeLogs(paths) {
+  const logDir = path.dirname(paths.stdout);
+  await mkdir(logDir, { recursive: true, mode: 0o700 });
+  await chmod(logDir, 0o700).catch(() => {});
+  for (const file of [paths.stdout, paths.stderr]) {
+    await writeFile(file, '', { flag: 'a', mode: 0o600 });
+    await chmod(file, 0o600).catch(() => {});
+  }
+}
+
 function machineFingerprint() {
   return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir(), 'magclaw-notify-daemon'].join('|')).digest('hex')}`;
 }
@@ -479,6 +489,7 @@ export async function runNotifyDaemon(flags = {}) {
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
+  await ensureNotifyRuntimeLogs(paths);
   const controller = new AbortController();
   const audit = ownerAudit(paths);
   await audit.append({ event: 'owner.daemon.started', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid, configPath: paths.config, auditDir: paths.auditDir, eventConsumer: (await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {})).confirmationProvider?.eventConsumer || 'openclaw' } });
@@ -554,15 +565,15 @@ export async function startNotifyDaemonBackground(flags = {}) {
   const status = await notifyDaemonStatus({ ...flags, instance });
   if (status.running) return status;
   await mkdir(path.dirname(paths.pid), { recursive: true });
-  await mkdir(path.dirname(paths.stdout), { recursive: true });
+  await ensureNotifyRuntimeLogs(paths);
   if (flags.noAutostart !== true) {
     const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
     await enableNotifyDaemonAutostart(service);
     await sleep(500);
     return notifyDaemonStatus({ ...flags, instance });
   }
-  const stdout = await open(paths.stdout, 'a');
-  const stderr = await open(paths.stderr, 'a');
+  const stdout = await open(paths.stdout, 'a', 0o600);
+  const stderr = await open(paths.stderr, 'a', 0o600);
   const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', '--instance', instance, '--notify-home', paths.home], {
     detached: true,
     stdio: ['ignore', stdout.fd, stderr.fd],
@@ -594,7 +605,7 @@ async function manageNotifyDaemonAutostart(paths, positional, flags = {}) {
   const spec = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   if (action === 'status') return { instance, ...(await notifyDaemonAutostartStatus(spec)) };
   if (action === 'enable') {
-    await mkdir(path.dirname(paths.stdout), { recursive: true });
+    await ensureNotifyRuntimeLogs(paths);
     return { instance, ...(await enableNotifyDaemonAutostart(spec)) };
   }
   if (action === 'disable') return { instance, ...(await disableNotifyDaemonAutostart(spec)) };

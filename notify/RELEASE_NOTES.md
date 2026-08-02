@@ -1,5 +1,11 @@
 # @magclaw/notify Release Notes
 
+## 0.3.4 - 2026-08-03 - Owner-only runtime logs
+
+### security
+
+- Enforces `0700` on the local Daemon runtime log directory and `0600` on stdout/stderr files during foreground startup, background startup, restart, and autostart enablement.
+
 ## 0.3.3 - 2026-08-03 - Reliable background provider commands
 
 ### fixed

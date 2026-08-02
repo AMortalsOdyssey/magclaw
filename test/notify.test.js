@@ -33,7 +33,7 @@ import {
 import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
-import { notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
+import { ensureNotifyRuntimeLogs, notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
 import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify/src/executable.js';
 import { normalizeNotifyInstance } from '../notify/src/instance.js';
 import { createNotifyAuditLog, sanitizeNotifyAuditRecord } from '../notify/src/audit.js';
@@ -365,6 +365,20 @@ test('Notify instances isolate local state and generate platform autostart servi
   const windows = notifyDaemonServiceSpec({ ...common, platform: 'win32' });
   assert.equal(windows.enable[0], 'schtasks.exe');
   assert.match(windows.enable[1].join(' '), /ONLOGON/);
+});
+
+test('Notify daemon runtime logs are preserved with owner-only permissions', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-runtime-logs-'));
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'secure-logs');
+  await mkdir(path.dirname(paths.stdout), { recursive: true, mode: 0o755 });
+  await writeFile(paths.stdout, 'existing output\n', { mode: 0o644 });
+  await writeFile(paths.stderr, 'existing error\n', { mode: 0o644 });
+  await ensureNotifyRuntimeLogs(paths);
+  assert.equal((await stat(path.dirname(paths.stdout))).mode & 0o777, 0o700);
+  assert.equal((await stat(paths.stdout)).mode & 0o777, 0o600);
+  assert.equal((await stat(paths.stderr)).mode & 0o777, 0o600);
+  assert.equal(await readFile(paths.stdout, 'utf8'), 'existing output\n');
+  assert.equal(await readFile(paths.stderr, 'utf8'), 'existing error\n');
 });
 
 test('Notify background services resolve Homebrew and user-local CLIs with a minimal PATH', async () => {
