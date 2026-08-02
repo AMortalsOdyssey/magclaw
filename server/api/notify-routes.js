@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeNotifyInstance } from '../../notify/src/instance.js';
 import {
   NOTIFY_DEVICE_TTL_MS,
   NOTIFY_TOKEN_TTL_MS,
@@ -165,9 +166,12 @@ function relayHandlePart(value = '') {
     .slice(0, 32) || 'notify';
 }
 
-function relayHandle(name = '', machineFingerprint = '') {
+function relayHandle(name = '', machineFingerprint = '', instance = 'default') {
   const label = relayHandlePart(name);
-  const suffix = crypto.createHash('sha256').update(`${machineFingerprint}:${label}`).digest('hex').slice(0, 7);
+  const seed = instance === 'default'
+    ? `${machineFingerprint}:${label}`
+    : `${machineFingerprint}:${label}:${instance}`;
+  const suffix = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 7);
   return `${label}-${suffix}`;
 }
 
@@ -205,6 +209,13 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/start') {
     const body = await readJson(req);
+    let requestedInstance;
+    try {
+      requestedInstance = normalizeNotifyInstance(body.instance || 'default');
+    } catch (error) {
+      sendError(res, 400, error.message);
+      return true;
+    }
     const requestedRelayId = compactNotifyText(body.relayId || body.relay_id || '', 160);
     const installation = requestedRelayId ? notifyInstallation(state, requestedRelayId) : null;
     if (requestedRelayId && !installation) {
@@ -225,6 +236,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       workspaceId: storageWorkspaceId,
       relayId: installation?.id || '',
       relayName: compactNotifyText(body.relayName || body.relay_name || 'MagClaw', 120),
+      instance: requestedInstance,
       deviceCodeHash: hashNotifySecret(deviceCode),
       userCode,
       machineFingerprint: normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || ''),
@@ -276,6 +288,7 @@ export async function handleNotifyApi(req, res, url, deps) {
           && record.enabled !== false
           && record.ownerUserId === browserUser.id
           && record.machineFingerprint === request.machineFingerprint
+          && (record.instance || 'default') === (request.instance || 'default')
           && relayHandlePart(record.name) === relayHandlePart(request.relayName)
       )) || null;
     }
@@ -291,7 +304,8 @@ export async function handleNotifyApi(req, res, url, deps) {
         ownerUserId: browserUser.id || '',
         owner: publicAuthUser(browserUser),
         name: request.relayName || 'MagClaw Notify',
-        handle: relayHandle(request.relayName, request.machineFingerprint),
+        instance: request.instance || 'default',
+        handle: relayHandle(request.relayName, request.machineFingerprint, request.instance || 'default'),
         machineFingerprint: request.machineFingerprint,
         setupTokenVersion: 1,
         enabled: true,
@@ -342,7 +356,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     let inviteToken = '';
-    if (!installation.inviteTokenHash) {
+    if (!installation.inviteTokenHash && !installation.inviteTokenDisabledAt) {
       inviteToken = `mcn_inv_${installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
       installation.inviteTokenHash = hashNotifySecret(inviteToken);
       installation.setupTokenVersion = setupTokenVersion(installation);
@@ -374,6 +388,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       tokenExpiresAt: tokenRecord.expiresAt,
       relayId: tokenRecord.relayId,
       relayHandle: installation.handle,
+      instance: installation.instance || 'default',
       inviteToken,
       user: tokenRecord.user,
       scopes: tokenRecord.scopes,
@@ -462,6 +477,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const revokeExisting = body.revokeExisting === true || body.revoke_existing === true;
     const setupToken = `mcn_inv_${owner.installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
     owner.installation.inviteTokenHash = hashNotifySecret(setupToken);
+    delete owner.installation.inviteTokenDisabledAt;
     owner.installation.inviteTokenRotatedAt = now();
     owner.installation.setupTokenVersion = setupTokenVersion(owner.installation) + 1;
     owner.installation.updatedAt = now();
@@ -483,6 +499,41 @@ export async function handleNotifyApi(req, res, url, deps) {
       setupToken,
       setupTokenVersion: owner.installation.setupTokenVersion,
       rotatedAt: owner.installation.inviteTokenRotatedAt,
+      revokedExistingAccess: revoked,
+    });
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/setup-token/disable') {
+    const owner = daemonOwnerToken(state, req);
+    if (!owner) {
+      sendError(res, 401, 'Notify owner authorization is required.');
+      return true;
+    }
+    const body = await readJson(req);
+    const revokeExisting = body.revokeExisting === true || body.revoke_existing === true;
+    delete owner.installation.inviteTokenHash;
+    owner.installation.setupTokenVersion = setupTokenVersion(owner.installation) + 1;
+    owner.installation.inviteTokenDisabledAt = now();
+    owner.installation.updatedAt = now();
+    let revoked = 0;
+    if (revokeExisting) {
+      for (const record of notifyRecordsForRelay(state, owner.token.relayId)) {
+        if (record.type !== 'auth_token' || record.authMode !== 'client' || record.revokedAt) continue;
+        record.revokedAt = now();
+        record.revokedBy = owner.token.user;
+        record.updatedAt = now();
+        revoked += 1;
+      }
+    }
+    await persistState({ workspaceId: owner.token.workspaceId, reason: 'notify_owner_setup_token_disable' });
+    console.info(`[notify] setup token disabled relay=${owner.installation.handle} revokeExisting=${revokeExisting} revoked=${revoked}`);
+    sendJson(res, 200, {
+      ok: true,
+      relayHandle: owner.installation.handle,
+      setupTokenEnabled: false,
+      setupTokenVersion: owner.installation.setupTokenVersion,
+      disabledAt: owner.installation.inviteTokenDisabledAt,
       revokedExistingAccess: revoked,
     });
     return true;

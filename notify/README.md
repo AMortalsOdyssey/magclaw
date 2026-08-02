@@ -17,13 +17,18 @@ users. It keeps only the limited Feishu login identity required for access audit
 ```sh
 npx @magclaw/notify@latest daemon login \
   --relay-url https://notify.example.com \
+  --instance product-a \
   --name Monkey
 ```
 
-`--name` is optional and defaults to `MagClaw`. The Relay creates a stable,
+`--instance` is optional and defaults to `default`. It is the local and cloud
+isolation key for one project. Running the same commands with `--instance
+product-b` creates a second independent Daemon with its own Setup Token,
+providers, groups, grants, pending approvals, and receipts. `--name` is the
+human-facing label and defaults to `MagClaw`. The Relay creates a stable,
 human-readable handle such as `monkey-a31f7c2`; the seven-character suffix is
-derived from the local machine fingerprint and selected name. The same machine
-and name produce the same handle. A different name creates a separate handle.
+derived from the local machine fingerprint, selected name, and instance. The
+same machine, name, and instance produce the same handle.
 
 The login returns a one-time Setup Token. Its readable prefix contains the
 handle, while its random secret prevents enumeration. Give this Setup Token only
@@ -33,6 +38,7 @@ Configure the local Agent and Feishu delivery provider:
 
 ```sh
 magclaw-notify daemon configure \
+  --instance product-a \
   --agent-provider openclaw \
   --agent-command /path/to/openclaw \
   --agent-id silver-member \
@@ -45,35 +51,64 @@ magclaw-notify daemon configure \
   --confirmation-account monkey \
   --confirmation-target OWNER_OPEN_ID \
   --owner-open-id OWNER_OPEN_ID \
+  --event-consumer openclaw \
   --confirmation-enabled true
 
 magclaw-notify daemon add-group \
+  --instance product-a \
   --name "测试monkey" \
   --aliases "测试" \
   --chat-id "LOCAL_CHAT_ID"
 
 magclaw-notify daemon add-person \
+  --instance product-a \
   --name "蒋海波" \
   --open-id "LOCAL_OPEN_ID" \
   --group-chat-ids "LOCAL_CHAT_ID"
 ```
 
+Selecting the OpenClaw event consumer installs or refreshes the local
+`magclaw-notify-handler` Skill automatically. It handles only the exact
+structured callback payload from a private Monkey card; natural-language text
+never counts as an approval.
+
 Start the independent background process:
 
 ```sh
-magclaw-notify daemon start
-magclaw-notify daemon status
+magclaw-notify daemon start --instance product-a
+magclaw-notify daemon status --instance product-a
 ```
 
-Use `magclaw-notify daemon run` for a foreground process and
-`magclaw-notify daemon stop` to stop the background process. Local state is
-stored under `~/.magclaw/notify/daemon/` with owner-only permissions.
+`daemon start` installs and starts a per-user background service by default:
+launchd on macOS, a systemd user service on Linux, or a Scheduled Task on
+Windows. It survives closing the terminal and starts again when the user logs
+in. Use `daemon run` for a foreground process. `daemon stop` stops only the
+selected instance now while preserving autostart for the next login; use
+`daemon autostart disable` to stop it and remove autostart. All commands accept
+`--instance`. The legacy/default instance remains under
+`~/.magclaw/notify/daemon/`; named instances use
+`~/.magclaw/notify/daemons/INSTANCE/`, all with owner-only permissions.
+
+```sh
+magclaw-notify daemon restart --instance product-a
+magclaw-notify daemon autostart status --instance product-a
+magclaw-notify daemon autostart enable --instance product-a
+magclaw-notify daemon autostart disable --instance product-a
+```
 
 For approval buttons, enable `card.action.trigger` in the Monkey application's
-Feishu Developer Console and grant `im:message:readonly`. The independent
-Daemon consumes those events over Feishu's outbound WebSocket connection; it
-does not expose a callback URL or local IP. The callback handler checks that the
-operator Open ID equals the locally configured owner Open ID.
+Feishu Developer Console. A Feishu application must have only one active event
+consumer path for this workflow. When Monkey is already connected to OpenClaw,
+keep `--event-consumer openclaw` (the default): OpenClaw owns the single Feishu
+WebSocket and hands `magclaw_notify` button payloads to the installed local
+handler Skill, which invokes the matching instance's deterministic CLI. The
+Notify Daemon itself opens no Monkey connection, so group chat and approval
+events cannot be randomly split between two clients.
+
+Only installations without an OpenClaw Feishu connection may opt into the
+Daemon's own listener with `--event-consumer standalone`. Never run standalone
+and OpenClaw against the same Feishu application. The Daemon-to-MagClaw Relay
+WebSocket is unrelated and remains one connection per Notify instance.
 
 The approval card contains the requester, resolved and requested group names,
 requested mentions, title, complete Markdown body, source Agent, repository,
@@ -125,15 +160,15 @@ that names the group authorizes a send.
 List active sender devices and the Feishu identities that approved them:
 
 ```sh
-magclaw-notify daemon access list
-magclaw-notify daemon access list --all
+magclaw-notify daemon access list --instance product-a
+magclaw-notify daemon access list --instance product-a --all
 ```
 
 Revoke one device, or every device belonging to one authenticated user:
 
 ```sh
-magclaw-notify daemon access revoke --access-id nat_example
-magclaw-notify daemon access revoke --user-id usr_example --all
+magclaw-notify daemon access revoke --instance product-a --access-id nat_example
+magclaw-notify daemon access revoke --instance product-a --user-id usr_example --all
 ```
 
 `access revoke` is the canonical command name. Revoked clients must complete
@@ -145,9 +180,15 @@ immediately. Existing sender sessions remain valid unless they are explicitly
 revoked at the same time:
 
 ```sh
-magclaw-notify daemon setup-token rotate
-magclaw-notify daemon setup-token rotate --revoke-existing
+magclaw-notify daemon setup-token disable --instance product-a
+magclaw-notify daemon setup-token disable --instance product-a --revoke-existing
+magclaw-notify daemon setup-token rotate --instance product-a
+magclaw-notify daemon setup-token rotate --instance product-a --revoke-existing
 ```
+
+`disable` immediately rejects new setup/login attempts. Existing authorized
+sender sessions remain valid unless `--revoke-existing` is supplied. `rotate`
+creates a new Setup Token and re-enables setup for that instance.
 
 The Relay stores only Notify token hashes plus a limited audit record: Feishu
 identity, device summary, issue/use/expiry/revocation times, and access scope.

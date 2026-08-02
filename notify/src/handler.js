@@ -118,6 +118,7 @@ export function defaultNotifyHandlerConfig() {
       account: '',
       target: '',
       ownerOpenId: '',
+      eventConsumer: 'openclaw',
       enabled: false,
       dryRun: false,
     },
@@ -734,7 +735,7 @@ async function recordPendingConfirmation(state, request, kind, details) {
     requestIds: [request.id],
     kind,
     status: 'pending',
-    details,
+    details: { instance: state.profile || 'default', ...jsonObject(details) },
     createdAt: now(),
     updatedAt: now(),
     expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
@@ -769,6 +770,7 @@ async function recordTargetAccessConfirmation(state, request, group) {
     kind: 'target_access',
     status: 'pending',
     details: {
+      instance: state.profile || 'default',
       userId,
       userName: cleanText(request.requester?.name || request.requester?.email || '未知用户', 120),
       groupId: targetId,
@@ -796,7 +798,7 @@ export function larkCardForTargetApproval(confirmation, requests = []) {
     type,
     behaviors: [{
       type: 'callback',
-      value: { source: 'magclaw_notify', confirmationId: confirmation.id, decision },
+      value: { source: 'magclaw_notify', instance: confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision },
     }],
   });
   return {
@@ -893,7 +895,7 @@ function larkCardForGenericConfirmation(confirmation) {
     : '需要确认 Notify 中的人员或别名映射。';
   const action = (label, decision, type = 'default') => ({
     tag: 'button', text: { tag: 'plain_text', content: label }, type,
-    behaviors: [{ type: 'callback', value: { source: 'magclaw_notify', confirmationId: confirmation.id, decision } }],
+    behaviors: [{ type: 'callback', value: { source: 'magclaw_notify', instance: confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision } }],
   });
   return {
     schema: '2.0',
@@ -1761,7 +1763,8 @@ export async function notifyHandlerStatus(profilePaths) {
     deliveryProvider: state.config.deliveryProvider.kind,
     deliveryConfigured: Boolean(state.config.deliveryProvider.enabled && state.config.deliveryProvider.account),
     confirmationConfigured: Boolean(state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && state.config.confirmationProvider.target),
-    approvalListenerConfigured: Boolean(state.config.confirmationProvider.kind === 'lark-cli-feishu' && state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && (state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target)),
+    approvalEventConsumer: state.config.confirmationProvider.eventConsumer || 'openclaw',
+    approvalListenerConfigured: Boolean(state.config.confirmationProvider.kind === 'lark-cli-feishu' && state.config.confirmationProvider.eventConsumer === 'standalone' && state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && (state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target)),
     groups: state.directory.groups.length,
     people: state.directory.people.length,
     activeTargetGrants: state.grants.grants.filter((grant) => grant.status === 'active').length,

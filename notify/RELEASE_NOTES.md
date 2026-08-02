@@ -1,5 +1,17 @@
 # @magclaw/notify Release Notes
 
+## 0.3.1 - 2026-08-02 - Multi-instance owner services
+
+### new
+
+- Adds isolated `--instance` owner Daemons so one owner and machine can issue separate Setup Tokens, directories, grants, providers, receipts, and cloud Relay routes for multiple projects.
+- Adds per-instance launchd, systemd user, and Windows Scheduled Task autostart management plus start, restart, stop, status, enable, and disable commands.
+- Adds Setup Token disable with optional revocation of every existing sender session; rotation explicitly re-enables a disabled setup entry point.
+
+### fixed
+
+- Prevents the Notify Daemon from competing with OpenClaw for the same Feishu application events. OpenClaw is the default single Monkey event consumer and hands Notify card actions to the deterministic local CLI; standalone Feishu consumption must now be enabled explicitly.
+
 ## 0.3.0 - 2026-08-02 - Structured summaries and multi-host tools
 
 ### new

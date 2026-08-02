@@ -6,6 +6,14 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { notifyInstanceFromFlags } from './instance.js';
+import {
+  disableNotifyDaemonAutostart,
+  enableNotifyDaemonAutostart,
+  notifyDaemonAutostartStatus,
+  notifyDaemonServiceSpec,
+  stopNotifyDaemonService,
+} from './service.js';
 import {
   addNotifyGroup,
   addNotifyPerson,
@@ -38,15 +46,18 @@ function notifyHome(env = process.env) {
   return path.resolve(env.MAGCLAW_NOTIFY_HOME || path.join(os.homedir(), '.magclaw', 'notify'));
 }
 
-export function notifyDaemonPaths(env = process.env) {
-  const root = path.join(notifyHome(env), 'daemon');
+export function notifyDaemonPaths(env = process.env, instance = 'default') {
+  const root = instance === 'default'
+    ? path.join(notifyHome(env), 'daemon')
+    : path.join(notifyHome(env), 'daemons', instance);
   return {
+    instance,
     root,
     config: path.join(root, 'config.json'),
     pid: path.join(root, 'run', 'daemon.pid'),
     stdout: path.join(root, 'logs', 'daemon.log'),
     stderr: path.join(root, 'logs', 'daemon.error.log'),
-    handler: { dir: root, config: path.join(root, 'config.json'), profile: 'notify' },
+    handler: { dir: root, config: path.join(root, 'config.json'), profile: instance },
   };
 }
 
@@ -131,6 +142,19 @@ async function rotateNotifySetupToken(paths, flags = {}) {
   });
   config.inviteToken = result.setupToken;
   config.inviteTokenUpdatedAt = result.rotatedAt;
+  delete config.inviteTokenDisabledAt;
+  config.updatedAt = new Date().toISOString();
+  await writeJson(paths.config, config);
+  return result;
+}
+
+async function disableNotifySetupToken(paths, flags = {}) {
+  const { config, result } = await daemonOwnerRequest(paths, '/api/notify/daemon/setup-token/disable', {
+    method: 'POST',
+    body: { revokeExisting: flags.revokeExisting === true },
+  });
+  delete config.inviteToken;
+  config.inviteTokenDisabledAt = result.disabledAt;
   config.updatedAt = new Date().toISOString();
   await writeJson(paths.config, config);
   return result;
@@ -148,7 +172,8 @@ function sleep(ms) {
 }
 
 export async function loginNotifyDaemon(flags = {}) {
-  const paths = notifyDaemonPaths();
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
   const previous = await readJson(paths.config, {});
   const relayUrl = normalizeRelayUrl(flags.relayUrl || flags.url || previous.relayUrl || '');
   const fingerprint = machineFingerprint();
@@ -162,6 +187,7 @@ export async function loginNotifyDaemon(flags = {}) {
     body: {
       relayId: requestedRelayId,
       relayName: requestedName,
+      instance,
       machineFingerprint: fingerprint,
       client: { hostname: os.hostname(), platform: os.platform(), arch: os.arch() },
     },
@@ -184,6 +210,7 @@ export async function loginNotifyDaemon(flags = {}) {
   const config = {
     ...previous,
     version: 1,
+    instance,
     relayUrl,
     relayId: approved.relayId,
     relayName: requestedName,
@@ -306,7 +333,7 @@ async function connectOnce(paths, config, signal) {
 export async function startNotifyApprovalListener(paths, signal) {
   const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
   const provider = handlerConfig.confirmationProvider || {};
-  if (provider.kind !== 'lark-cli-feishu' || !provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) {
+  if (provider.kind !== 'lark-cli-feishu' || !provider.enabled || provider.eventConsumer !== 'standalone' || !provider.account || !(provider.ownerOpenId || provider.target)) {
     return { running: false, stop() {} };
   }
   const command = clean(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
@@ -387,13 +414,16 @@ export async function processNotifyApprovalEvent(profilePaths, event, dependenci
 }
 
 export async function runNotifyDaemon(flags = {}) {
-  const paths = notifyDaemonPaths();
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  await mkdir(path.dirname(paths.pid), { recursive: true });
+  await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 });
   const approvalListener = await startNotifyApprovalListener(paths, controller.signal);
   const expiryTimer = setInterval(() => {
     expireNotifyConfirmations(paths.handler).catch((error) => {
@@ -418,8 +448,10 @@ export async function runNotifyDaemon(flags = {}) {
   } finally {
     clearInterval(expiryTimer);
     approvalListener.stop();
+    const recordedPid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
+    if (recordedPid === process.pid) await rm(paths.pid, { force: true });
   }
-  return { stopped: true };
+  return { stopped: true, instance };
 }
 
 async function processIsRunning(pid) {
@@ -427,12 +459,16 @@ async function processIsRunning(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export async function notifyDaemonStatus() {
-  const paths = notifyDaemonPaths();
+export async function notifyDaemonStatus(flags = {}) {
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
   const config = await readJson(paths.config, {});
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   const handler = await notifyHandlerStatus(paths.handler);
+  const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  const autostart = await notifyDaemonAutostartStatus(service);
   return {
+    instance,
     configured: Boolean(config.relayUrl && config.relayId && config.token),
     running: await processIsRunning(pid),
     pid: await processIsRunning(pid) ? pid : null,
@@ -440,19 +476,28 @@ export async function notifyDaemonStatus() {
     relayId: config.relayId || '',
     relayHandle: config.relayHandle || '',
     inviteTokenConfigured: Boolean(config.inviteToken),
+    setupTokenEnabled: Boolean(config.inviteToken),
+    autostart,
     handler,
   };
 }
 
-export async function startNotifyDaemonBackground() {
-  const paths = notifyDaemonPaths();
-  const status = await notifyDaemonStatus();
+export async function startNotifyDaemonBackground(flags = {}) {
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
+  const status = await notifyDaemonStatus({ instance });
   if (status.running) return status;
   await mkdir(path.dirname(paths.pid), { recursive: true });
   await mkdir(path.dirname(paths.stdout), { recursive: true });
+  if (flags.noAutostart !== true) {
+    const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+    await enableNotifyDaemonAutostart(service);
+    await sleep(500);
+    return notifyDaemonStatus({ instance });
+  }
   const stdout = await open(paths.stdout, 'a');
   const stderr = await open(paths.stderr, 'a');
-  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run'], {
+  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', '--instance', instance], {
     detached: true,
     stdio: ['ignore', stdout.fd, stderr.fd],
     windowsHide: true,
@@ -463,15 +508,31 @@ export async function startNotifyDaemonBackground() {
   await stderr.close();
   await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 });
   await sleep(500);
-  return notifyDaemonStatus();
+  return notifyDaemonStatus({ instance });
 }
 
-export async function stopNotifyDaemon() {
-  const paths = notifyDaemonPaths();
+export async function stopNotifyDaemon(flags = {}) {
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
+  const service = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  await stopNotifyDaemonService(service);
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   if (await processIsRunning(pid)) process.kill(pid, 'SIGTERM');
   await rm(paths.pid, { force: true });
-  return { stopped: true, pid: Number.isInteger(pid) ? pid : null };
+  return { stopped: true, instance, pid: Number.isInteger(pid) ? pid : null, autostartPreserved: true };
+}
+
+async function manageNotifyDaemonAutostart(paths, positional, flags = {}) {
+  const action = positional[1] || 'status';
+  const instance = paths.instance;
+  const spec = notifyDaemonServiceSpec({ instance, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
+  if (action === 'status') return { instance, ...(await notifyDaemonAutostartStatus(spec)) };
+  if (action === 'enable') {
+    await mkdir(path.dirname(paths.stdout), { recursive: true });
+    return { instance, ...(await enableNotifyDaemonAutostart(spec)) };
+  }
+  if (action === 'disable') return { instance, ...(await disableNotifyDaemonAutostart(spec)) };
+  throw new Error(`Unknown Notify autostart command: ${action}`);
 }
 
 function commaList(value = '') {
@@ -480,7 +541,8 @@ function commaList(value = '') {
 
 export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
-  const paths = notifyDaemonPaths();
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(process.env, instance);
   if (command === 'access') {
     const action = positional[1] || 'list';
     if (action === 'list') return listNotifyAccess(paths, flags);
@@ -496,15 +558,24 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'setup-token') {
     const action = positional[1] || '';
     if (action === 'rotate') return rotateNotifySetupToken(paths, flags);
+    if (action === 'disable') return disableNotifySetupToken(paths, flags);
     throw new Error(`Unknown Notify setup-token command: ${action || '[missing]'}`);
   }
   if (command === 'login' || command === 'setup') return loginNotifyDaemon(flags);
   if (command === 'run') return runNotifyDaemon(flags);
-  if (command === 'start') return startNotifyDaemonBackground();
-  if (command === 'stop') return stopNotifyDaemon();
-  if (command === 'status') return notifyDaemonStatus();
+  if (command === 'start') return startNotifyDaemonBackground(flags);
+  if (command === 'restart') {
+    await stopNotifyDaemon(flags);
+    return startNotifyDaemonBackground(flags);
+  }
+  if (command === 'stop') return stopNotifyDaemon(flags);
+  if (command === 'status') return notifyDaemonStatus(flags);
+  if (command === 'autostart') return manageNotifyDaemonAutostart(paths, positional, flags);
   if (command === 'configure') {
-    return configureNotifyHandler(paths.handler, {
+    if (flags.eventConsumer && !['openclaw', 'standalone'].includes(String(flags.eventConsumer))) {
+      throw new Error('Notify event consumer must be openclaw or standalone.');
+    }
+    const config = await configureNotifyHandler(paths.handler, {
       ...(flags.enabled !== undefined ? { enabled: flags.enabled !== 'false' } : {}),
       agentProvider: {
         ...(flags.agentProvider ? { kind: flags.agentProvider } : {}),
@@ -524,9 +595,14 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
         ...(flags.confirmationAccount !== undefined ? { account: flags.confirmationAccount } : {}),
         ...(flags.confirmationTarget !== undefined ? { target: flags.confirmationTarget } : {}),
         ...(flags.ownerOpenId !== undefined ? { ownerOpenId: flags.ownerOpenId } : {}),
+        ...(flags.eventConsumer !== undefined ? { eventConsumer: flags.eventConsumer } : {}),
         ...(flags.confirmationEnabled !== undefined ? { enabled: flags.confirmationEnabled !== 'false' } : {}),
       },
     });
+    const installedHandlerSkills = config.confirmationProvider.eventConsumer === 'openclaw'
+      ? await installNotifyHandlerSkill({ targets: ['openclaw'] })
+      : [];
+    return { ...config, installedHandlerSkills };
   }
   if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });
@@ -535,7 +611,16 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'confirm') {
     const decisions = [['approve', flags.approve], ['once', flags.once], ['always', flags.always], ['reject', flags.reject]].filter(([, enabled]) => enabled === true);
     if (decisions.length !== 1) throw new Error('Choose exactly one of --approve, --once, --always, or --reject.');
-    return confirmNotifyMapping(paths.handler, flags.id, decisions[0][0], { personMappings: commaList(flags.personMap || flags.personMaps) });
+    if (flags.personMap || flags.personMaps) {
+      return confirmNotifyMapping(paths.handler, flags.id, decisions[0][0], {
+        personMappings: commaList(flags.personMap || flags.personMaps),
+        operatorId: flags.operatorOpenId || '',
+      });
+    }
+    return processNotifyApprovalEvent(paths.handler, {
+      action_value: { source: 'magclaw_notify', instance, confirmationId: flags.id, decision: decisions[0][0] },
+      operator_id: flags.operatorOpenId || '',
+    });
   }
   throw new Error(`Unknown Notify Daemon command: ${command}`);
 }
