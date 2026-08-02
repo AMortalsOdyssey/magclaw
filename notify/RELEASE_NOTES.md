@@ -1,5 +1,18 @@
 # @magclaw/notify Release Notes
 
+## 0.3.0 - 2026-08-02 - Structured summaries and multi-host tools
+
+### new
+
+- Adds one normalized summary schema for features, fixes, performance work, investigations, design decisions, deployments, research, documentation, mixed tasks, and custom sections.
+- Adds native Codex and Claude Code Skill installs plus a local stdio MCP tool for Claude Desktop, including POSIX and Windows configuration.
+- Adds Feishu card links and up to four public HTTPS images uploaded by the owner bot after private-network, type, redirect, and size checks.
+
+### security
+
+- Keeps implicit Skill invocation disabled and requires current-turn authorization in the Skill, CLI, Relay, and MCP send tool.
+- Preserves client-structured facts during owner-side alias resolution and continues to keep Chat IDs, Open IDs, credentials, and Feishu image keys local.
+
 ## 0.2.2 - 2026-08-01 - Per-user target approvals and async acknowledgement
 ### new
 - Adds 48-hour owner approval batches scoped to one authenticated Feishu user and one local group, with allow-once, permanent-allow, and reject decisions.

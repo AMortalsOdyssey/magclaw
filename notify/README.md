@@ -2,7 +2,7 @@
 
 `@magclaw/notify` is a standalone, one-way notification package. It contains:
 
-- an explicitly authorized sender CLI and Agent Skill;
+- an explicitly authorized sender CLI, Agent Skill, and local MCP tool;
 - an independent owner-side Notify Daemon;
 - local Agent, group, person, alias, confirmation, and Feishu delivery logic.
 
@@ -96,6 +96,30 @@ machine-bound submit token valid for 90 days, and installs the
 once and is not stored in the sender profile. Only a Feishu-linked MagClaw
 identity from the owner's tenant can approve access.
 
+Host integration is deliberately split by the host's native extension model:
+
+- **Codex**: installs the user-invocable Skill under `~/.codex/skills/` with
+  implicit invocation disabled.
+- **Claude Code**: installs the Skill under `~/.claude/skills/` with
+  `disable-model-invocation: true`, so it appears in the `/` menu but Claude
+  cannot invoke it automatically.
+- **Claude Desktop**: registers the package as a local stdio MCP server in the
+  Desktop configuration. Restart Claude Desktop after installation. The tool
+  description and runtime both require explicit current-turn authorization.
+- **OpenClaw and Hermes**: install the same Skill when their local command is
+  detected.
+
+Install or repair selected integrations without logging in again:
+
+```sh
+magclaw-notify install --targets codex,claude-code,claude-desktop
+```
+
+The capability never sends merely because a task completed or because it was
+used earlier. An Agent may ask whether the user wants to send when the active
+conversation already contains Notify context, but only a new explicit request
+that names the group authorizes a send.
+
 ## Owner: manage sender access
 
 List active sender devices and the Feishu identities that approved them:
@@ -131,16 +155,49 @@ It never copies the user's Feishu access token into Notify storage.
 
 ## Send an explicitly requested summary
 
+Agents should prefer a structured summary file. The schema is flexible enough
+for feature delivery, bug fixes, performance work, investigations, technical
+decisions, deployments, research, documentation, and mixed tasks:
+
+```json
+{
+  "headline": "登录回调重复执行已修复并通过回归验证",
+  "taskTypes": ["bugfix"],
+  "sections": [
+    {
+      "type": "bugfix",
+      "title": "问题与修复",
+      "items": [
+        { "status": "done", "text": "对同一授权回调增加幂等处理" },
+        { "status": "verified", "text": "回归测试通过", "evidence": "12/12" }
+      ]
+    }
+  ],
+  "links": [{ "label": "合并请求", "url": "https://example.com/mr/123" }],
+  "images": [{ "url": "https://example.com/result.png", "alt": "验收截图" }]
+}
+```
+
 ```sh
 magclaw-notify send \
   --group "研发群" \
   --title "修复登录回调重复执行" \
-  --markdown-file ./turn-summary.md \
+  --summary-json-file ./turn-summary.json \
   --mentions "张三" \
   --session-id "session-123" \
   --turn-id "turn-8" \
   --authorized-current-turn
 ```
+
+Legacy `--markdown` and `--markdown-file` inputs remain supported. Structured
+summaries are normalized at the sender and Relay, then rendered deterministically
+on the owner machine; the owner Agent may resolve aliases but cannot rewrite a
+structured summary's facts or completion status.
+
+Links and images must use HTTPS. Links render directly in the card. Up to four
+public images are downloaded with private-network and size checks, uploaded by
+the owner's configured Feishu bot, and embedded with Feishu `image_key` values.
+Raw Chat IDs, Open IDs, bot credentials, and image keys never come from senders.
 
 The group and person names are resolved only on the owner machine. Unknown or
 ambiguous names never reveal the local directory and may require owner

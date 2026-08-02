@@ -5,9 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runNotifyDaemonCommand } from './daemon.js';
+import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_SOURCE = path.join(PACKAGE_ROOT, 'skills', 'magclaw-notify');
+const PACKAGE_JSON = path.join(PACKAGE_ROOT, 'package.json');
 const DEFAULT_RELAY_URL = 'https://magclaw.multiego.me';
 
 function parseArgs(argv) {
@@ -111,26 +113,77 @@ async function commandExists(command) {
   return false;
 }
 
-async function installSkill(flags = {}) {
+export function claudeDesktopConfigPath(options = {}) {
+  const platform = options.platform || process.platform;
+  const homeDir = options.homeDir || os.homedir();
+  const env = options.env || process.env;
+  if (platform === 'darwin') return path.join(homeDir, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  if (platform === 'win32') return path.join(env.APPDATA || path.join(homeDir, 'AppData', 'Roaming'), 'Claude', 'claude_desktop_config.json');
+  return path.join(env.XDG_CONFIG_HOME || path.join(homeDir, '.config'), 'Claude', 'claude_desktop_config.json');
+}
+
+async function installClaudeDesktopTool(options = {}) {
+  const configPath = claudeDesktopConfigPath(options);
+  const config = await readJson(configPath, {});
+  const packageJson = await readJson(PACKAGE_JSON, { name: '@magclaw/notify', version: 'latest' });
+  const spec = `${packageJson.name}@${packageJson.version}`;
+  const platform = options.platform || process.platform;
+  const server = platform === 'win32'
+    ? { command: 'cmd.exe', args: ['/d', '/s', '/c', 'npx', '--yes', spec, 'mcp'] }
+    : { command: 'npx', args: ['--yes', spec, 'mcp'] };
+  config.mcpServers = config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
+  config.mcpServers['magclaw-notify'] = server;
+  await writeJson(configPath, config);
+  return { kind: 'claude-desktop', type: 'mcp', path: configPath, restartRequired: true, server };
+}
+
+function skillRoot(kind, homeDir) {
+  const roots = {
+    codex: path.join(homeDir, '.codex', 'skills', 'magclaw-notify'),
+    'claude-code': path.join(homeDir, '.claude', 'skills', 'magclaw-notify'),
+    openclaw: path.join(homeDir, '.openclaw', 'skills', 'magclaw-notify'),
+    hermes: path.join(homeDir, '.hermes', 'skills', 'magclaw-notify'),
+  };
+  return roots[kind] || '';
+}
+
+async function installHostSkill(kind, target) {
+  await rm(target, { recursive: true, force: true });
+  await copyTree(SKILL_SOURCE, target);
+  if (kind === 'claude-code') {
+    const skillFile = path.join(target, 'SKILL.md');
+    const skill = await readFile(skillFile, 'utf8');
+    const hostSkill = skill.replace(/^(---\n[\s\S]*?)(\n---\n)/, (_match, frontmatter, closing) => (
+      frontmatter.includes('disable-model-invocation:')
+        ? `${frontmatter}${closing}`
+        : `${frontmatter}\ndisable-model-invocation: true${closing}`
+    ));
+    await writeFile(skillFile, hostSkill);
+  }
+  return { kind, type: 'skill', path: target };
+}
+
+export async function installNotifyIntegrations(flags = {}, options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
   const requested = String(flags.targets || flags.target || '').split(',').map((item) => item.trim()).filter(Boolean);
   const targets = requested.length ? requested : [
     'codex',
     'claude-code',
+    ...(platform === 'darwin' && await stat('/Applications/Claude.app').then((info) => info.isDirectory()).catch(() => false) ? ['claude-desktop'] : []),
     ...(await commandExists('openclaw') ? ['openclaw'] : []),
     ...(await commandExists('hermes') ? ['hermes'] : []),
   ];
-  const roots = {
-    codex: path.join(os.homedir(), '.codex', 'skills', 'magclaw-notify'),
-    'claude-code': path.join(os.homedir(), '.claude', 'skills', 'magclaw-notify'),
-    openclaw: path.join(os.homedir(), '.openclaw', 'skills', 'magclaw-notify'),
-    hermes: path.join(os.homedir(), '.hermes', 'skills', 'magclaw-notify'),
-  };
   const installed = [];
   for (const kind of [...new Set(targets)]) {
-    if (!roots[kind]) continue;
-    await rm(roots[kind], { recursive: true, force: true });
-    await copyTree(SKILL_SOURCE, roots[kind]);
-    installed.push({ kind, path: roots[kind] });
+    if (kind === 'claude-desktop') {
+      installed.push(await installClaudeDesktopTool({ homeDir, platform, env }));
+      continue;
+    }
+    const root = skillRoot(kind, homeDir);
+    if (!root) continue;
+    installed.push(await installHostSkill(kind, root));
   }
   return installed;
 }
@@ -181,8 +234,8 @@ async function login(flags, positional) {
     updatedAt: new Date().toISOString(),
   };
   await writeJson(paths.config, config);
-  const installedSkills = flags.noSkill ? [] : await installSkill(flags);
-  return { profile, relayUrl, relayHandle: config.relayHandle, user: config.user, installedSkills };
+  const installedIntegrations = flags.noSkill ? [] : await installNotifyIntegrations(flags);
+  return { profile, relayUrl, relayHandle: config.relayHandle, user: config.user, installedIntegrations };
 }
 
 async function authenticated(flags) {
@@ -198,17 +251,26 @@ async function readMarkdown(flags) {
   return String(flags.markdown || flags.summary || '').trim();
 }
 
+async function readStructuredSummary(flags) {
+  if (flags.summaryJsonFile || flags.structuredFile) {
+    return normalizeNotifySummary(JSON.parse(await readFile(path.resolve(flags.summaryJsonFile || flags.structuredFile), 'utf8')), { required: true });
+  }
+  if (flags.summaryJson || flags.structured) return normalizeNotifySummary(JSON.parse(String(flags.summaryJson || flags.structured)), { required: true });
+  return null;
+}
+
 export function notifyIdempotencyKey(value) {
   return `mcn_${crypto.createHash('sha256').update(String(value || '')).digest('base64url')}`;
 }
 
-async function send(flags) {
+export async function sendNotify(flags) {
   if (flags.authorizedCurrentTurn !== true) throw new Error('Refusing to submit: --authorized-current-turn is required for the current user-instructed turn.');
   const auth = await authenticated(flags);
   const group = String(flags.group || '').trim();
   if (!group) throw new Error('--group with the user-specified target group name is required.');
-  const markdown = await readMarkdown(flags);
-  if (!markdown) throw new Error('--markdown or --markdown-file is required.');
+  const summary = await readStructuredSummary(flags);
+  const markdown = summary ? renderNotifySummaryMarkdown(summary) : await readMarkdown(flags);
+  if (!markdown) throw new Error('--summary-json-file, --markdown, or --markdown-file is required.');
   const idempotencySource = String(flags.idempotencyKey || [flags.sessionId, flags.turnId, group].filter(Boolean).join(':') || crypto.randomUUID());
   const idempotencyKey = notifyIdempotencyKey(idempotencySource);
   return requestJson(auth.config.relayUrl, '/api/notify/requests', {
@@ -219,7 +281,7 @@ async function send(flags) {
     body: {
       explicitUserAuthorization: true,
       target: { group },
-      content: { title: flags.title || '工作进展通知', markdown },
+      content: { title: flags.title || summary?.headline || '工作进展通知', markdown, ...(summary ? { summary } : {}) },
       instruction: flags.instruction || '',
       mentions: String(flags.mentions || flags.mention || '').split(',').map((item) => item.trim()).filter(Boolean),
       context: {
@@ -265,11 +327,13 @@ function help() {
   return [
     'MagClaw Notify', '',
     '  magclaw-notify login RELAY_URL --token SETUP_TOKEN',
+    '  magclaw-notify send --group NAME --summary-json-file FILE --authorized-current-turn',
     '  magclaw-notify send --group NAME --markdown-file FILE --authorized-current-turn',
     '  magclaw-notify status REQUEST_ID',
     '  magclaw-notify targets',
     '  magclaw-notify whoami',
-    '  magclaw-notify install-skill [--targets codex,claude-code]',
+    '  magclaw-notify install [--targets codex,claude-code,claude-desktop]',
+    '  magclaw-notify mcp',
     '  magclaw-notify logout',
     '  magclaw-notify daemon login --relay-url URL [--name NAME]',
     '  magclaw-notify daemon configure --agent-provider openclaw --delivery-provider lark-cli-feishu',
@@ -290,12 +354,17 @@ export async function runNotifyCli(argv = process.argv) {
   let result;
   if (command === 'daemon') result = await runNotifyDaemonCommand(positional, flags);
   else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
-  else if (command === 'send') result = await send(flags);
+  else if (command === 'send') result = await sendNotify(flags);
   else if (command === 'status') result = await status(flags, positional);
   else if (command === 'targets') result = await targets(flags);
   else if (command === 'whoami') result = await whoami(flags);
   else if (command === 'logout') result = await logout(flags);
-  else if (command === 'install-skill') result = { installedSkills: await installSkill(flags) };
+  else if (['install', 'install-skill'].includes(command)) result = { installedIntegrations: await installNotifyIntegrations(flags) };
+  else if (command === 'mcp') {
+    const { runNotifyMcpServer } = await import('./mcp.js');
+    await runNotifyMcpServer();
+    return;
+  }
   else { process.stdout.write(`${help()}\n`); return; }
   process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
 }

@@ -22,12 +22,15 @@ import {
   larkCardForTargetApproval,
   listNotifyTargetGrants,
   larkCardForNotify,
+  isPrivateNotifyAddress,
   mergeNotifyMentions,
   resolveNotifyGroup,
   resolveNotifyPeople,
   prepareNotifyDelivery,
 } from '../notify/src/handler.js';
-import { notifyIdempotencyKey } from '../notify/src/cli.js';
+import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
+import { handleNotifyMcpTool } from '../notify/src/mcp.js';
+import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
 import { processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
 
 function responseRecorder() {
@@ -117,6 +120,83 @@ test('Notify idempotency keys are stable ASCII even for Chinese group names', ()
   const first = notifyIdempotencyKey('session-1:turn-1:研发群');
   assert.equal(first, notifyIdempotencyKey('session-1:turn-1:研发群'));
   assert.match(first, /^mcn_[A-Za-z0-9_-]{43}$/);
+});
+
+test('Notify structured summaries normalize mixed work and preserve safe rich content', () => {
+  const summary = normalizeNotifySummary({
+    headline: '完成通知能力升级并验证富文本',
+    taskTypes: ['feature', 'bugfix', 'unknown'],
+    sections: [
+      { type: 'feature', title: '新增能力', items: [{ status: 'done', text: '支持结构化总结' }] },
+      { type: 'bugfix', title: '修复', items: [{ status: 'verified', text: '修复卡片更新', evidence: '18/18' }] },
+      { type: 'custom', title: '自定义结论', items: ['保留扩展空间'] },
+    ],
+    links: [{ label: '技术文档', url: 'https://example.com/docs' }],
+    images: [{ url: 'https://example.com/result.png', alt: '结果截图' }],
+  }, { required: true });
+  assert.deepEqual(summary.taskTypes, ['feature', 'bugfix']);
+  const markdown = renderNotifySummaryMarkdown(summary);
+  assert.match(markdown, /【已完成】支持结构化总结/);
+  assert.match(markdown, /\[技术文档\]\(https:\/\/example.com\/docs\)/);
+  assert.match(markdown, /\[结果截图\]\(https:\/\/example.com\/result.png\)/);
+  const payload = normalizeNotifySubmission({
+    explicitUserAuthorization: true,
+    target: { group: '测试' },
+    content: { summary },
+  });
+  assert.equal(payload.schemaVersion, 2);
+  assert.equal(payload.content.summary.headline, summary.headline);
+  assert.match(payload.content.markdown, /自定义结论/);
+  assert.throws(() => normalizeNotifySummary({ headline: 'bad', images: [{ url: 'http://127.0.0.1/a.png' }] }, { required: true }), /HTTPS/);
+  assert.equal(isPrivateNotifyAddress('127.0.0.1'), true);
+  assert.equal(isPrivateNotifyAddress('192.168.1.1'), true);
+  assert.equal(isPrivateNotifyAddress('::1'), true);
+  assert.equal(isPrivateNotifyAddress('8.8.8.8'), false);
+});
+
+test('Notify integrations install native Skills and a Claude Desktop MCP entry without implicit invocation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-'));
+  const installed = await installNotifyIntegrations({ targets: 'codex,claude-code,claude-desktop' }, {
+    homeDir: root,
+    platform: 'darwin',
+    env: {},
+  });
+  assert.deepEqual(installed.map((item) => item.kind), ['codex', 'claude-code', 'claude-desktop']);
+  const codexMetadata = await readFile(path.join(root, '.codex', 'skills', 'magclaw-notify', 'agents', 'openai.yaml'), 'utf8');
+  assert.match(codexMetadata, /allow_implicit_invocation: false/);
+  const claudeSkill = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
+  assert.match(claudeSkill, /disable-model-invocation: true/);
+  const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
+  assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.0', 'mcp']);
+
+  const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
+  await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {
+    homeDir: windowsRoot,
+    platform: 'win32',
+    env: { APPDATA: path.join(windowsRoot, 'Roaming') },
+  });
+  const windowsDesktop = JSON.parse(await readFile(path.join(windowsRoot, 'Roaming', 'Claude', 'claude_desktop_config.json'), 'utf8'));
+  assert.equal(windowsDesktop.mcpServers['magclaw-notify'].command, 'cmd.exe');
+  assert.deepEqual(windowsDesktop.mcpServers['magclaw-notify'].args.slice(0, 4), ['/d', '/s', '/c', 'npx']);
+});
+
+test('Notify MCP preview is non-sending and send tool requires explicit current-turn authorization', async () => {
+  const input = {
+    group: '测试',
+    summary: {
+      headline: '完成 MCP 工具接入',
+      taskTypes: ['feature'],
+      sections: [{ type: 'feature', title: '新增能力', items: [{ status: 'done', text: '支持 Claude Desktop' }] }],
+    },
+  };
+  const preview = await handleNotifyMcpTool('magclaw_notify_preview', input);
+  const previewBody = JSON.parse(preview.content[0].text);
+  assert.equal(previewBody.sent, false);
+  assert.match(previewBody.next, /explicitly confirm/);
+  const rejected = await handleNotifyMcpTool('magclaw_notify_send', { ...input, userAuthorizedCurrentTurn: false });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /explicit user authorization/i);
 });
 
 test('Notify approval listener keeps lark-cli stdin open until daemon shutdown', async () => {
@@ -510,13 +590,21 @@ test('Notify local directory keeps exact aliases deterministic and fuzzy groups 
 
 test('Notify lark-cli card injects only locally resolved Feishu mentions', () => {
   const card = larkCardForNotify(
-    { title: '修复完成', markdown: '- 已修复登录问题' },
+    {
+      title: '修复完成',
+      markdown: '- 已修复登录问题\n- [变更说明](https://example.com/change)',
+      uploadedImages: [{ imageKey: 'img_local_uploaded', alt: '验收截图', caption: '真实验收结果' }],
+    },
     [{ person: { name: '张三', openId: 'ou_local_only' } }],
     { name: '李四' },
   );
   assert.equal(card.header.title.content, '修复完成');
   assert.match(card.body.elements[0].content, /^<at id=ou_local_only><\/at>/);
-  assert.match(card.body.elements[2].content, /由 李四/);
+  assert.match(card.body.elements[0].content, /\[变更说明\]\(https:\/\/example.com\/change\)/);
+  assert.deepEqual(card.body.elements[2], {
+    tag: 'img', img_key: 'img_local_uploaded', alt: { tag: 'plain_text', content: '验收截图' },
+  });
+  assert.match(card.body.elements.at(-1).content, /由 李四/);
 });
 
 test('Notify analysis cannot drop explicitly requested mentions', () => {

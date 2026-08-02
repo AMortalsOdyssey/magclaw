@@ -72,7 +72,7 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
 });
 
-test('Notify package includes the standalone client, Daemon, handler, and explicit Skill assets', () => {
+test('Notify package includes the standalone client, Daemon, MCP tool, structured protocol, and explicit Skill assets', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './notify'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -84,7 +84,10 @@ test('Notify package includes the standalone client, Daemon, handler, and explic
   assert.ok(files.includes('src/cli.js'));
   assert.ok(files.includes('src/daemon.js'));
   assert.ok(files.includes('src/handler.js'));
+  assert.ok(files.includes('src/mcp.js'));
+  assert.ok(files.includes('src/summary.js'));
   assert.ok(files.includes('skills/magclaw-notify/SKILL.md'));
+  assert.ok(files.includes('skills/magclaw-notify/references/summary-templates.md'));
   assert.ok(files.includes('skills/magclaw-notify-handler/SKILL.md'));
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.includes('config.json')), false);

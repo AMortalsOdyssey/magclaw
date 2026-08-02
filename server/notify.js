@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
 
 export const NOTIFY_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 90;
 export const NOTIFY_DEVICE_TTL_MS = 1000 * 60 * 10;
@@ -148,7 +149,14 @@ export function normalizeNotifySubmission(body = {}) {
     error.code = 'target_required';
     throw error;
   }
-  const markdown = sanitizeNotifyMarkdown(body.content?.markdown || body.markdown || body.summary || '');
+  const structuredSummary = body.content?.summary && typeof body.content.summary === 'object'
+    ? normalizeNotifySummary(body.content.summary, { required: true })
+    : null;
+  const markdown = sanitizeNotifyMarkdown(
+    structuredSummary
+      ? renderNotifySummaryMarkdown(structuredSummary)
+      : body.content?.markdown || body.markdown || body.summary || '',
+  );
   if (!markdown) {
     const error = new Error('Notify content is required.');
     error.status = 400;
@@ -160,11 +168,12 @@ export function normalizeNotifySubmission(body = {}) {
     .filter(Boolean)
     .slice(0, 20);
   return {
-    schemaVersion: 1,
+    schemaVersion: structuredSummary ? 2 : 1,
     target: { group },
     content: {
       title: compactNotifyText(body.content?.title || body.title || '工作进展通知', 160),
       markdown,
+      ...(structuredSummary ? { summary: structuredSummary } : {}),
     },
     instruction: compactNotifyText(body.instruction || '', 2000),
     mentions,
