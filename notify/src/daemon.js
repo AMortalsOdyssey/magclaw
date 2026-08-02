@@ -13,6 +13,7 @@ import {
   confirmNotifyMapping,
   expireNotifyConfirmations,
   handleNotifyCardAction,
+  inspectNotifyCardAction,
   installNotifyHandlerSkill,
   listNotifyTargetGrants,
   notifyHandlerStatus,
@@ -326,11 +327,8 @@ export async function startNotifyApprovalListener(paths, signal) {
         seenEvents.add(event.event_id);
         if (seenEvents.size > 500) seenEvents.delete(seenEvents.values().next().value);
       }
-      const handled = await handleNotifyCardAction(paths.handler, event);
+      const handled = await processNotifyApprovalEvent(paths.handler, event);
       if (!handled.handled) return;
-      await updateNotifyApprovalCard(paths.handler, event, handled).catch((error) => {
-        process.stderr.write(`[magclaw-notify] approval card update failed: ${clean(error.message, 500)}\n`);
-      });
       process.stdout.write(`[magclaw-notify] owner approval completed id=${clean(handled.confirmation?.id, 120)} decision=${clean(handled.action?.decision, 40)}\n`);
     }).catch((error) => {
       process.stderr.write(`[magclaw-notify] approval event failed: ${clean(error.message, 500)}\n`);
@@ -353,6 +351,39 @@ export async function startNotifyApprovalListener(paths, signal) {
   signal.addEventListener('abort', stop, { once: true });
   process.stdout.write(`[magclaw-notify] Monkey approval listener started account=${clean(provider.account, 80)}\n`);
   return { running: true, child, stop };
+}
+
+export async function processNotifyApprovalEvent(profilePaths, event, dependencies = {}) {
+  const inspect = dependencies.inspect || inspectNotifyCardAction;
+  const handle = dependencies.handle || handleNotifyCardAction;
+  const update = dependencies.update || updateNotifyApprovalCard;
+  const onUpdateError = dependencies.onUpdateError || ((error, phase) => {
+    process.stderr.write(`[magclaw-notify] approval card ${phase} update failed: ${clean(error.message, 500)}\n`);
+  });
+  const inspected = await inspect(profilePaths, event);
+  if (!inspected.handled) return inspected;
+  const decision = inspected.action?.decision || 'reject';
+  const shouldShowProgress = inspected.confirmation?.status === 'pending' && ['approve', 'once', 'always'].includes(decision);
+  if (shouldShowProgress) {
+    await update(profilePaths, event, {
+      ...inspected,
+      phase: 'processing',
+      result: { status: 'processing' },
+    }).catch((error) => onUpdateError(error, 'processing'));
+  }
+  try {
+    const handled = await handle(profilePaths, event, { inspection: inspected });
+    if (!handled.handled) return handled;
+    await update(profilePaths, event, { ...handled, phase: 'completed' }).catch((error) => onUpdateError(error, 'completed'));
+    return handled;
+  } catch (error) {
+    await update(profilePaths, event, {
+      ...inspected,
+      phase: 'completed',
+      result: { status: 'failed', publicReason: clean(error.message, 1000) },
+    }).catch((updateError) => onUpdateError(updateError, 'failed'));
+    throw error;
+  }
 }
 
 export async function runNotifyDaemon(flags = {}) {

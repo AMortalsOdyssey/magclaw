@@ -14,9 +14,11 @@ import {
 import {
   addNotifyGroup,
   addNotifyPerson,
+  approvalCardUpdateAttempts,
   confirmNotifyMapping,
   configureNotifyHandler,
   handleNotifyDelivery,
+  larkCardForApprovalOutcome,
   larkCardForTargetApproval,
   listNotifyTargetGrants,
   larkCardForNotify,
@@ -26,7 +28,7 @@ import {
   prepareNotifyDelivery,
 } from '../notify/src/handler.js';
 import { notifyIdempotencyKey } from '../notify/src/cli.js';
-import { startNotifyApprovalListener } from '../notify/src/daemon.js';
+import { processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
 
 function responseRecorder() {
   return {
@@ -146,6 +148,75 @@ test('Notify approval listener keeps lark-cli stdin open until daemon shutdown',
   assert.equal(listener.child.exitCode, null);
   controller.abort();
   await new Promise((resolve) => listener.child.once('exit', resolve));
+});
+
+test('Notify approval cards preserve complete request context across pending, processing, and sent states', () => {
+  const confirmation = {
+    id: 'ncf_card_detail',
+    requestIds: ['nreq_card_detail'],
+    details: { userName: '蒋海波', groupName: '测试monkey', requestedGroup: '测试' },
+    expiresAt: '2026-08-04T13:35:54.581Z',
+    decidedAt: '2026-08-02T13:36:51.943Z',
+  };
+  const requests = [{
+    id: 'nreq_card_detail',
+    payload: {
+      content: { title: '全链路验收', markdown: '- 第一项完整内容\n- 第二项完整内容' },
+      mentions: ['蒋海波'],
+      context: { sourceAgent: 'codex', repository: 'magclaw' },
+    },
+  }];
+  const pending = JSON.stringify(larkCardForTargetApproval(confirmation, requests));
+  assert.match(pending, /申请人.*蒋海波/);
+  assert.match(pending, /测试monkey（请求名称：测试）/);
+  assert.match(pending, /第一项完整内容/);
+  assert.match(pending, /通知对象：蒋海波/);
+
+  const processing = JSON.stringify(larkCardForApprovalOutcome(
+    confirmation, 'once', { status: 'processing' }, { phase: 'processing', requests },
+  ));
+  assert.match(processing, /仅允许本次 · 正在处理/);
+  assert.match(processing, /正在调用本地 Agent/);
+  assert.match(processing, /第一项完整内容/);
+
+  const sent = JSON.stringify(larkCardForApprovalOutcome(
+    confirmation, 'once', { status: 'sent' }, { phase: 'completed', requests, results: [{ status: 'sent' }] },
+  ));
+  assert.match(sent, /MagClaw Notify · 已发送/);
+  assert.match(sent, /消息 1：已发送/);
+  assert.match(sent, /不建立长期授权/);
+});
+
+test('Notify approval event updates the original card before and after slow allowed delivery', async () => {
+  const calls = [];
+  const inspection = {
+    handled: true,
+    action: { source: 'magclaw_notify', confirmationId: 'ncf_order', decision: 'once' },
+    confirmation: { id: 'ncf_order', status: 'pending', requestIds: ['nreq_order'] },
+  };
+  const handled = { ...inspection, confirmation: { ...inspection.confirmation, status: 'approved_once' }, result: { status: 'sent' } };
+  const result = await processNotifyApprovalEvent({ dir: '/tmp/unused' }, { token: 'token' }, {
+    inspect: async () => inspection,
+    update: async (_paths, _event, value) => { calls.push(`update:${value.phase}:${value.result.status}`); },
+    handle: async () => { calls.push('handle'); return handled; },
+  });
+  assert.equal(result.result.status, 'sent');
+  assert.deepEqual(calls, ['update:processing:processing', 'handle', 'update:completed:sent']);
+});
+
+test('Notify approval card update falls back from callback token to the original message id', () => {
+  const card = { schema: '2.0', header: { title: { tag: 'plain_text', content: '已发送' } }, body: { elements: [] } };
+  const attempts = approvalCardUpdateAttempts(
+    { account: 'monkey' },
+    { token: 'callback_token' },
+    { promptMessageId: 'om_original_card' },
+    card,
+  );
+  assert.deepEqual(attempts.map((item) => item.method), ['callback_token', 'message_patch']);
+  assert.equal(attempts[0].args.includes('/open-apis/interactive/v1/card/update'), true);
+  assert.equal(attempts[1].args.includes('/open-apis/im/v1/messages/om_original_card'), true);
+  const patchBody = JSON.parse(attempts[1].args.at(-1));
+  assert.deepEqual(JSON.parse(patchBody.content), card);
 });
 
 test('Standalone Notify Daemon creates a stable handle and one-time setup token', async () => {
@@ -561,7 +632,7 @@ test('Notify target approval batches per user and group with once, permanent, ow
   const batch = pending.find((record) => record.id === first.confirmationId);
   assert.ok(Math.abs((Date.parse(batch.expiresAt) - Date.parse(batch.createdAt)) - 48 * 60 * 60 * 1000) < 1000);
   const card = larkCardForTargetApproval(batch);
-  assert.deepEqual(card.body.elements.slice(1, 4).map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
+  assert.deepEqual(card.body.elements.filter((element) => element.tag === 'button').map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
 
   await assert.rejects(
     confirmNotifyMapping(profilePaths, first.confirmationId, 'always', { operatorId: 'ou_not_owner' }),

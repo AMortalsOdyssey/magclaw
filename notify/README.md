@@ -75,6 +75,13 @@ Daemon consumes those events over Feishu's outbound WebSocket connection; it
 does not expose a callback URL or local IP. The callback handler checks that the
 operator Open ID equals the locally configured owner Open ID.
 
+The approval card contains the requester, resolved and requested group names,
+requested mentions, title, complete Markdown body, source Agent, repository,
+authorization scope, and delivery result. An allowed request updates that same
+card immediately to `processing`, then updates it again to the final result;
+no separate approval-result card is sent. The callback token is used first,
+with the original message ID retained as a fallback for delayed updates.
+
 ## Sender: install with the owner-provided Setup Token
 
 ```sh

@@ -654,10 +654,12 @@ async function recordTargetAccessConfirmation(state, request, group) {
   return { confirmation, created: true, promptNeeded: true };
 }
 
-export function larkCardForTargetApproval(confirmation) {
+export function larkCardForTargetApproval(confirmation, requests = []) {
   const count = Math.max(1, safeArray(confirmation.requestIds).length);
   const requester = cleanText(confirmation.details?.userName || '未知用户', 120).replace(/[<>]/g, '');
   const group = cleanText(confirmation.details?.groupName || '未知群聊', 120).replace(/[<>]/g, '');
+  const requestedGroup = cleanText(confirmation.details?.requestedGroup || '', 120).replace(/[<>]/g, '');
+  const target = requestedGroup && requestedGroup !== group ? `${group}（请求名称：${requestedGroup}）` : group;
   const action = (label, decision, type = 'default') => ({
     tag: 'button',
     text: { tag: 'plain_text', content: label },
@@ -676,7 +678,13 @@ export function larkCardForTargetApproval(confirmation) {
     },
     body: {
       elements: [
-        { tag: 'markdown', content: `**${requester}** 请求向 **${group}** 推送消息。\n\n当前批次：${count} 条；审批有效期：48 小时。` },
+        { tag: 'markdown', content: [
+          `**申请人**：${requester}`,
+          `**目标群**：${target}`,
+          `**本批次**：${count} 条消息`,
+          `**审批截止**：${formatNotifyTime(confirmation.expiresAt)}`,
+        ].join('\n') },
+        ...approvalRequestElements(requests),
         action('仅允许本次', 'once', 'primary'),
         action('永久允许此用户发到此群', 'always'),
         action('拒绝', 'reject', 'danger'),
@@ -684,6 +692,69 @@ export function larkCardForTargetApproval(confirmation) {
       ],
     },
   };
+}
+
+function formatNotifyTime(value) {
+  const timestamp = Date.parse(value || '');
+  if (!Number.isFinite(timestamp)) return '未知';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp)).replaceAll('/', '-');
+}
+
+function splitNotifyMarkdown(value, size = 6000) {
+  const text = cleanText(value, 96 * 1024) || '（无正文）';
+  const chunks = [];
+  let rest = text;
+  while (rest.length > size) {
+    const newline = rest.lastIndexOf('\n', size);
+    const end = newline > Math.floor(size / 2) ? newline : size;
+    chunks.push(rest.slice(0, end));
+    rest = rest.slice(end).replace(/^\n/, '');
+  }
+  if (rest || !chunks.length) chunks.push(rest || '（无正文）');
+  return chunks;
+}
+
+function approvalRequestElements(requests = []) {
+  if (!requests.length) return [{ tag: 'markdown', content: '<font color="grey">请求详情暂不可用。</font>' }];
+  return requests.flatMap((request, index) => {
+    const title = cleanText(request?.payload?.content?.title || `消息 ${index + 1}`, 240).replace(/[<>]/g, '');
+    const mentions = safeArray(request?.payload?.mentions).map((item) => cleanText(item, 80).replace(/[<>]/g, '')).filter(Boolean);
+    const sourceAgent = cleanText(request?.payload?.context?.sourceAgent || '', 80).replace(/[<>]/g, '');
+    const repository = cleanText(request?.payload?.context?.repository || '', 240).replace(/[<>]/g, '');
+    const meta = [
+      mentions.length ? `通知对象：${mentions.join('、')}` : '通知对象：未指定',
+      sourceAgent ? `来源：${sourceAgent}` : '',
+      repository ? `项目：${repository}` : '',
+    ].filter(Boolean).join(' · ');
+    return [
+      { tag: 'hr' },
+      { tag: 'markdown', content: `**消息 ${index + 1}｜${title}**` },
+      ...splitNotifyMarkdown(request?.payload?.content?.markdown || '').map((content) => ({ tag: 'markdown', content })),
+      { tag: 'markdown', content: `<font color='grey'>${meta}</font>` },
+    ];
+  });
+}
+
+function approvalResultLabel(status = '') {
+  return ({
+    processing: '处理中',
+    sent: '已发送',
+    rejected: '已拒绝',
+    failed: '发送失败',
+    awaiting_configuration: '等待本地配置',
+    awaiting_confirmation: '等待进一步确认',
+    awaiting_owner_approval: '等待 owner 审批',
+    approval_expired: '审批已过期',
+  })[status] || cleanText(status || '处理中', 80);
+}
+
+function approvalDecisionLabel(decision = '') {
+  return decision === 'always' ? '永久允许' : decision === 'once' ? '仅允许本次' : decision === 'approve' ? '已确认' : decision === 'expired' ? '审批已过期' : '已拒绝';
 }
 
 function larkCardForGenericConfirmation(confirmation) {
@@ -710,8 +781,11 @@ async function sendConfirmationPrompt(state, confirmation) {
   if (!provider.enabled || !provider.account || !provider.target) return { sent: false, reason: 'confirmation_provider_unconfigured' };
   if (provider.kind === 'lark-cli-feishu') {
     const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
+    const requests = confirmation.kind === 'target_access'
+      ? (await Promise.all(confirmationRequestIds(confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean)
+      : [];
     const card = confirmation.kind === 'target_access'
-      ? larkCardForTargetApproval(confirmation)
+      ? larkCardForTargetApproval(confirmation, requests)
       : larkCardForGenericConfirmation(confirmation);
     const args = [
       '--profile', String(provider.account), 'im', '+messages-send',
@@ -1416,9 +1490,12 @@ function parseCardActionValue(value) {
   try { return JSON.parse(String(value || '{}')); } catch { return {}; }
 }
 
-export async function handleNotifyCardAction(profilePaths, event = {}) {
-  const action = parseCardActionValue(event.action_value || event.actionValue);
-  if (action.source !== 'magclaw_notify' || !action.confirmationId) return { handled: false };
+export async function handleNotifyCardAction(profilePaths, event = {}, options = {}) {
+  const inspected = options.inspection
+    ? options.inspection
+    : await inspectNotifyCardAction(profilePaths, event);
+  if (!inspected.handled) return inspected;
+  const { action } = inspected;
   try {
     const result = await confirmNotifyMapping(profilePaths, action.confirmationId, action.decision || 'reject', {
       operatorId: event.operator_id || event.operatorId || '',
@@ -1437,34 +1514,110 @@ export async function handleNotifyCardAction(profilePaths, event = {}) {
   }
 }
 
-export function larkCardForApprovalOutcome(confirmation, decision, result = {}) {
-  const label = decision === 'always' ? '已永久允许' : decision === 'once' ? '已允许本次' : decision === 'approve' ? '已确认' : decision === 'expired' ? '审批已过期' : '已拒绝';
-  const color = ['reject', 'expired'].includes(decision) ? 'red' : 'green';
+export async function inspectNotifyCardAction(profilePaths, event = {}) {
+  const action = parseCardActionValue(event.action_value || event.actionValue);
+  if (action.source !== 'magclaw_notify' || !action.confirmationId) return { handled: false };
+  if (!['approve', 'once', 'always', 'reject'].includes(action.decision || 'reject')) throw new Error('Unsupported Notify approval decision.');
+  const state = await ensureNotifyHandlerState(profilePaths);
+  const confirmation = safeArray(await readJson(state.paths.pending, [])).find((item) => item.id === action.confirmationId);
+  if (!confirmation) throw new Error('Pending Notify confirmation not found.');
+  const expectedOwnerOpenId = cleanText(state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target || '', 200);
+  const operatorId = cleanText(event.operator_id || event.operatorId || '', 200);
+  if (operatorId && expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) throw new Error('Only the configured Notify owner can approve this request.');
+  return { handled: true, action, confirmation };
+}
+
+export function larkCardForApprovalOutcome(confirmation, decision, result = {}, options = {}) {
+  const phase = options.phase || 'completed';
+  const status = phase === 'processing' ? 'processing' : cleanText(result?.status || 'failed', 80);
+  const decisionLabel = approvalDecisionLabel(decision);
+  const statusLabel = approvalResultLabel(status);
+  const label = phase === 'processing' ? `${decisionLabel} · 正在处理` : statusLabel;
+  const color = phase === 'processing' ? 'orange' : ['rejected', 'failed', 'approval_expired'].includes(status) ? 'red' : status === 'sent' ? 'green' : 'orange';
   const count = confirmationRequestIds(confirmation).length;
+  const requester = cleanText(confirmation.details?.userName || '未知用户', 120).replace(/[<>]/g, '');
+  const group = cleanText(confirmation.details?.groupName || '未知群聊', 120).replace(/[<>]/g, '');
+  const requestedGroup = cleanText(confirmation.details?.requestedGroup || '', 120).replace(/[<>]/g, '');
+  const target = requestedGroup && requestedGroup !== group ? `${group}（请求名称：${requestedGroup}）` : group;
+  const resultRows = safeArray(options.results).length ? options.results : result ? [result] : [];
+  const resultSummary = phase === 'processing'
+    ? '已记录授权，正在调用本地 Agent 解析内容并发送到飞书群。'
+    : resultRows.map((item, index) => `- 消息 ${index + 1}：${approvalResultLabel(item?.status)}`).join('\n') || `- ${statusLabel}`;
+  const permissionNote = decision === 'always'
+    ? '已建立“该用户 × 该群”的长期授权。'
+    : decision === 'once'
+      ? '本次授权仅消费当前批次，不建立长期授权。'
+      : '未建立长期授权。';
   return {
     schema: '2.0',
-    config: { width_mode: 'fill', summary: { content: `MagClaw Notify ${label}` } },
-    header: { title: { tag: 'plain_text', content: `MagClaw Notify ${label}` }, template: color },
+    config: { width_mode: 'fill', summary: { content: `MagClaw Notify · ${label}` } },
+    header: { title: { tag: 'plain_text', content: `MagClaw Notify · ${label}` }, template: color },
     body: { elements: [
-      { tag: 'markdown', content: `审批已完成。批次共 ${count} 条请求。${result?.publicReason ? `\n\n${result.publicReason}` : ''}` },
-      { tag: 'markdown', content: `<font color='grey'>审批编号：${confirmation.id}</font>` },
+      { tag: 'markdown', content: [
+        `**申请人**：${requester}`,
+        `**目标群**：${target}`,
+        `**授权方式**：${decisionLabel}`,
+        `**当前状态**：${statusLabel}`,
+        `**本批次**：${count} 条消息`,
+      ].join('\n') },
+      ...approvalRequestElements(safeArray(options.requests)),
+      { tag: 'hr' },
+      { tag: 'markdown', content: `**处理结果**\n${resultSummary}${result?.publicReason ? `\n\n${cleanText(result.publicReason, 2000)}` : ''}` },
+      { tag: 'markdown', content: `<font color='grey'>${permissionNote} · 决策时间：${formatNotifyTime(confirmation.decidedAt || confirmation.updatedAt)}</font>` },
     ] },
   };
+}
+
+export function approvalCardUpdateAttempts(provider, event, confirmation, card) {
+  const profile = String(provider?.account || '');
+  const token = cleanText(event?.token || '', 2000);
+  const messageId = cleanText(event?.message_id || event?.messageId || confirmation?.promptMessageId || '', 240);
+  const attempts = [];
+  if (profile && token) {
+    attempts.push({
+      method: 'callback_token',
+      args: [
+        '--profile', profile, 'api', 'POST', '/open-apis/interactive/v1/card/update',
+        '--as', 'bot', '--data', JSON.stringify({ token, card }),
+      ],
+    });
+  }
+  if (profile && /^om_[A-Za-z0-9_-]+$/.test(messageId)) {
+    attempts.push({
+      method: 'message_patch',
+      args: [
+        '--profile', profile, 'api', 'PATCH', `/open-apis/im/v1/messages/${messageId}`,
+        '--as', 'bot', '--data', JSON.stringify({ content: JSON.stringify(card) }),
+      ],
+    });
+  }
+  return attempts;
 }
 
 export async function updateNotifyApprovalCard(profilePaths, event, confirmationResult) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const provider = state.config.confirmationProvider;
-  const token = cleanText(event?.token || '', 2000);
-  if (provider.kind !== 'lark-cli-feishu' || !provider.account || !token) return { updated: false };
+  if (provider.kind !== 'lark-cli-feishu' || !provider.account) return { updated: false };
   const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
   const decision = confirmationResult?.action?.decision || confirmationResult?.confirmation?.decision || 'approve';
-  const card = larkCardForApprovalOutcome(confirmationResult.confirmation, decision, confirmationResult.result);
-  await runCommand(command, [
-    '--profile', String(provider.account), 'api', 'POST', '/open-apis/interactive/v1/card/update',
-    '--as', 'bot', '--data', JSON.stringify({ token, card }),
-  ], { timeoutMs: 30_000 });
-  return { updated: true };
+  const requests = (await Promise.all(confirmationRequestIds(confirmationResult.confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean);
+  const card = larkCardForApprovalOutcome(confirmationResult.confirmation, decision, confirmationResult.result, {
+    phase: confirmationResult.phase || 'completed',
+    requests,
+    results: confirmationResult.results,
+  });
+  const attempts = approvalCardUpdateAttempts(provider, event, confirmationResult.confirmation, card);
+  if (!attempts.length) return { updated: false };
+  let lastError;
+  for (const attempt of attempts) {
+    try {
+      await runCommand(command, attempt.args, { timeoutMs: 30_000 });
+      return { updated: true, method: attempt.method };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error('Notify approval card update failed.');
 }
 
 export async function notifyHandlerStatus(profilePaths) {
