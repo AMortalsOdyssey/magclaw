@@ -1,5 +1,20 @@
 # @magclaw/notify Release Notes
 
+## 0.3.3 - 2026-08-03 - Reliable background provider commands
+
+### fixed
+
+- Gives launchd and systemd owner services a stable executable search path and resolves Homebrew or user-local `openclaw` and `lark-cli` commands even when the daemon starts outside an interactive shell.
+- Adds an explicit OpenClaw approval-handler toggle. Its per-instance executable accepts only a stored confirmation ID and one fixed card decision, so owners do not need to allowlist the general Notify CLI.
+
+### new
+
+- Adds correlation-friendly JSONL audit trails for sender CLI and MCP calls, Relay HTTP and WebSocket routing, owner Daemon commands, OpenClaw analysis, approval cards, and final Feishu delivery, with local inspection commands and bounded rotation.
+
+### security
+
+- Persists sanitized cloud audit events to rotating files, structured server logs, and `cloud_audit_logs`; client IPs are keyed hashes and credentials, Feishu identifiers, message bodies, Markdown, instructions, and card content are excluded.
+
 ## 0.3.2 - 2026-08-02 - Persistent custom Daemon homes
 
 ### fixed

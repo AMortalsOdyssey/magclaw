@@ -70,7 +70,23 @@ magclaw-notify daemon add-person \
 Selecting the OpenClaw event consumer installs or refreshes the local
 `magclaw-notify-handler` Skill automatically. It handles only the exact
 structured callback payload from a private Monkey card; natural-language text
-never counts as an approval.
+never counts as an approval. OpenClaw command execution remains separately
+protected. Enable one exact per-instance handler path after reviewing it:
+
+```sh
+magclaw-notify daemon openclaw-approval enable --instance product-a
+magclaw-notify daemon openclaw-approval status --instance product-a
+```
+
+The allowlist entry does not expose the general Notify CLI. The handler accepts
+only a stored `ncf_...` confirmation ID and one of `once`, `always`, `approve`,
+or `reject`; it rejects arbitrary commands and binds the selected instance and
+Notify home at installation time. Disable it without changing other OpenClaw
+rules:
+
+```sh
+magclaw-notify daemon openclaw-approval disable --instance product-a
+```
 
 Start the independent background process:
 
@@ -82,7 +98,9 @@ magclaw-notify daemon status --instance product-a
 `daemon start` installs and starts a per-user background service by default:
 launchd on macOS, a systemd user service on Linux, or a Scheduled Task on
 Windows. It survives closing the terminal and starts again when the user logs
-in. Use `daemon run` for a foreground process. `daemon stop` stops only the
+in. The service preserves a stable executable search path for Homebrew and
+user-local `openclaw` or `lark-cli` installations even when no interactive
+shell is open. Use `daemon run` for a foreground process. `daemon stop` stops only the
 selected instance now while preserving autostart for the next login; use
 `daemon autostart disable` to stop it and remove autostart. All commands accept
 `--instance`. The legacy/default instance remains under
@@ -296,6 +314,42 @@ magclaw-notify daemon grants list
 magclaw-notify daemon grants list --all
 magclaw-notify daemon grants revoke --grant-id ntg_example
 ```
+
+## Audit logs
+
+Notify records a correlation-friendly audit trail across the sender, Relay,
+owner Daemon, OpenClaw handoff, approval card, and final Feishu delivery. Every
+record is one JSON object per line and uses stable `requestId`, `confirmationId`,
+`relayId`, and `commandId` fields where available.
+
+Local audit files are owner-only (`0700` directory, `0600` files), rotate at
+2 MiB, and retain at most 30 files per location:
+
+- sender profile: `~/.magclaw/notify/profiles/PROFILE/audit/`;
+- default owner Daemon: `~/.magclaw/notify/daemon/audit/`;
+- named owner Daemon: `~/.magclaw/notify/daemons/INSTANCE/audit/`;
+- Daemon runtime output: the sibling `logs/daemon.log` and
+  `logs/daemon.error.log` files.
+
+Inspect the sanitized audit trail without opening the files manually:
+
+```sh
+magclaw-notify audit status --profile default
+magclaw-notify audit tail --profile default --limit 100
+magclaw-notify daemon audit status --instance product-a
+magclaw-notify daemon audit tail --instance product-a --limit 100
+```
+
+The Relay writes the same sanitized events to
+`$MAGCLAW_DATA_DIR/notify-audit/`, emits them as single-line structured server
+logs prefixed with `[notify-audit]`, and persists them in PostgreSQL
+`cloud_audit_logs` when the cloud database is enabled. Client IP addresses are
+stored only as keyed hashes. The Relay keeps that HMAC key in the owner-only
+`$MAGCLAW_DATA_DIR/.notify-audit-hash-key` file, or uses
+`MAGCLAW_NOTIFY_AUDIT_HASH_KEY` when explicitly configured, so hashes remain
+correlatable across restarts. Authorization headers, tokens, application
+credentials, Chat IDs, Open IDs, message bodies, Markdown, instructions, image
+keys, and Feishu card contents are never written to these audit records.
 
 ## Routing and security model
 

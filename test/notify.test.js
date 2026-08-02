@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -18,6 +19,7 @@ import {
   confirmNotifyMapping,
   configureNotifyHandler,
   handleNotifyDelivery,
+  installNotifyHandlerSkill,
   larkCardForApprovalOutcome,
   larkCardForTargetApproval,
   listNotifyTargetGrants,
@@ -32,7 +34,9 @@ import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/c
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
 import { notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
+import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify/src/executable.js';
 import { normalizeNotifyInstance } from '../notify/src/instance.js';
+import { createNotifyAuditLog, sanitizeNotifyAuditRecord } from '../notify/src/audit.js';
 import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify/src/service.js';
 
 function responseRecorder() {
@@ -124,6 +128,54 @@ test('Notify idempotency keys are stable ASCII even for Chinese group names', ()
   assert.match(first, /^mcn_[A-Za-z0-9_-]{43}$/);
 });
 
+test('Notify audit files rotate, keep owner-only permissions, correlate events, and redact secrets and message bodies', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-audit-'));
+  const audit = createNotifyAuditLog({ dir: root, scope: 'owner', maxFileBytes: 320, maxFiles: 2 });
+  for (let index = 0; index < 5; index += 1) {
+    await audit.append({
+      event: 'owner.delivery.completed', outcome: 'sent', requestId: `nreq_${index}`,
+      confirmationId: `ncf_${index}`, relayId: 'nrl_safe',
+      metadata: {
+        targetGroup: '测试', repository: '/workspace/magclaw',
+        authorization: 'Bearer should-never-appear', token: 'raw-token', chatId: 'oc_secret', openId: 'ou_secret',
+        content: 'private message body', error: 'request failed Authorization: Bearer embedded-secret token=another-secret --chat-id oc_hidden ou_hidden mcn_daemon_abcdefghijklmnopqrstuvwxyz0123456789 mfp_abcdefghijklmnopqrstuvwxyz0123456789',
+      },
+    });
+  }
+  const files = (await readdir(root)).filter((name) => name.endsWith('.jsonl'));
+  assert.equal(files.length, 2);
+  assert.equal((await stat(root)).mode & 0o777, 0o700);
+  for (const name of files) assert.equal((await stat(path.join(root, name))).mode & 0o777, 0o600);
+  const records = await audit.readTail(20);
+  const serialized = JSON.stringify(records);
+  assert.match(serialized, /nreq_4/);
+  assert.match(serialized, /ncf_4/);
+  assert.match(serialized, /nrl_safe/);
+  assert.match(serialized, /\/workspace\/magclaw/);
+  assert.doesNotMatch(serialized, /should-never-appear|raw-token|oc_secret|ou_secret|private message body|embedded-secret|another-secret|oc_hidden|ou_hidden|mcn_daemon_|mfp_/);
+  assert.match(serialized, /\[redacted\]/);
+  const direct = sanitizeNotifyAuditRecord({ event: 'test', metadata: { password: 'secret', note: 'Bearer abc123' } });
+  assert.equal(direct.metadata.password, '[redacted]');
+  assert.equal(direct.metadata.note, 'Bearer [redacted]');
+});
+
+test('Notify HTTP routes emit sanitized correlation metadata without request content', async () => {
+  const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };
+  const events = [];
+  const deps = routeDeps(state, { audit: async (event) => { events.push(event); } });
+  const response = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    headers: { 'user-agent': 'notify-test' },
+    body: { relayName: 'Monkey', machineFingerprint: `mfp_${'a'.repeat(64)}`, secret: 'must-not-be-logged' },
+  });
+  assert.equal(response.res.status, 201);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'relay.api.daemon_auth_started');
+  assert.equal(events[0].metadata.statusCode, 201);
+  assert.equal(events[0].networkAddress, '127.0.0.1');
+  assert.doesNotMatch(JSON.stringify(events[0]), /must-not-be-logged|machineFingerprint|mfp_/);
+});
+
 test('Notify structured summaries normalize mixed work and preserve safe rich content', () => {
   const summary = normalizeNotifySummary({
     headline: '完成通知能力升级并验证富文本',
@@ -170,7 +222,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(claudeSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.2', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.3', 'mcp']);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {
@@ -184,6 +236,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
 });
 
 test('Notify MCP preview is non-sending and send tool requires explicit current-turn authorization', async () => {
+  const auditHome = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-mcp-audit-'));
   const input = {
     group: '测试',
     summary: {
@@ -192,13 +245,16 @@ test('Notify MCP preview is non-sending and send tool requires explicit current-
       sections: [{ type: 'feature', title: '新增能力', items: [{ status: 'done', text: '支持 Claude Desktop' }] }],
     },
   };
-  const preview = await handleNotifyMcpTool('magclaw_notify_preview', input);
+  const preview = await handleNotifyMcpTool('magclaw_notify_preview', input, { env: { MAGCLAW_NOTIFY_HOME: auditHome } });
   const previewBody = JSON.parse(preview.content[0].text);
   assert.equal(previewBody.sent, false);
   assert.match(previewBody.next, /explicitly confirm/);
-  const rejected = await handleNotifyMcpTool('magclaw_notify_send', { ...input, userAuthorizedCurrentTurn: false });
+  const rejected = await handleNotifyMcpTool('magclaw_notify_send', { ...input, userAuthorizedCurrentTurn: false }, { env: { MAGCLAW_NOTIFY_HOME: auditHome } });
   assert.equal(rejected.isError, true);
   assert.match(rejected.content[0].text, /explicit user authorization/i);
+  const auditRecords = await createNotifyAuditLog({ dir: path.join(auditHome, 'profiles', 'default', 'audit') }).readTail(10);
+  assert.deepEqual(auditRecords.map((record) => record.outcome), ['started', 'previewed', 'started', 'failed']);
+  assert.doesNotMatch(JSON.stringify(auditRecords), /支持 Claude Desktop/);
 });
 
 test('Notify approval listener keeps lark-cli stdin open until daemon shutdown', async () => {
@@ -250,6 +306,35 @@ test('Notify approval listener stays off by default when OpenClaw owns Monkey ev
   assert.equal(listener.running, false);
 });
 
+test('OpenClaw card approvals use an instance-scoped, strictly validated handler', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-openclaw-handler-'));
+  const fakeBin = path.join(root, 'fake-notify.mjs');
+  const notifyHome = path.join(root, 'notify-home');
+  await writeFile(fakeBin, 'console.log(JSON.stringify(process.argv.slice(2)))\n');
+  const installed = await installNotifyHandlerSkill({
+    targets: ['openclaw'],
+    homeDir: root,
+    approvalHandler: {
+      instance: 'product-a',
+      notifyHome,
+      nodePath: process.execPath,
+      binPath: fakeBin,
+    },
+  });
+  const handlerPath = installed[0].approvalHandler;
+  assert.equal((await stat(handlerPath)).mode & 0o777, 0o700);
+  const valid = spawnSync(handlerPath, ['ncf_a12f', 'once'], { encoding: 'utf8' });
+  assert.equal(valid.status, 0);
+  assert.deepEqual(JSON.parse(valid.stdout), [
+    'daemon', 'confirm', '--notify-home', notifyHome, '--instance', 'product-a', '--id', 'ncf_a12f', '--once',
+  ]);
+  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'rotate'], { encoding: 'utf8' }).status, 64);
+  assert.equal(spawnSync(handlerPath, ['ncf_bad/value', 'once'], { encoding: 'utf8' }).status, 64);
+  const skill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
+  assert.match(skill, /approval-handlers\/INSTANCE CONFIRMATION_ID once/);
+  assert.doesNotMatch(skill, /setup-token rotate/);
+});
+
 test('Notify instances isolate local state and generate platform autostart services', () => {
   const root = path.join(os.tmpdir(), 'magclaw-notify-instance-test');
   assert.equal(normalizeNotifyInstance(' Product A '), 'product-a');
@@ -271,12 +356,30 @@ test('Notify instances isolate local state and generate platform autostart servi
   assert.match(mac.content, /<string>--notify-home<\/string>/);
   assert.match(mac.content, /<string>\/home\/owner\/\.magclaw\/notify-product-a<\/string>/);
   assert.match(mac.content, /<key>RunAtLoad<\/key>/);
+  assert.match(mac.content, /<key>EnvironmentVariables<\/key>/);
+  assert.match(mac.content, /\/opt\/node\/bin/);
   const linux = notifyDaemonServiceSpec({ ...common, platform: 'linux', xdgConfigHome: '/home/owner/.config' });
   assert.match(linux.file, /magclaw-notify-product-a\.service$/);
   assert.match(linux.content, /Restart=always/);
+  assert.match(linux.content, /Environment="PATH=.*\/opt\/node\/bin/);
   const windows = notifyDaemonServiceSpec({ ...common, platform: 'win32' });
   assert.equal(windows.enable[0], 'schtasks.exe');
   assert.match(windows.enable[1].join(' '), /ONLOGON/);
+});
+
+test('Notify background services resolve Homebrew and user-local CLIs with a minimal PATH', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-executable-'));
+  const localBin = path.join(root, '.local', 'bin');
+  const fakeCli = path.join(localBin, 'lark-cli');
+  await mkdir(localBin, { recursive: true });
+  await writeFile(fakeCli, '#!/bin/sh\nexit 0\n');
+  await chmod(fakeCli, 0o755);
+  const env = { PATH: '/usr/bin:/bin' };
+  assert.equal(resolveNotifyExecutable('lark-cli', { platform: 'linux', homeDir: root, nodePath: '/opt/node/bin/node', env }), fakeCli);
+  const servicePath = notifyExecutableSearchPath({ platform: 'darwin', homeDir: root, nodePath: '/opt/homebrew/bin/node', env });
+  assert.ok(servicePath.split(path.delimiter).includes('/opt/homebrew/bin'));
+  assert.ok(servicePath.split(path.delimiter).includes(localBin));
+  assert.equal(servicePath.includes('node_modules/.bin'), false);
 });
 
 test('Notify autostart enable and disable manage only the selected instance service', async () => {

@@ -17,13 +17,14 @@ function daemonToken(id, relayId, rawToken) {
 }
 
 test('independent Notify Relay routes each request to only the token-bound Daemon', async () => {
+  const auditEvents = [];
   const state = {
     notifyRecords: [
       daemonToken('nat_1', 'nrl_1', 'daemon-token-one'),
       daemonToken('nat_2', 'nrl_2', 'daemon-token-two'),
     ],
   };
-  const relay = createNotifyRelay({ getState: () => state, persistState: async () => {} });
+  const relay = createNotifyRelay({ getState: () => state, persistState: async () => {}, audit: async (event) => { auditEvents.push(event); } });
   const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
   server.on('upgrade', (req, socket, head) => {
     relay.handleUpgrade(req, socket, head).then((handled) => {
@@ -65,6 +66,11 @@ test('independent Notify Relay routes each request to only the token-bound Daemo
   assert.equal(queued.ack.status, 'awaiting_owner_approval');
   assert.equal(message.request.id, 'nreq_1');
   assert.equal(secondReceivedDelivery, false);
+  assert.ok(auditEvents.some((event) => event.event === 'relay.websocket.connected' && event.relayId === 'nrl_1'));
+  assert.ok(auditEvents.some((event) => event.event === 'relay.delivery.dispatch_started' && event.requestId === 'nreq_1'));
+  assert.ok(auditEvents.some((event) => event.event === 'relay.command.acknowledged' && event.requestId === 'nreq_1'));
+  assert.ok(auditEvents.some((event) => event.event === 'relay.delivery.dispatch_completed' && event.outcome === 'acknowledged'));
+  assert.doesNotMatch(JSON.stringify(auditEvents), /daemon-token-one|daemon-token-two/);
 
   first.close();
   second.close();

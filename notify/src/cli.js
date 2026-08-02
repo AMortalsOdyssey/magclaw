@@ -4,6 +4,7 @@ import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from '
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createNotifyAuditLog } from './audit.js';
 import { runNotifyDaemonCommand } from './daemon.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
@@ -11,6 +12,7 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const SKILL_SOURCE = path.join(PACKAGE_ROOT, 'skills', 'magclaw-notify');
 const PACKAGE_JSON = path.join(PACKAGE_ROOT, 'package.json');
 const DEFAULT_RELAY_URL = 'https://magclaw.multiego.me';
+const senderAuditLogs = new Map();
 
 function parseArgs(argv) {
   const positional = [];
@@ -39,7 +41,20 @@ function home(env = process.env) {
 
 function pathsFor(profile, env = process.env) {
   const root = path.join(home(env), 'profiles', profileName(profile));
-  return { root, config: path.join(root, 'config.json') };
+  return { root, config: path.join(root, 'config.json'), auditDir: path.join(root, 'audit') };
+}
+
+export function notifySenderAudit(flags = {}, env = process.env) {
+  const profile = profileName(flags.profile || 'default');
+  const paths = pathsFor(profile, env);
+  if (!senderAuditLogs.has(paths.auditDir)) {
+    senderAuditLogs.set(paths.auditDir, createNotifyAuditLog({
+      dir: paths.auditDir,
+      scope: 'sender',
+      base: { instance: profile },
+    }));
+  }
+  return senderAuditLogs.get(paths.auditDir);
 }
 
 async function readJson(file, fallback = {}) {
@@ -335,6 +350,7 @@ function help() {
     '  magclaw-notify install [--targets codex,claude-code,claude-desktop]',
     '  magclaw-notify mcp',
     '  magclaw-notify logout',
+    '  magclaw-notify audit status|tail [--profile NAME] [--limit 100]',
     '  magclaw-notify daemon login --instance PROJECT --relay-url URL [--name NAME]',
     '  magclaw-notify daemon configure --instance PROJECT --agent-provider openclaw --delivery-provider lark-cli-feishu',
     '  magclaw-notify daemon add-group --instance PROJECT --name NAME --chat-id CHAT_ID',
@@ -344,14 +360,15 @@ function help() {
     '  magclaw-notify daemon grants list --instance PROJECT [--all]',
     '  magclaw-notify daemon grants revoke --instance PROJECT --grant-id ID',
     '  magclaw-notify daemon setup-token rotate|disable --instance PROJECT [--revoke-existing]',
+    '  magclaw-notify daemon openclaw-approval enable|disable|status --instance PROJECT',
+    '  magclaw-notify daemon audit status|tail --instance PROJECT [--limit 100]',
     '  magclaw-notify daemon start|restart|run|status|stop --instance PROJECT',
     '  magclaw-notify daemon autostart enable|disable|status --instance PROJECT', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
   ].join('\n');
 }
 
-export async function runNotifyCli(argv = process.argv) {
-  const { command, positional, flags } = parseArgs(argv);
+async function executeNotifyCli(command, positional, flags) {
   let result;
   if (command === 'daemon') result = await runNotifyDaemonCommand(positional, flags);
   else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
@@ -361,11 +378,54 @@ export async function runNotifyCli(argv = process.argv) {
   else if (command === 'whoami') result = await whoami(flags);
   else if (command === 'logout') result = await logout(flags);
   else if (['install', 'install-skill'].includes(command)) result = { installedIntegrations: await installNotifyIntegrations(flags) };
+  else if (command === 'audit') {
+    const action = positional[0] || 'status';
+    const audit = notifySenderAudit(flags);
+    if (action === 'status') result = await audit.status();
+    else if (action === 'tail') result = { records: await audit.readTail(flags.limit || 100) };
+    else throw new Error(`Unknown Notify audit command: ${action}`);
+  }
   else if (command === 'mcp') {
     const { runNotifyMcpServer } = await import('./mcp.js');
     await runNotifyMcpServer();
     return;
   }
-  else { process.stdout.write(`${help()}\n`); return; }
-  process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
+  else { process.stdout.write(`${help()}\n`); return null; }
+  return result;
+}
+
+export async function runNotifyCli(argv = process.argv) {
+  const { command, positional, flags } = parseArgs(argv);
+  if (command === 'daemon') {
+    const result = await executeNotifyCli(command, positional, flags);
+    if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
+    return;
+  }
+  const audit = notifySenderAudit(flags);
+  const event = `sender.command.${String(command || 'help').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80)}`;
+  const metadata = {
+    profile: profileName(flags.profile || 'default'),
+    auditDir: audit.dir,
+    authorizedCurrentTurn: flags.authorizedCurrentTurn === true,
+    ...(flags.group ? { targetGroup: flags.group } : {}),
+    ...(flags.sourceAgent ? { sourceAgent: flags.sourceAgent } : {}),
+    ...(flags.repository ? { repository: flags.repository } : {}),
+    ...(flags.markdownFile || flags.summaryFile ? { inputFile: path.resolve(flags.markdownFile || flags.summaryFile) } : {}),
+    ...(flags.summaryJsonFile || flags.structuredFile ? { structuredInputFile: path.resolve(flags.summaryJsonFile || flags.structuredFile) } : {}),
+  };
+  await audit.append({ event, outcome: 'started', metadata });
+  try {
+    const result = await executeNotifyCli(command, positional, flags);
+    await audit.append({
+      event,
+      outcome: 'succeeded',
+      requestId: result?.request?.id || result?.requestId || '',
+      relayId: result?.relayId || '',
+      metadata: { ...metadata, resultStatus: result?.status || '', installedCount: result?.installedIntegrations?.length },
+    });
+    if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
+  } catch (error) {
+    await audit.append({ event, outcome: 'failed', severity: 'error', metadata: { ...metadata, error: String(error?.message || error).slice(0, 500) } });
+    throw error;
+  }
 }

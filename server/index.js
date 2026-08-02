@@ -3,6 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   lstat,
+  chmod,
   mkdir,
   readdir,
   readFile,
@@ -112,6 +113,7 @@ import { createCloudAuth } from './cloud/auth.js';
 import { createCloudSync } from './cloud-sync.js';
 import { createDaemonRelay } from './cloud/daemon-relay.js';
 import { createNotifyRelay } from './notify-relay.js';
+import { createNotifyAuditLog } from '../notify/src/audit.js';
 import { createRoutingEngine } from './routing-engine.js';
 import { createMissionRunner } from './mission-runner.js';
 import { createOnboardingManager } from './onboarding.js';
@@ -697,6 +699,15 @@ function resilientCloudRepository(repository) {
       if (disabled || typeof repository.persistMarkdownMaintenanceRun !== 'function') return;
       await repository.persistMarkdownMaintenanceRun(record);
     },
+    async appendAuditLog(record) {
+      if (disabled || typeof repository.appendAuditLog !== 'function') return;
+      try {
+        await repository.appendAuditLog(record);
+      } catch (error) {
+        if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
+        console.warn(`[notify-audit] postgres write failed message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+      }
+    },
     publicInfo() {
       if (disabled) return localStateFallbackInfo(fallbackReason);
       return repository.publicInfo?.() || { backend: 'postgres' };
@@ -719,6 +730,74 @@ async function createCloudRepositoryFromEnv() {
 }
 
 const cloudRepository = await createCloudRepositoryFromEnv();
+const notifyCloudAuditLog = createNotifyAuditLog({
+  dir: path.join(DATA_DIR, 'notify-audit'),
+  scope: 'relay',
+});
+async function loadNotifyAuditHashKey() {
+  if (process.env.MAGCLAW_NOTIFY_AUDIT_HASH_KEY) return process.env.MAGCLAW_NOTIFY_AUDIT_HASH_KEY;
+  const file = path.join(DATA_DIR, '.notify-audit-hash-key');
+  const existing = String(await readFile(file, 'utf8').catch(() => '')).trim();
+  if (existing) {
+    await chmod(file, 0o600).catch(() => {});
+    return existing;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  await mkdir(DATA_DIR, { recursive: true });
+  try {
+    await writeFile(file, `${generated}\n`, { mode: 0o600, flag: 'wx' });
+    return generated;
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      const raced = String(await readFile(file, 'utf8')).trim();
+      await chmod(file, 0o600).catch(() => {});
+      if (raced) return raced;
+    }
+    console.warn(`[notify-audit] stable IP hash key unavailable message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+    return generated;
+  }
+}
+const notifyAuditHashKey = await loadNotifyAuditHashKey();
+
+function notifyNetworkHash(value = '') {
+  const address = String(value || '').trim();
+  return address ? crypto.createHmac('sha256', notifyAuditHashKey).update(address).digest('hex') : '';
+}
+
+async function recordNotifyCloudAudit(record = {}) {
+  const ipHash = notifyNetworkHash(record.networkAddress);
+  const targetType = String(record.targetType || '').slice(0, 80);
+  const targetId = String(record.targetId || record.requestId || record.confirmationId || record.relayId || '').slice(0, 180);
+  const userAgent = String(record.userAgent || '').replace(/[\r\n\u0000]+/g, ' ').trim().slice(0, 500);
+  const written = await notifyCloudAuditLog.append({
+    ...record,
+    metadata: {
+      ...(record.metadata && typeof record.metadata === 'object' ? record.metadata : {}),
+      ...(targetType ? { targetType } : {}),
+      ...(targetId ? { targetId } : {}),
+      ...(ipHash ? { ipHash } : {}),
+      ...(userAgent ? { userAgent } : {}),
+    },
+  });
+  const sanitized = written.record;
+  if (!sanitized) return written;
+  console.info(`[notify-audit] ${JSON.stringify(sanitized)}`);
+  Promise.resolve(cloudRepository?.appendAuditLog?.({
+    id: sanitized.eventId,
+    workspaceId: sanitized.workspaceId || '',
+    actorUserId: sanitized.actorId || '',
+    action: sanitized.event,
+    targetType,
+    targetId,
+    ipHash,
+    userAgent,
+    metadata: sanitized.metadata,
+    createdAt: sanitized.occurredAt,
+  })).catch((error) => {
+    console.warn(`[notify-audit] durable write failed event=${sanitized.event} message=${String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300)}`);
+  });
+  return written;
+}
 const npmPackageVersions = createNpmPackageVersionResolver();
 const REALTIME_SOURCE_ID = makeId('rt');
 let realtimeReloadTimer = null;
@@ -981,6 +1060,7 @@ const daemonRelay = createDaemonRelay({
   setAgentStatus,
 });
 const notifyRelay = createNotifyRelay({
+  audit: recordNotifyCloudAudit,
   getState: () => state,
   now,
   persistState,
@@ -1661,16 +1741,28 @@ daemonRelay.setHandlers({
 
 notifyRelay.setResultHandler(async (message) => {
   const existing = notifyRequest(state, message.requestId);
-  if (!existing || existing.relayId !== message.relayId) return;
+  if (!existing || existing.relayId !== message.relayId) {
+    await recordNotifyCloudAudit({
+      event: 'relay.delivery.result_rejected', outcome: 'request_mismatch', severity: 'warning',
+      requestId: message.requestId, relayId: message.relayId,
+    });
+    return;
+  }
   const request = applyNotifyDaemonResult(state, message, now);
   if (!request) return;
   await persistState({ workspaceId: request.workspaceId, reason: 'notify_relay_result' });
+  await recordNotifyCloudAudit({
+    event: 'relay.delivery.result_persisted', outcome: request.status || 'persisted',
+    workspaceId: request.workspaceId, actorId: request.requester?.id || '', requestId: request.id, relayId: request.relayId,
+    targetType: 'notify_request', targetId: request.id,
+  });
 });
 
 function notifyApiDeps() {
   return {
     currentActor: (req) => cloudAuth.currentActor(req),
     currentUser: (req) => cloudAuth.currentUser(req),
+    audit: recordNotifyCloudAudit,
     notifyRelay,
     getState: () => state,
     makeId,

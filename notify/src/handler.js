@@ -6,6 +6,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createNotifyAuditLog } from './audit.js';
+import { resolveNotifyExecutable } from './executable.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
 const HANDLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -13,6 +15,7 @@ const HANDLER_SKILL_SOURCE = path.join(HANDLER_ROOT, 'skills', 'magclaw-notify-h
 const MAX_LOCAL_RECEIPTS = 500;
 export const CONFIRMATION_TTL_MS = 48 * 60 * 60 * 1000;
 const notifyStateLocks = new Map();
+const handlerAuditLogs = new Map();
 
 function now() {
   return new Date().toISOString();
@@ -25,6 +28,10 @@ function cleanText(value = '', max = 4000) {
 
 function safePart(value = '', fallback = 'item') {
   return cleanText(value, 160).replace(/[^a-zA-Z0-9_.-]/g, '_') || fallback;
+}
+
+function shellQuote(value = '') {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 function jsonObject(value) {
@@ -92,7 +99,32 @@ export function notifyHandlerPaths(profilePaths) {
     receipts: path.join(root, 'receipts.json'),
     requestDir: path.join(root, 'requests'),
     tempDir: path.join(root, 'tmp'),
+    auditDir: path.join(profilePaths.dir, 'audit'),
   };
+}
+
+function handlerAudit(profilePaths) {
+  const paths = notifyHandlerPaths(profilePaths);
+  if (!handlerAuditLogs.has(paths.auditDir)) {
+    handlerAuditLogs.set(paths.auditDir, createNotifyAuditLog({
+      dir: paths.auditDir,
+      scope: 'owner',
+      base: { instance: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 48) },
+    }));
+  }
+  return handlerAuditLogs.get(paths.auditDir);
+}
+
+async function auditedDeliveryResult(state, result, metadata = {}) {
+  await state.audit.append({
+    event: 'owner.delivery.completed',
+    outcome: result?.status || 'unknown',
+    severity: result?.status === 'failed' ? 'error' : 'info',
+    requestId: result?.requestId || '',
+    confirmationId: result?.confirmationId || '',
+    metadata: { provider: result?.provider || '', ...metadata },
+  });
+  return result;
 }
 
 export function defaultNotifyHandlerConfig() {
@@ -165,6 +197,7 @@ export async function ensureNotifyHandlerState(profilePaths) {
     grants,
     profile: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 80),
     profilePaths,
+    audit: handlerAudit(profilePaths),
   };
 }
 
@@ -178,13 +211,18 @@ async function copyTree(source, target) {
   }
 }
 
+export function notifyOpenClawApprovalHandlerPath(instance = 'default', homeDir = os.homedir()) {
+  return path.join(homeDir, '.local', 'share', 'magclaw-notify', 'approval-handlers', instance);
+}
+
 export async function installNotifyHandlerSkill(options = {}) {
   const targets = safeArray(options.targets).length ? options.targets : ['openclaw'];
+  const homeDir = options.homeDir || os.homedir();
   const roots = {
-    openclaw: path.join(os.homedir(), '.openclaw', 'skills', 'magclaw-notify-handler'),
-    codex: path.join(os.homedir(), '.codex', 'skills', 'magclaw-notify-handler'),
-    'claude-code': path.join(os.homedir(), '.claude', 'skills', 'magclaw-notify-handler'),
-    hermes: path.join(os.homedir(), '.hermes', 'skills', 'magclaw-notify-handler'),
+    openclaw: path.join(homeDir, '.openclaw', 'skills', 'magclaw-notify-handler'),
+    codex: path.join(homeDir, '.codex', 'skills', 'magclaw-notify-handler'),
+    'claude-code': path.join(homeDir, '.claude', 'skills', 'magclaw-notify-handler'),
+    hermes: path.join(homeDir, '.hermes', 'skills', 'magclaw-notify-handler'),
   };
   const installed = [];
   for (const kind of targets) {
@@ -192,7 +230,33 @@ export async function installNotifyHandlerSkill(options = {}) {
     if (!target) continue;
     await rm(target, { recursive: true, force: true });
     await copyTree(HANDLER_SKILL_SOURCE, target);
-    installed.push({ kind, target });
+    const record = { kind, target };
+    if (kind === 'openclaw' && options.approvalHandler) {
+      const handler = options.approvalHandler;
+      const instance = cleanText(handler.instance || 'default', 48);
+      if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(instance)) throw new Error('OpenClaw Notify approval handler requires a normalized instance.');
+      const handlerPath = notifyOpenClawApprovalHandlerPath(instance, homeDir);
+      const handlerRoot = path.dirname(handlerPath);
+      const script = [
+        '#!/bin/sh',
+        'set -eu',
+        '[ "$#" -eq 2 ] || { echo "usage: notify-approval CONFIRMATION_ID DECISION" >&2; exit 64; }',
+        'confirmation_id=$1',
+        'decision=$2',
+        'case "$confirmation_id" in ncf_*) ;; *) echo "invalid confirmation id" >&2; exit 64 ;; esac',
+        'confirmation_suffix=${confirmation_id#ncf_}',
+        '[ -n "$confirmation_suffix" ] || { echo "invalid confirmation id" >&2; exit 64; }',
+        'case "$confirmation_suffix" in *[!0-9a-f]*) echo "invalid confirmation id" >&2; exit 64 ;; esac',
+        'case "$decision" in once|always|approve|reject) ;; *) echo "invalid decision" >&2; exit 64 ;; esac',
+        `exec ${shellQuote(handler.nodePath || process.execPath)} ${shellQuote(handler.binPath)} daemon confirm --notify-home ${shellQuote(handler.notifyHome)} --instance ${shellQuote(instance)} --id "$confirmation_id" "--$decision"`,
+        '',
+      ].join('\n');
+      await mkdir(handlerRoot, { recursive: true });
+      await writeFile(handlerPath, script, { mode: 0o700 });
+      await chmod(handlerPath, 0o700).catch(() => {});
+      record.approvalHandler = handlerPath;
+    }
+    installed.push(record);
   }
   return installed;
 }
@@ -331,6 +395,10 @@ export async function revokeNotifyTargetGrant(profilePaths, options = {}) {
     revoked += 1;
   }
   await saveTargetGrants(state);
+  await state.audit.append({
+    event: 'owner.grant.revoked', outcome: revoked ? 'revoked' : 'not_found',
+    metadata: { grantId, targetGroup: requestedGroup, revokedCount: revoked },
+  });
   return { revoked };
 }
 
@@ -365,9 +433,11 @@ function extractJsonCandidate(value) {
 
 function runCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const env = options.env || process.env;
+    const executable = resolveNotifyExecutable(command, { env });
+    const child = spawn(executable, args, {
       cwd: options.cwd || os.homedir(),
-      env: options.env || process.env,
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -486,6 +556,12 @@ async function analyzeNotifyRequest(request, state) {
   };
   const provider = providerRegistry.get(String(state.config.agentProvider.kind || 'openclaw'));
   if (!provider) throw new Error(`Unsupported Notify agent provider: ${state.config.agentProvider.kind}`);
+  await state.audit.append({
+    event: 'owner.agent.analysis_started',
+    outcome: 'started',
+    requestId: request.id || '',
+    metadata: { provider: state.config.agentProvider.kind || 'openclaw' },
+  });
   try {
     const output = await provider({
       config: state.config.agentProvider,
@@ -493,7 +569,7 @@ async function analyzeNotifyRequest(request, state) {
       request,
       paths: state.paths,
     });
-    return {
+    const analysis = {
       title: cleanText(structuredSummary ? fallback.title : output?.title || fallback.title, 160),
       markdown: cleanText(structuredSummary ? fallback.markdown : output?.markdown || fallback.markdown, 96 * 1024)
         .replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, '')
@@ -509,7 +585,26 @@ async function analyzeNotifyRequest(request, state) {
         canonicalName: cleanText(item?.canonicalName, 80),
       })).filter((item) => item.alias && item.canonicalName).slice(0, 10),
     };
+    await state.audit.append({
+      event: 'owner.agent.analysis_completed',
+      outcome: 'succeeded',
+      requestId: request.id || '',
+      metadata: {
+        provider: state.config.agentProvider.kind || 'openclaw',
+        mentionCount: analysis.mentions.length,
+        aliasProposalCount: analysis.personAliasProposals.length + (analysis.groupAliasProposal ? 1 : 0),
+        structuredSummary: Boolean(structuredSummary),
+      },
+    });
+    return analysis;
   } catch (error) {
+    await state.audit.append({
+      event: 'owner.agent.analysis_completed',
+      outcome: 'fallback',
+      severity: 'warning',
+      requestId: request.id || '',
+      metadata: { provider: state.config.agentProvider.kind || 'openclaw', errorName: error.name || 'Error', errorMessage: cleanText(error.message, 500) },
+    });
     return { ...fallback, analysisWarning: cleanText(error.message, 500) };
   }
 }
@@ -955,9 +1050,19 @@ export async function sendNotifyConfirmationPrompt(profilePaths, confirmationId)
   const state = await ensureNotifyHandlerState(profilePaths);
   const pending = safeArray(await readJson(state.paths.pending, []));
   const confirmation = pending.find((item) => item.id === confirmationId);
-  if (!confirmation || confirmation.status !== 'pending') return { sent: false, reason: 'confirmation_unavailable' };
-  if (confirmation.promptSentAt) return { sent: true, deduped: true, messageId: confirmation.promptMessageId || '' };
-  if (confirmation.promptDispatchingAt) return { sent: false, deduped: true, reason: 'confirmation_prompt_in_flight' };
+  await state.audit.append({ event: 'owner.approval.prompt_started', outcome: 'started', confirmationId });
+  if (!confirmation || confirmation.status !== 'pending') {
+    await state.audit.append({ event: 'owner.approval.prompt_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'confirmation_unavailable' } });
+    return { sent: false, reason: 'confirmation_unavailable' };
+  }
+  if (confirmation.promptSentAt) {
+    await state.audit.append({ event: 'owner.approval.prompt_completed', outcome: 'deduped', confirmationId, metadata: { sent: true } });
+    return { sent: true, deduped: true, messageId: confirmation.promptMessageId || '' };
+  }
+  if (confirmation.promptDispatchingAt) {
+    await state.audit.append({ event: 'owner.approval.prompt_completed', outcome: 'deduped', confirmationId, metadata: { reason: 'confirmation_prompt_in_flight' } });
+    return { sent: false, deduped: true, reason: 'confirmation_prompt_in_flight' };
+  }
   confirmation.promptDispatchingAt = now();
   delete confirmation.promptError;
   confirmation.updatedAt = now();
@@ -971,12 +1076,25 @@ export async function sendNotifyConfirmationPrompt(profilePaths, confirmationId)
     }
     confirmation.updatedAt = now();
     await persistPendingRecord(state, confirmation);
+    await state.audit.append({
+      event: 'owner.approval.prompt_completed',
+      outcome: result.sent ? 'sent' : 'skipped',
+      confirmationId,
+      metadata: { provider: state.config.confirmationProvider.kind, dryRun: Boolean(result.dryRun), reason: result.reason || '' },
+    });
     return result;
   } catch (error) {
     delete confirmation.promptDispatchingAt;
     confirmation.promptError = cleanText(error.message, 500);
     confirmation.updatedAt = now();
     await persistPendingRecord(state, confirmation);
+    await state.audit.append({
+      event: 'owner.approval.prompt_completed',
+      outcome: 'failed',
+      severity: 'error',
+      confirmationId,
+      metadata: { provider: state.config.confirmationProvider.kind, error: cleanText(error.message, 500) },
+    });
     throw error;
   }
 }
@@ -1123,9 +1241,16 @@ export async function prepareNotifyDelivery(profilePaths, request) {
 export async function processAuthorizedNotifyDelivery(profilePaths, request) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const receiptId = `nrc_${crypto.randomBytes(10).toString('hex')}`;
+  await state.audit.append({
+    event: 'owner.delivery.started',
+    outcome: 'started',
+    requestId: request.id,
+    metadata: { requestedGroup: request.payload?.target?.group || '', requestedMentionCount: safeArray(request.payload?.mentions).length },
+  });
   const groupResolution = resolveNotifyGroup(state.directory, request.payload?.target?.group || '');
   if (groupResolution.status !== 'resolved' || !groupResolution.group?.chatId) {
-    return immediateNotifyResult(state, { requestId: request.id, status: 'target_unavailable', publicReason: 'The approved target is no longer available.', localReceiptId: receiptId });
+    const result = await immediateNotifyResult(state, { requestId: request.id, status: 'target_unavailable', publicReason: 'The approved target is no longer available.', localReceiptId: receiptId });
+    return auditedDeliveryResult(state, result, { groupResolution: groupResolution.status });
   }
   const group = groupResolution.group;
   const analysis = unconfirmedAliasAnalysis(await analyzeNotifyRequest(request, state), state.directory, group);
@@ -1138,7 +1263,7 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     const result = { requestId: request.id, status: 'awaiting_confirmation', publicReason: 'One or more alias mappings require owner confirmation.', localReceiptId: receiptId };
     await appendReceipt(state, { ...result, confirmationId: confirmation.id, createdAt: now() });
     await sendNotifyConfirmationPrompt(profilePaths, confirmation.id).catch(() => {});
-    return result;
+    return auditedDeliveryResult(state, { ...result, confirmationId: confirmation.id }, { groupName: group.name, reason: 'alias_confirmation_required' });
   }
   const peopleResolution = resolveNotifyPeople(state.directory, analysis.mentions, group);
   const unresolved = peopleResolution.filter((item) => item.status !== 'resolved');
@@ -1150,18 +1275,18 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     const result = { requestId: request.id, status: 'awaiting_confirmation', publicReason: 'One or more mentioned people require owner confirmation.', localReceiptId: receiptId };
     await appendReceipt(state, { ...result, confirmationId: confirmation.id, analysisWarning: analysis.analysisWarning || '', createdAt: now() });
     await sendNotifyConfirmationPrompt(profilePaths, confirmation.id).catch(() => {});
-    return result;
+    return auditedDeliveryResult(state, { ...result, confirmationId: confirmation.id }, { groupName: group.name, unresolvedMentionCount: unresolved.length });
   }
   if (peopleResolution.some((item) => !item.person?.openId)) {
     const result = { requestId: request.id, status: 'awaiting_configuration', publicReason: 'One or more mentioned people are not fully configured.', localReceiptId: receiptId };
     await appendReceipt(state, { ...result, analysisWarning: analysis.analysisWarning || '', createdAt: now() });
-    return result;
+    return auditedDeliveryResult(state, result, { groupName: group.name, reason: 'person_open_id_missing' });
   }
   const delivery = state.config.deliveryProvider;
   if (!delivery.enabled || !delivery.account) {
     const result = { requestId: request.id, status: 'awaiting_configuration', publicReason: 'Notify delivery provider is not configured.', localReceiptId: receiptId };
     await appendReceipt(state, { ...result, analysisWarning: analysis.analysisWarning || '', createdAt: now() });
-    return result;
+    return auditedDeliveryResult(state, result, { groupName: group.name, provider: delivery.kind, reason: 'provider_unconfigured' });
   }
   try {
     const provider = delivery.kind === 'lark-cli-feishu'
@@ -1187,11 +1312,11 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
       localReceiptId: receiptId,
     };
     await appendReceipt(state, { ...result, dryRun: sent.dryRun, createdAt: now() });
-    return result;
+    return auditedDeliveryResult(state, result, { groupName: group.name, mentionCount: peopleResolution.length, dryRun: Boolean(sent.dryRun) });
   } catch (error) {
     const result = { requestId: request.id, status: 'failed', publicReason: 'Notify delivery failed.', error: cleanText(error.message, 1000), provider: delivery.kind, localReceiptId: receiptId };
     await appendReceipt(state, { ...result, createdAt: now() });
-    return result;
+    return auditedDeliveryResult(state, result, { groupName: group.name, error: cleanText(error.message, 500) });
   }
 }
 
@@ -1361,7 +1486,11 @@ async function reportNotifyResultToCloud(state, result) {
   const relayUrl = cleanText(daemonConfig.relayUrl, 1000).replace(/\/+$/, '');
   const token = cleanText(daemonConfig.token || daemonConfig.machineToken || daemonConfig.apiKey, 2000);
   const machineFingerprint = cleanText(daemonConfig.machineFingerprint, 160);
-  if (!relayUrl || !token) return { reported: false, reason: 'notify_relay_auth_unavailable' };
+  await state.audit.append({ event: 'owner.result.report_started', outcome: 'started', requestId: result.requestId || '', metadata: { resultStatus: result.status || '' } });
+  if (!relayUrl || !token) {
+    await state.audit.append({ event: 'owner.result.report_completed', outcome: 'skipped', requestId: result.requestId || '', metadata: { reason: 'notify_relay_auth_unavailable' } });
+    return { reported: false, reason: 'notify_relay_auth_unavailable' };
+  }
   try {
     const response = await fetch(`${relayUrl}/api/notify/daemon/result`, {
       method: 'POST',
@@ -1373,9 +1502,14 @@ async function reportNotifyResultToCloud(state, result) {
       body: JSON.stringify(result),
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) return { reported: false, reason: `cloud_result_http_${response.status}` };
+    if (!response.ok) {
+      await state.audit.append({ event: 'owner.result.report_completed', outcome: 'failed', severity: 'warning', requestId: result.requestId || '', metadata: { httpStatus: response.status } });
+      return { reported: false, reason: `cloud_result_http_${response.status}` };
+    }
+    await state.audit.append({ event: 'owner.result.report_completed', outcome: 'reported', requestId: result.requestId || '', metadata: { httpStatus: response.status } });
     return { reported: true };
   } catch (error) {
+    await state.audit.append({ event: 'owner.result.report_completed', outcome: 'failed', severity: 'warning', requestId: result.requestId || '', metadata: { error: cleanText(error.message, 240) } });
     return { reported: false, reason: cleanText(error.message, 240) };
   }
 }
@@ -1428,6 +1562,10 @@ async function grantTargetAccess(state, record) {
   });
   if (!existing) state.grants.grants.push(grant);
   await saveTargetGrants(state);
+  await state.audit.append({
+    event: 'owner.grant.created', outcome: existing ? 'refreshed' : 'created', confirmationId: record.id,
+    metadata: { grantId: grant.id, targetGroup: record.details.groupName || '' },
+  });
   return grant;
 }
 
@@ -1629,12 +1767,33 @@ export async function handleNotifyCardAction(profilePaths, event = {}, options =
     : await inspectNotifyCardAction(profilePaths, event);
   if (!inspected.handled) return inspected;
   const { action } = inspected;
+  const audit = handlerAudit(profilePaths);
+  await audit.append({
+    event: 'owner.approval.decision_started',
+    outcome: 'started',
+    confirmationId: action.confirmationId,
+    metadata: { decision: action.decision || 'reject', operatorPresent: Boolean(event.operator_id || event.operatorId) },
+  });
   try {
     const result = await confirmNotifyMapping(profilePaths, action.confirmationId, action.decision || 'reject', {
       operatorId: event.operator_id || event.operatorId || '',
     });
+    await audit.append({
+      event: 'owner.approval.decision_completed',
+      outcome: result.result?.status || result.results?.[0]?.status || 'completed',
+      confirmationId: action.confirmationId,
+      requestId: result.result?.requestId || '',
+      metadata: { decision: action.decision || 'reject', resultCount: safeArray(result.results).length || (result.result ? 1 : 0), deduped: Boolean(result.deduped) },
+    });
     return { handled: true, action, ...result };
   } catch (error) {
+    await audit.append({
+      event: 'owner.approval.decision_completed',
+      outcome: /expired/i.test(String(error.message || '')) ? 'expired' : 'failed',
+      severity: /expired/i.test(String(error.message || '')) ? 'warning' : 'error',
+      confirmationId: action.confirmationId,
+      metadata: { decision: action.decision || 'reject', error: cleanText(error.message, 500) },
+    });
     if (!/expired/i.test(String(error.message || ''))) throw error;
     const state = await ensureNotifyHandlerState(profilePaths);
     const pending = safeArray(await readJson(state.paths.pending, []));
@@ -1730,7 +1889,12 @@ export function approvalCardUpdateAttempts(provider, event, confirmation, card) 
 export async function updateNotifyApprovalCard(profilePaths, event, confirmationResult) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const provider = state.config.confirmationProvider;
-  if (provider.kind !== 'lark-cli-feishu' || !provider.account) return { updated: false };
+  const confirmationId = confirmationResult?.confirmation?.id || confirmationResult?.action?.confirmationId || '';
+  await state.audit.append({ event: 'owner.approval.card_update_started', outcome: 'started', confirmationId });
+  if (provider.kind !== 'lark-cli-feishu' || !provider.account) {
+    await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'provider_unconfigured' } });
+    return { updated: false };
+  }
   const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
   const decision = confirmationResult?.action?.decision || confirmationResult?.confirmation?.decision || 'approve';
   const requests = (await Promise.all(confirmationRequestIds(confirmationResult.confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean);
@@ -1740,16 +1904,21 @@ export async function updateNotifyApprovalCard(profilePaths, event, confirmation
     results: confirmationResult.results,
   });
   const attempts = approvalCardUpdateAttempts(provider, event, confirmationResult.confirmation, card);
-  if (!attempts.length) return { updated: false };
+  if (!attempts.length) {
+    await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'no_update_route' } });
+    return { updated: false };
+  }
   let lastError;
   for (const attempt of attempts) {
     try {
       await runCommand(command, attempt.args, { timeoutMs: 30_000 });
+      await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'updated', confirmationId, metadata: { method: attempt.method } });
       return { updated: true, method: attempt.method };
     } catch (error) {
       lastError = error;
     }
   }
+  await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'failed', severity: 'error', confirmationId, metadata: { attempts: attempts.map((item) => item.method), error: cleanText(lastError?.message, 500) } });
   throw lastError || new Error('Notify approval card update failed.');
 }
 
@@ -1772,5 +1941,6 @@ export async function notifyHandlerStatus(profilePaths) {
     receipts: receipts.length,
     configPath: state.paths.config,
     directoryPath: state.paths.directory,
+    auditDir: state.paths.auditDir,
   };
 }

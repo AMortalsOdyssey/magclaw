@@ -3989,6 +3989,37 @@ export function createCloudPostgresStore(optionsInput = {}) {
     });
   }
 
+  async function appendAuditLog(record = {}) {
+    const id = String(record.id || '').trim();
+    const action = String(record.action || '').trim();
+    if (!id || !action) return;
+    await withClient(async (client) => {
+      await client.query(`
+        INSERT INTO ${table('cloud_audit_logs')}
+          (id, workspace_id, actor_user_id, action, target_type, target_id,
+           ip_hash, user_agent, metadata, created_at)
+        VALUES (
+          $1,
+          (SELECT id FROM ${table('cloud_workspaces')} WHERE id = NULLIF($2, '')),
+          (SELECT id FROM ${table('cloud_users')} WHERE id = NULLIF($3, '')),
+          $4, $5, $6, $7, $8, $9::jsonb, $10
+        )
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        id,
+        String(record.workspaceId || ''),
+        String(record.actorUserId || ''),
+        action.slice(0, 160),
+        String(record.targetType || '').slice(0, 80),
+        String(record.targetId || '').slice(0, 180),
+        String(record.ipHash || '').slice(0, 128),
+        String(record.userAgent || '').slice(0, 500),
+        JSON.stringify(jsonObject(record.metadata)),
+        requiredIso(record.createdAt),
+      ]);
+    });
+  }
+
   async function persistAuthFromStateNow(state) {
     const cloud = state.cloud || {};
     const users = safeArray(cloud.users).map(cloneRecord);
@@ -4610,6 +4641,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     persistMarkdownDocumentIndex,
     persistMarkdownOperationIndex,
     persistMarkdownMaintenanceRun,
+    appendAuditLog,
     subscribeRealtimeEvents,
     publicInfo: () => ({
       backend: 'postgres',

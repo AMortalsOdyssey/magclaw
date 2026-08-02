@@ -6,6 +6,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
+import { createNotifyAuditLog } from './audit.js';
+import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
 import {
   disableNotifyDaemonAutostart,
@@ -25,6 +27,7 @@ import {
   installNotifyHandlerSkill,
   listNotifyTargetGrants,
   notifyHandlerStatus,
+  notifyOpenClawApprovalHandlerPath,
   prepareNotifyDelivery,
   processAuthorizedNotifyDelivery,
   revokeNotifyTargetGrant,
@@ -37,6 +40,7 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const BIN_PATH = path.join(PACKAGE_ROOT, 'bin', 'magclaw-notify.js');
 const DEFAULT_RECONNECT_MIN_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
+const ownerAuditLogs = new Map();
 
 function clean(value = '', max = 2000) {
   return String(value || '').replace(/\u0000/g, '').trim().slice(0, max);
@@ -63,8 +67,24 @@ export function notifyDaemonPaths(env = process.env, instance = 'default') {
     pid: path.join(root, 'run', 'daemon.pid'),
     stdout: path.join(root, 'logs', 'daemon.log'),
     stderr: path.join(root, 'logs', 'daemon.error.log'),
+    auditDir: path.join(root, 'audit'),
     handler: { dir: root, config: path.join(root, 'config.json'), profile: instance },
   };
+}
+
+function ownerAudit(paths) {
+  if (!ownerAuditLogs.has(paths.auditDir)) {
+    ownerAuditLogs.set(paths.auditDir, createNotifyAuditLog({
+      dir: paths.auditDir,
+      scope: 'owner',
+      base: { instance: paths.instance },
+    }));
+  }
+  return ownerAuditLogs.get(paths.auditDir);
+}
+
+function auditError(error) {
+  return { errorName: clean(error?.name || 'Error', 80), errorMessage: clean(error?.message || error, 500) };
 }
 
 async function readJson(file, fallback = {}) {
@@ -249,6 +269,7 @@ function toWebSocketUrl(relayUrl) {
 }
 
 async function connectOnce(paths, config, signal) {
+  const audit = ownerAudit(paths);
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(toWebSocketUrl(config.relayUrl), {
       headers: {
@@ -263,10 +284,14 @@ async function connectOnce(paths, config, signal) {
       opened = true;
       socket.send(JSON.stringify({ type: 'notify:daemon:ready', relayId: config.relayId, version: 1 }));
       process.stdout.write(`[magclaw-notify] connected relay=${config.relayId}\n`);
+      audit.append({ event: 'owner.relay.connected', outcome: 'succeeded', relayId: config.relayId, metadata: { relayUrl: config.relayUrl } });
     });
     socket.on('message', async (raw) => {
       let message;
-      try { message = JSON.parse(String(raw)); } catch { return; }
+      try { message = JSON.parse(String(raw)); } catch {
+        await audit.append({ event: 'owner.relay.message_rejected', outcome: 'invalid_json', severity: 'warning', relayId: config.relayId });
+        return;
+      }
       if (message.type === 'notify:ping') {
         socket.send(JSON.stringify({ type: 'notify:pong', at: new Date().toISOString() }));
         return;
@@ -278,9 +303,21 @@ async function connectOnce(paths, config, signal) {
           commandId: message.commandId,
           targets: grants.map((grant) => grant.target),
         }));
+        await audit.append({
+          event: 'owner.targets.query_completed', outcome: 'succeeded', relayId: config.relayId, commandId: message.commandId || '',
+          metadata: { requesterPresent: Boolean(message.requester?.id), targetCount: grants.length },
+        });
         return;
       }
       if (message.type !== 'notify:deliver') return;
+      await audit.append({
+        event: 'owner.request.received',
+        outcome: 'accepted',
+        relayId: config.relayId,
+        requestId: message.request?.id || '',
+        commandId: message.commandId || '',
+        metadata: { targetGroup: message.request?.payload?.target?.group || '', requesterName: message.request?.requester?.name || '' },
+      });
       try {
         const prepared = await prepareNotifyDelivery(paths.handler, message.request || {});
         socket.send(JSON.stringify({
@@ -294,14 +331,27 @@ async function connectOnce(paths, config, signal) {
           batchedRequestIds: prepared.batchedRequestIds || [],
           receivedAt: new Date().toISOString(),
         }));
+        await audit.append({
+          event: 'owner.request.acknowledged',
+          outcome: prepared.status || 'observed',
+          relayId: config.relayId,
+          requestId: message.request?.id || '',
+          confirmationId: prepared.confirmationId || '',
+          commandId: message.commandId || '',
+          metadata: { promptNeeded: Boolean(prepared.promptNeeded), shouldProcess: Boolean(prepared.shouldProcess), pendingRequestCount: prepared.pendingRequestCount || 0 },
+        });
         if (prepared.promptNeeded && prepared.confirmationId) {
-          sendNotifyConfirmationPrompt(paths.handler, prepared.confirmationId).catch((error) => {
+          sendNotifyConfirmationPrompt(paths.handler, prepared.confirmationId).then(() => audit.append({
+            event: 'owner.approval.prompt_sent', outcome: 'succeeded', requestId: message.request?.id || '', confirmationId: prepared.confirmationId,
+          })).catch((error) => {
+            audit.append({ event: 'owner.approval.prompt_sent', outcome: 'failed', severity: 'error', requestId: message.request?.id || '', confirmationId: prepared.confirmationId, metadata: auditError(error) });
             process.stderr.write(`[magclaw-notify] approval prompt failed: ${clean(error.message, 500)}\n`);
           });
         }
         if (prepared.shouldProcess) {
           processAuthorizedNotifyDelivery(paths.handler, message.request || {}).then((result) => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'notify:result', commandId: message.commandId, ...result }));
+            audit.append({ event: 'owner.request.completed', outcome: result.status || 'unknown', requestId: message.request?.id || '', commandId: message.commandId || '', metadata: { provider: result.provider || '' } });
           }).catch((error) => {
             if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
               type: 'notify:result',
@@ -310,6 +360,7 @@ async function connectOnce(paths, config, signal) {
               status: 'failed',
               publicReason: 'Notify delivery failed.',
             }));
+            audit.append({ event: 'owner.request.completed', outcome: 'failed', severity: 'error', requestId: message.request?.id || '', commandId: message.commandId || '', metadata: auditError(error) });
             process.stderr.write(`[magclaw-notify] delivery failed: ${clean(error.message, 500)}\n`);
           });
         }
@@ -321,10 +372,12 @@ async function connectOnce(paths, config, signal) {
           status: 'failed',
           publicReason: 'Notify delivery failed.',
         }));
+        await audit.append({ event: 'owner.request.preparation', outcome: 'failed', severity: 'error', requestId: message.request?.id || '', commandId: message.commandId || '', metadata: auditError(error) });
         process.stderr.write(`[magclaw-notify] delivery preparation failed: ${clean(error.message, 500)}\n`);
       }
     });
     socket.on('error', (error) => {
+      audit.append({ event: 'owner.relay.socket_error', outcome: 'failed', severity: 'error', relayId: config.relayId, metadata: auditError(error) });
       if (!opened) reject(error);
       else process.stderr.write(`[magclaw-notify] relay error: ${clean(error.message, 500)}\n`);
     });
@@ -332,6 +385,7 @@ async function connectOnce(paths, config, signal) {
       signal?.removeEventListener('abort', stop);
       if (!opened) reject(new Error(`Notify Relay WebSocket closed before ready (${code}).`));
       else resolve();
+      audit.append({ event: 'owner.relay.disconnected', outcome: 'observed', relayId: config.relayId, metadata: { closeCode: code } });
     });
   });
 }
@@ -343,7 +397,8 @@ export async function startNotifyApprovalListener(paths, signal) {
     return { running: false, stop() {} };
   }
   const command = clean(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
-  const child = spawn(command, [
+  const executable = resolveNotifyExecutable(command);
+  const child = spawn(executable, [
     '--profile', String(provider.account),
     'event', 'consume', 'card.action.trigger',
     '--as', 'bot', '--quiet',
@@ -425,6 +480,8 @@ export async function runNotifyDaemon(flags = {}) {
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
   const controller = new AbortController();
+  const audit = ownerAudit(paths);
+  await audit.append({ event: 'owner.daemon.started', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid, configPath: paths.config, auditDir: paths.auditDir, eventConsumer: (await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {})).confirmationProvider?.eventConsumer || 'openclaw' } });
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -445,6 +502,7 @@ export async function runNotifyDaemon(flags = {}) {
         await connectOnce(paths, config, controller.signal);
         delay = DEFAULT_RECONNECT_MIN_MS;
       } catch (error) {
+        await audit.append({ event: 'owner.relay.connection_failed', outcome: 'failed', severity: 'error', relayId: config.relayId, metadata: { retryDelayMs: delay, ...auditError(error) } });
         process.stderr.write(`[magclaw-notify] connection failed: ${clean(error.message, 500)}\n`);
       }
       if (controller.signal.aborted || flags.once) break;
@@ -456,6 +514,7 @@ export async function runNotifyDaemon(flags = {}) {
     approvalListener.stop();
     const recordedPid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
     if (recordedPid === process.pid) await rm(paths.pid, { force: true });
+    await audit.append({ event: 'owner.daemon.stopped', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid } });
   }
   return { stopped: true, instance };
 }
@@ -485,6 +544,7 @@ export async function notifyDaemonStatus(flags = {}) {
     setupTokenEnabled: Boolean(config.inviteToken),
     autostart,
     handler,
+    audit: await ownerAudit(paths).status(),
   };
 }
 
@@ -545,7 +605,54 @@ function commaList(value = '') {
   return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 }
 
-export async function runNotifyDaemonCommand(positional = [], flags = {}) {
+function runOpenClawCommand(command, args = []) {
+  return new Promise((resolve, reject) => {
+    const executable = resolveNotifyExecutable(command || 'openclaw');
+    const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: process.env });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`OpenClaw approvals command failed: ${clean(stderr || stdout, 1000)}`));
+    });
+  });
+}
+
+async function manageOpenClawApproval(paths, positional) {
+  const action = positional[1] || 'status';
+  const config = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
+  const agentId = clean(config.agentProvider?.agentId || 'main', 120);
+  const openclawCommand = clean(config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
+  const handlerPath = notifyOpenClawApprovalHandlerPath(paths.instance);
+  if (action === 'enable') {
+    if (!await readFile(handlerPath, 'utf8').then(Boolean).catch(() => false)) {
+      throw new Error('Install the OpenClaw Notify handler Skill before enabling its approval rule.');
+    }
+    await runOpenClawCommand(openclawCommand, ['approvals', 'allowlist', 'add', '--agent', agentId, '--json', handlerPath]);
+    return { enabled: true, instance: paths.instance, agentId, handlerPath };
+  }
+  if (action === 'disable') {
+    await runOpenClawCommand(openclawCommand, ['approvals', 'allowlist', 'remove', '--agent', agentId, '--json', handlerPath]);
+    return { enabled: false, instance: paths.instance, agentId, handlerPath };
+  }
+  if (action === 'status') {
+    const result = await runOpenClawCommand(openclawCommand, ['approvals', 'get', '--json']);
+    const snapshot = JSON.parse(result.stdout || '{}');
+    const entries = Array.isArray(snapshot?.file?.agents?.[agentId]?.allowlist)
+      ? snapshot.file.agents[agentId].allowlist
+      : Array.isArray(snapshot?.agents?.[agentId]?.allowlist)
+        ? snapshot.agents[agentId].allowlist
+        : [];
+    const enabled = entries.some((entry) => String(entry?.pattern || entry) === handlerPath);
+    return { enabled, instance: paths.instance, agentId, handlerPath };
+  }
+  throw new Error(`Unknown OpenClaw approval command: ${action}`);
+}
+
+async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
   const instance = notifyInstanceFromFlags(flags);
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
@@ -577,6 +684,13 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'stop') return stopNotifyDaemon(flags);
   if (command === 'status') return notifyDaemonStatus(flags);
   if (command === 'autostart') return manageNotifyDaemonAutostart(paths, positional, flags);
+  if (command === 'openclaw-approval') return manageOpenClawApproval(paths, positional);
+  if (command === 'audit') {
+    const action = positional[1] || 'status';
+    if (action === 'status') return ownerAudit(paths).status();
+    if (action === 'tail') return { records: await ownerAudit(paths).readTail(flags.limit || 100) };
+    throw new Error(`Unknown Notify audit command: ${action}`);
+  }
   if (command === 'configure') {
     if (flags.eventConsumer && !['openclaw', 'standalone'].includes(String(flags.eventConsumer))) {
       throw new Error('Notify event consumer must be openclaw or standalone.');
@@ -606,14 +720,30 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
       },
     });
     const installedHandlerSkills = config.confirmationProvider.eventConsumer === 'openclaw'
-      ? await installNotifyHandlerSkill({ targets: ['openclaw'] })
+      ? await installNotifyHandlerSkill({
+          targets: ['openclaw'],
+          approvalHandler: {
+            instance,
+            notifyHome: paths.home,
+            nodePath: process.execPath,
+            binPath: BIN_PATH,
+          },
+        })
       : [];
     return { ...config, installedHandlerSkills };
   }
   if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });
   if (command === 'sync-directory') return syncNotifyDirectory(paths.handler);
-  if (command === 'install-handler-skill') return installNotifyHandlerSkill({ targets: commaList(flags.targets || flags.target || 'openclaw') });
+  if (command === 'install-handler-skill') return installNotifyHandlerSkill({
+    targets: commaList(flags.targets || flags.target || 'openclaw'),
+    approvalHandler: {
+      instance,
+      notifyHome: paths.home,
+      nodePath: process.execPath,
+      binPath: BIN_PATH,
+    },
+  });
   if (command === 'confirm') {
     const decisions = [['approve', flags.approve], ['once', flags.once], ['always', flags.always], ['reject', flags.reject]].filter(([, enabled]) => enabled === true);
     if (decisions.length !== 1) throw new Error('Choose exactly one of --approve, --once, --always, or --reject.');
@@ -629,4 +759,43 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
     });
   }
   throw new Error(`Unknown Notify Daemon command: ${command}`);
+}
+
+export async function runNotifyDaemonCommand(positional = [], flags = {}) {
+  const command = positional[0] || 'status';
+  const subcommand = positional[1] || '';
+  const instance = notifyInstanceFromFlags(flags);
+  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const audit = ownerAudit(paths);
+  const event = `owner.command.${clean(command, 60)}${subcommand ? `.${clean(subcommand, 60)}` : ''}`;
+  const metadata = {
+    configPath: paths.config,
+    auditDir: paths.auditDir,
+    ...(flags.name ? { targetName: flags.name } : {}),
+    ...(flags.group ? { targetGroup: flags.group } : {}),
+    ...(flags.agentProvider ? { agentProvider: flags.agentProvider } : {}),
+    ...(flags.deliveryProvider ? { deliveryProvider: flags.deliveryProvider } : {}),
+    ...(flags.eventConsumer ? { eventConsumer: flags.eventConsumer } : {}),
+  };
+  await audit.append({ event, outcome: 'started', metadata });
+  try {
+    const result = await executeNotifyDaemonCommand(positional, flags);
+    await audit.append({
+      event,
+      outcome: 'succeeded',
+      requestId: result?.request?.id || result?.result?.requestId || '',
+      confirmationId: result?.confirmation?.id || flags.id || '',
+      relayId: result?.relayId || result?.request?.relayId || '',
+      metadata: {
+        ...metadata,
+        resultStatus: result?.status || result?.result?.status || '',
+        changedCount: result?.revoked ?? result?.count ?? '',
+        enabled: result?.enabled,
+      },
+    });
+    return result;
+  } catch (error) {
+    await audit.append({ event, outcome: 'failed', severity: 'error', confirmationId: flags.id || '', metadata: { ...metadata, ...auditError(error) } });
+    throw error;
+  }
 }

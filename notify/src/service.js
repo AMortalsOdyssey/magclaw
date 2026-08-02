@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { notifyExecutableSearchPath } from './executable.js';
 
 function xml(value = '') {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -24,6 +25,13 @@ export function notifyDaemonServiceSpec(options = {}) {
   const binPath = options.binPath;
   const logPath = options.logPath;
   const errorLogPath = options.errorLogPath;
+  const servicePath = notifyExecutableSearchPath({
+    platform,
+    homeDir,
+    nodePath,
+    pathEnv: options.pathEnv,
+    env: options.env || process.env,
+  });
   const args = [
     binPath, 'daemon', 'run', '--instance', instance,
     ...(options.notifyHome ? ['--notify-home', options.notifyHome] : []),
@@ -38,7 +46,7 @@ export function notifyDaemonServiceSpec(options = {}) {
       serviceName,
       label,
       file,
-      content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argumentsXml}\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Background</string>\n  <key>StandardOutPath</key>\n  <string>${xml(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(errorLogPath)}</string>\n</dict>\n</plist>\n`,
+      content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argumentsXml}\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Background</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>${xml(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(errorLogPath)}</string>\n</dict>\n</plist>\n`,
       enable: ['launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 0}`, file]],
       start: ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.() ?? 0}/${label}`]],
       stop: ['launchctl', ['bootout', `gui/${process.getuid?.() ?? 0}`, file]],
@@ -65,7 +73,7 @@ export function notifyDaemonServiceSpec(options = {}) {
     platform,
     serviceName,
     file,
-    content: `[Unit]\nDescription=MagClaw Notify daemon (${systemdEscape(instance)})\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart=${[nodePath, ...args].map((item) => `"${systemdEscape(item)}"`).join(' ')}\nRestart=always\nRestartSec=3\nStandardOutput=append:${systemdEscape(logPath)}\nStandardError=append:${systemdEscape(errorLogPath)}\n\n[Install]\nWantedBy=default.target\n`,
+    content: `[Unit]\nDescription=MagClaw Notify daemon (${systemdEscape(instance)})\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nEnvironment="PATH=${systemdEscape(servicePath)}"\nExecStart=${[nodePath, ...args].map((item) => `"${systemdEscape(item)}"`).join(' ')}\nRestart=always\nRestartSec=3\nStandardOutput=append:${systemdEscape(logPath)}\nStandardError=append:${systemdEscape(errorLogPath)}\n\n[Install]\nWantedBy=default.target\n`,
     enable: ['systemctl', ['--user', 'enable', '--now', `${serviceName}.service`]],
     start: ['systemctl', ['--user', 'restart', `${serviceName}.service`]],
     stop: ['systemctl', ['--user', 'stop', `${serviceName}.service`]],

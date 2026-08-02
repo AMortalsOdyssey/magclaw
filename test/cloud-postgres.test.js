@@ -207,6 +207,33 @@ test('postgres schema covers auth, relay, collaboration, attachments, and audit 
   assert.doesNotMatch(sql, /\buid\b/);
 });
 
+test('postgres store appends sanitized cloud audit records to the audit table', async () => {
+  const queries = [];
+  const pool = {
+    async connect() {
+      return {
+        async query(sql, params = []) { queries.push({ sql, params }); return { rows: [] }; },
+        release() {},
+      };
+    },
+  };
+  const store = createStore({
+    databaseUrl: 'postgresql://user:secret@example.test:5432/postgres',
+    database: 'magclaw_cloud', schema: 'magclaw', pool,
+  });
+  await store.appendAuditLog({
+    id: 'naud_1', workspaceId: 'ws_1', actorUserId: 'usr_1', action: 'relay.api.request_submitted',
+    targetType: 'notify_request', targetId: 'nreq_1', ipHash: 'hash-only', userAgent: 'notify-test',
+    metadata: { statusCode: 202 }, createdAt: '2026-08-03T00:00:00.000Z',
+  });
+  const inserted = queries.find((query) => query.sql.includes('cloud_audit_logs') && query.sql.includes('INSERT INTO'));
+  assert.ok(inserted);
+  assert.equal(inserted.params[0], 'naud_1');
+  assert.equal(inserted.params[6], 'hash-only');
+  assert.equal(inserted.params[8], '{"statusCode":202}');
+  assert.doesNotMatch(inserted.sql, /Authorization|Bearer/);
+});
+
 test('postgres store persists relay core state without durable activity logs', async () => {
   const queries = [];
   const pool = {

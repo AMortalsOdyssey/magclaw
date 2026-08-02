@@ -1,5 +1,5 @@
 import { notifySummaryJsonSchema, normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
-import { sendNotify } from './cli.js';
+import { notifySenderAudit, sendNotify } from './cli.js';
 
 function textResult(value, isError = false) {
   return {
@@ -57,12 +57,26 @@ function flagsFromInput(input = {}) {
   };
 }
 
-export async function handleNotifyMcpTool(name, input = {}) {
+export async function handleNotifyMcpTool(name, input = {}, options = {}) {
+  const audit = notifySenderAudit({ profile: input.profile || 'default' }, options.env || process.env);
+  const event = `sender.mcp.${String(name || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100)}`;
+  const startedAt = Date.now();
+  await audit.append({
+    event,
+    outcome: 'started',
+    metadata: {
+      profile: input.profile || 'default',
+      targetGroup: input.group || '',
+      sourceAgent: input.sourceAgent || 'claude-desktop',
+      authorizedCurrentTurn: input.userAuthorizedCurrentTurn === true,
+      mentionCount: Array.isArray(input.mentions) ? input.mentions.length : 0,
+    },
+  });
   try {
     const flags = flagsFromInput(input);
     if (!flags.group) throw new Error('The exact target group is required.');
     if (name === 'magclaw_notify_preview') {
-      return textResult({
+      const result = textResult({
         status: 'preview',
         group: flags.group,
         title: flags.title,
@@ -71,14 +85,24 @@ export async function handleNotifyMcpTool(name, input = {}) {
         sent: false,
         next: 'Ask the user to explicitly confirm sending this exact preview in the current turn.',
       });
+      await audit.append({ event, outcome: 'previewed', metadata: { targetGroup: flags.group, durationMs: Date.now() - startedAt, sent: false } });
+      return result;
     }
     if (name === 'magclaw_notify_send') {
       if (input.userAuthorizedCurrentTurn !== true) throw new Error('Current-turn explicit user authorization is required.');
       const result = await sendNotify({ ...flags, authorizedCurrentTurn: true });
+      await audit.append({
+        event,
+        outcome: result?.status || 'submitted',
+        requestId: result?.request?.id || result?.requestId || '',
+        relayId: result?.relayId || '',
+        metadata: { targetGroup: flags.group, durationMs: Date.now() - startedAt, sent: true },
+      });
       return textResult(result);
     }
     throw new Error(`Unknown MagClaw Notify tool: ${name}`);
   } catch (error) {
+    await audit.append({ event, outcome: 'failed', severity: 'error', metadata: { durationMs: Date.now() - startedAt, error: String(error?.message || error).slice(0, 500) } });
     return textResult({ ok: false, error: error.message }, true);
   }
 }
@@ -89,7 +113,7 @@ export async function runNotifyMcpServer() {
     import('@modelcontextprotocol/sdk/server/stdio.js'),
     import('@modelcontextprotocol/sdk/types.js'),
   ]);
-  const server = new Server({ name: 'magclaw-notify', version: '0.3.2' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'magclaw-notify', version: '0.3.3' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDefinitions() }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => handleNotifyMcpTool(request.params.name, request.params.arguments || {}));
   await server.connect(new StdioServerTransport());

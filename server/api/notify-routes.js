@@ -34,6 +34,31 @@ function requestIp(req) {
   return String(req?.headers?.['x-forwarded-for'] || req?.socket?.remoteAddress || '').split(',')[0].trim();
 }
 
+function notifyRouteAuditEvent(method = '', pathname = '') {
+  const normalized = String(pathname || '').replace(/^\/api\//, '').replace(/^\//, '').replace(/\/[^/]+$/, (tail) => (
+    String(pathname).startsWith('/api/notify/requests/') ? '/:requestId' : tail
+  ));
+  const names = {
+    'POST notify/daemon/auth/start': 'relay.api.daemon_auth_started',
+    'GET notify/daemon/auth/approve': 'relay.api.daemon_auth_approved',
+    'POST notify/daemon/auth/token': 'relay.api.daemon_token_polled',
+    'GET notify/daemon/access': 'relay.api.sender_access_listed',
+    'POST notify/daemon/access/revoke': 'relay.api.sender_access_revoked',
+    'POST notify/daemon/setup-token/rotate': 'relay.api.setup_token_rotated',
+    'POST notify/daemon/setup-token/disable': 'relay.api.setup_token_disabled',
+    'POST notify/daemon/result': 'relay.api.delivery_result_reported',
+    'POST notify/auth/start': 'relay.api.sender_auth_started',
+    'GET notify/auth/approve': 'relay.api.sender_auth_approved',
+    'POST notify/auth/token': 'relay.api.sender_token_polled',
+    'GET notify/auth/whoami': 'relay.api.sender_identity_read',
+    'POST notify/auth/revoke': 'relay.api.sender_session_revoked',
+    'GET notify/targets': 'relay.api.targets_queried',
+    'POST notify/requests': 'relay.api.request_submitted',
+    'GET notify/requests/:requestId': 'relay.api.request_status_read',
+  };
+  return names[`${String(method).toUpperCase()} ${normalized}`] || `relay.api.${String(method || 'unknown').toLowerCase()}_${normalized.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '')}`;
+}
+
 function consumeRate(state, { workspaceId, key, limit, now }) {
   const id = `notify_rate_${crypto.createHash('sha256').update(`${workspaceId}:${key}`).digest('hex').slice(0, 24)}`;
   const records = notifyRecords(state);
@@ -197,15 +222,59 @@ export async function handleNotifyApi(req, res, url, deps) {
     makeId,
     now,
     persistState,
-    readJson,
-    sendError,
-    sendJson,
+    readJson: rawReadJson,
+    sendError: rawSendError,
+    sendJson: rawSendJson,
+    audit = async () => {},
   } = deps;
   const state = getState();
   pruneNotifyRecords(state);
   const actor = currentActor(req);
   const browserUser = currentUser(req) || actor?.user || null;
   const actorWorkspaceId = workspaceIdFromActor(actor, state);
+  const startedAt = Date.now();
+  let capturedBody = {};
+  const readJson = async (request) => {
+    capturedBody = jsonObject(await rawReadJson(request));
+    return capturedBody;
+  };
+  const emitAudit = (statusCode, responseBody = {}, outcome = '') => {
+    const requestFromResponse = jsonObject(responseBody?.request);
+    const requestMatch = url.pathname.match(/^\/api\/notify\/requests\/([^/]+)$/);
+    const requestId = compactNotifyText(requestFromResponse.id || responseBody?.requestId || capturedBody.requestId || (requestMatch ? decodeURIComponent(requestMatch[1]) : ''), 180);
+    const relayId = compactNotifyText(requestFromResponse.relayId || responseBody?.relayId || capturedBody.relayId || '', 180);
+    const event = notifyRouteAuditEvent(req.method, url.pathname);
+    if (event.endsWith('_token_polled') && responseBody?.status === 'pending') return;
+    Promise.resolve(audit({
+      event,
+      outcome: outcome || (statusCode < 400 ? responseBody?.request?.status || responseBody?.status || 'succeeded' : 'rejected'),
+      severity: statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warning' : 'info',
+      requestId,
+      relayId,
+      actorId: browserUser?.id || actor?.user?.id || '',
+      workspaceId: requestFromResponse.workspaceId || actorWorkspaceId || '',
+      targetType: requestId ? 'notify_request' : relayId ? 'notify_relay' : 'notify_route',
+      targetId: requestId || relayId || url.pathname,
+      networkAddress: requestIp(req),
+      userAgent: req.headers?.['user-agent'] || '',
+      metadata: {
+        httpMethod: req.method,
+        route: url.pathname.replace(/^\/api\/notify\/requests\/[^/]+$/, '/api/notify/requests/:requestId'),
+        statusCode,
+        durationMs: Date.now() - startedAt,
+        deduped: Boolean(responseBody?.deduped),
+        resultStatus: responseBody?.request?.status || responseBody?.status || '',
+      },
+    })).catch(() => {});
+  };
+  const sendJson = (response, statusCode, body) => {
+    emitAudit(statusCode, body);
+    return rawSendJson(response, statusCode, body);
+  };
+  const sendError = (response, statusCode, message) => {
+    emitAudit(statusCode, {}, 'rejected');
+    return rawSendError(response, statusCode, message);
+  };
 
   if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/start') {
     const body = await readJson(req);
@@ -272,6 +341,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     if (!browserUser) {
       const returnTo = encodeURIComponent(url.pathname + url.search);
+      emitAudit(302, {}, 'login_required');
       res.writeHead(302, { location: `/?returnTo=${returnTo}`, 'cache-control': 'no-store' });
       res.end();
       return true;
@@ -323,6 +393,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     request.approvedAt = now();
     request.updatedAt = now();
     await persistState(request.workspaceId ? { workspaceId: request.workspaceId, reason: 'notify_daemon_auth_approve' } : undefined);
+    emitAudit(200, { relayId: installation.id, status: 'approved' });
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(approvalHtml(request));
     return true;
@@ -623,6 +694,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     if (!browserUser) {
       const returnTo = encodeURIComponent(url.pathname + url.search);
+      emitAudit(302, {}, 'login_required');
       res.writeHead(302, { location: `/?returnTo=${returnTo}`, 'cache-control': 'no-store' });
       res.end();
       return true;
@@ -645,6 +717,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     request.approvedAt = now();
     request.updatedAt = now();
     await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_approve' });
+    emitAudit(200, { relayId: request.relayId, status: 'approved' });
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(approvalHtml(request));
     return true;
