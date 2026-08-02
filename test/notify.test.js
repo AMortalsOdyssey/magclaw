@@ -32,7 +32,7 @@ import {
 } from '../notify/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
-import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
+import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
 import { ensureNotifyRuntimeLogs, notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
 import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify/src/executable.js';
 import { normalizeNotifyInstance } from '../notify/src/instance.js';
@@ -262,7 +262,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(claudeSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.5', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.6', 'mcp']);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {
@@ -888,6 +888,86 @@ test('Notify lark-cli card injects only locally resolved Feishu mentions', () =>
     tag: 'img', img_key: 'img_local_uploaded', alt: { tag: 'plain_text', content: '验收截图' },
   });
   assert.match(card.body.elements.at(-1).content, /由 李四/);
+});
+
+test('Notify public summaries redact local machine details and credentials without losing repo-relative evidence', () => {
+  const summary = normalizeNotifySummary({
+    headline: '修复完成 /Users/alice/code/kizuna/backend，token=raw-secret-value',
+    taskTypes: ['bugfix'],
+    sections: [{
+      type: 'bugfix',
+      title: '登录修复',
+      items: [{
+        text: '修改 backend/auth/login.go，测试地址 192.168.1.7',
+        status: 'verified',
+        evidence: 'Bearer abcdef /home/alice/private.txt',
+      }],
+    }],
+    links: [{ label: '测试报告', url: 'https://example.com/report?token=secret-value&view=full' }],
+    images: [{ url: 'https://example.com/result.png?signature=secret-value', caption: '截图位于 C:\\Users\\alice\\Desktop\\result.png' }],
+  }, { required: true });
+  const rendered = renderNotifySummaryMarkdown(summary);
+  assert.match(rendered, /backend\/auth\/login\.go/);
+  assert.match(rendered, /\[kizuna\]\/backend/);
+  assert.match(rendered, /\[private-ip\]/);
+  assert.match(rendered, /Bearer \[redacted\]/);
+  assert.match(summary.links[0].url, /token=%5Bredacted%5D/);
+  assert.match(summary.images[0].url, /signature=%5Bredacted%5D/);
+  assert.doesNotMatch(rendered, /Users\/alice|home\/alice|raw-secret-value|192\.168\.1\.7/);
+  assert.equal(redactNotifyPublicText('secret: abc localhost:8080'), 'secret: [redacted] [local-host]');
+});
+
+test('Notify mirrors only sanitized delivery context into the shared OpenClaw group session', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-context-sync-'));
+  const profilePaths = { dir: root, profile: 'context-sync' };
+  const openclawLog = path.join(root, 'openclaw-args.jsonl');
+  const openclaw = path.join(root, 'fake-openclaw');
+  const lark = path.join(root, 'fake-lark');
+  await writeFile(openclaw, [
+    '#!/usr/bin/env node',
+    "const fs = require('fs');",
+    `const log = ${JSON.stringify(openclawLog)};`,
+    "const args = process.argv.slice(2);",
+    "const fileIndex = args.indexOf('--message-file');",
+    "const prompt = fileIndex >= 0 ? fs.readFileSync(args[fileIndex + 1], 'utf8') : '';",
+    "fs.appendFileSync(log, JSON.stringify({ args, prompt }) + '\\n');",
+    "if (args.includes('magclaw-notify:nreq_context_sync')) process.stdout.write(JSON.stringify({ result: { title: '修复 /Users/alice/private', markdown: '- token=agent-secret 10.0.0.8' } }));",
+    "else process.stdout.write(JSON.stringify({ ok: true }));",
+    '',
+  ].join('\n'));
+  await writeFile(lark, [
+    '#!/usr/bin/env node',
+    "process.stdout.write(JSON.stringify({ data: { message_id: 'om_sent' } }));",
+    '',
+  ].join('\n'));
+  await chmod(openclaw, 0o700);
+  await chmod(lark, 0o700);
+  await addNotifyGroup(profilePaths, { name: '研发群', chatId: 'oc_local_only' });
+  await configureNotifyHandler(profilePaths, {
+    agentProvider: { command: openclaw, agentId: 'monkey-member', groupContextSync: true },
+    deliveryProvider: { kind: 'lark-cli-feishu', command: lark, account: 'monkey', enabled: true },
+  });
+  const request = {
+    id: 'nreq_context_sync',
+    requester: { id: 'hum_remote', name: '李四' },
+    payload: {
+      target: { group: '研发群' },
+      content: { title: '本轮更新 /Users/alice/code/kizuna', markdown: '- secret: raw-secret-value' },
+      mentions: [],
+      context: {},
+    },
+  };
+  const awaiting = await handleNotifyDelivery(profilePaths, request);
+  const approved = await confirmNotifyMapping(profilePaths, awaiting.confirmationId, 'once');
+  assert.equal(approved.result.status, 'sent');
+  assert.equal(approved.result.groupContextSync, 'succeeded');
+  const calls = (await readFile(openclawLog, 'utf8')).trim().split('\n').map(JSON.parse);
+  const groupCall = calls.find((call) => call.args.includes('feishu:group:oc_local_only'));
+  assert.ok(groupCall);
+  assert.match(groupCall.prompt, /Keep it as group conversation context/);
+  assert.doesNotMatch(groupCall.prompt, /Users\/alice|agent-secret|raw-secret-value|10\.0\.0\.8/);
+  assert.match(groupCall.prompt, /\[local-path\]|\[kizuna\]/);
+  assert.match(groupCall.prompt, /\[private-ip\]/);
 });
 
 test('Notify analysis cannot drop explicitly requested mentions', () => {

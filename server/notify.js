@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
+import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
 
 export const NOTIFY_TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 90;
 export const NOTIFY_DEVICE_TTL_MS = 1000 * 60 * 10;
@@ -126,7 +126,7 @@ export function sanitizeNotifyMarkdown(value = '') {
     .replace(/@all\b/gi, '')
     .replace(/@everyone\b/gi, '')
     .trim();
-  return markdown;
+  return redactNotifyPublicText(markdown, NOTIFY_MAX_MARKDOWN_BYTES);
 }
 
 export function normalizeNotifySubmission(body = {}) {
@@ -171,7 +171,7 @@ export function normalizeNotifySubmission(body = {}) {
     schemaVersion: structuredSummary ? 2 : 1,
     target: { group },
     content: {
-      title: compactNotifyText(body.content?.title || body.title || '工作进展通知', 160),
+      title: compactNotifyText(redactNotifyPublicText(body.content?.title || body.title || '工作进展通知', 1000), 160),
       markdown,
       ...(structuredSummary ? { summary: structuredSummary } : {}),
     },

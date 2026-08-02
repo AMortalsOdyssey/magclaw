@@ -358,7 +358,7 @@ function help() {
     '  magclaw-notify logout',
     '  magclaw-notify audit status|tail [--profile NAME] [--limit 100]',
     '  magclaw-notify daemon login --instance PROJECT --relay-url URL [--name NAME]',
-    '  magclaw-notify daemon configure --instance PROJECT --agent-provider openclaw --delivery-provider lark-cli-feishu',
+    '  magclaw-notify daemon configure --instance PROJECT --agent-provider openclaw [--group-context-sync true] --delivery-provider lark-cli-feishu',
     '  magclaw-notify daemon add-group --instance PROJECT --name NAME --chat-id CHAT_ID',
     '  magclaw-notify daemon add-person --instance PROJECT --name NAME --open-id OPEN_ID',
     '  magclaw-notify daemon access list --instance PROJECT [--all]',

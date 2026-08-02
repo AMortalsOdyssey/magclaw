@@ -134,7 +134,7 @@ test('collect release packages allows Notify to publish independently', async ()
     packageNames: ['@magclaw/notify'],
   });
   assert.deepEqual(packages.map((pkg) => pkg.name), ['@magclaw/notify']);
-  assert.equal(packages[0].version, '0.3.5');
+  assert.equal(packages[0].version, '0.3.6');
 });
 
 test('package release runner publishes packages and verifies npm latest without DB access', async () => {

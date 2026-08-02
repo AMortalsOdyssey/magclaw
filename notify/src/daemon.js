@@ -718,6 +718,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
         ...(flags.agentProvider ? { kind: flags.agentProvider } : {}),
         ...(flags.agentCommand ? { command: flags.agentCommand } : {}),
         ...(flags.agentId ? { agentId: flags.agentId } : {}),
+        ...(flags.groupContextSync !== undefined ? { groupContextSync: flags.groupContextSync !== 'false' } : {}),
       },
       deliveryProvider: {
         ...(flags.deliveryProvider ? { kind: flags.deliveryProvider } : {}),

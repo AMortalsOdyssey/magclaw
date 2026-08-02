@@ -1,5 +1,15 @@
 # @magclaw/notify Release Notes
 
+## 0.3.6 - 2026-08-03 - Safe OpenClaw group context
+
+### new
+
+- Optionally mirrors each successfully delivered, sanitized Notify conclusion into the matching shared OpenClaw Feishu group session, so later Kizuna questions can use the exact update as context without creating a second group message.
+
+### security
+
+- Redacts local paths, private addresses, host names, Feishu identifiers, credentials, authorization headers, and sensitive URL query parameters before Agent analysis, card delivery, and group-context mirroring.
+
 ## 0.3.5 - 2026-08-03 - Deep local audit retention
 
 ### new

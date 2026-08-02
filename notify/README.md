@@ -41,7 +41,8 @@ magclaw-notify daemon configure \
   --instance product-a \
   --agent-provider openclaw \
   --agent-command /path/to/openclaw \
-  --agent-id silver-member \
+  --agent-id notify-handler \
+  --group-context-sync true \
   --delivery-provider lark-cli-feishu \
   --delivery-command /path/to/lark-cli \
   --delivery-account monkey \
@@ -66,6 +67,12 @@ magclaw-notify daemon add-person \
   --open-id "LOCAL_OPEN_ID" \
   --group-chat-ids "LOCAL_CHAT_ID"
 ```
+
+`--group-context-sync true` is optional and applies only to OpenClaw. After a
+successful, non-dry-run delivery it records the already-sanitized conclusion in
+the matching `feishu:group:<chat-id>` session without sending a second message.
+Use an OpenClaw Agent whose Feishu group session scope is `group`; keep this
+option off for providers that do not own the destination group context.
 
 Selecting the OpenClaw event consumer installs or refreshes the local
 `magclaw-notify-handler` Skill automatically. It handles only the exact
