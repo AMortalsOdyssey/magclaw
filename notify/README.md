@@ -323,7 +323,10 @@ record is one JSON object per line and uses stable `requestId`, `confirmationId`
 `relayId`, and `commandId` fields where available.
 
 Local audit files are owner-only (`0700` directory, `0600` files), rotate at
-2 MiB, and retain at most 30 files per location:
+20 MiB, and retain at most 300 files per location. This is a 100x increase over
+the original limit, with a maximum of about 5.86 GiB per location. Normal
+writes inspect only the active shard; directory cleanup happens on startup,
+date changes, or rotation, and `tail` reads backward from the end of each file:
 
 - sender profile: `~/.magclaw/notify/profiles/PROFILE/audit/`;
 - default owner Daemon: `~/.magclaw/notify/daemon/audit/`;
@@ -345,7 +348,9 @@ The Relay writes the same sanitized events to
 `$MAGCLAW_DATA_DIR/notify-audit/`, emits them as single-line structured server
 logs prefixed with `[notify-audit]`, and persists them in PostgreSQL
 `cloud_audit_logs` when the cloud database is enabled. Client IP addresses are
-stored only as keyed hashes. The Relay keeps that HMAC key in the owner-only
+stored only as keyed hashes. Relay files keep their separate 2 MiB by 30-file
+limit; PostgreSQL retention is managed independently and is not constrained by
+the local file limit. The Relay keeps that HMAC key in the owner-only
 `$MAGCLAW_DATA_DIR/.notify-audit-hash-key` file, or uses
 `MAGCLAW_NOTIFY_AUDIT_HASH_KEY` when explicitly configured, so hashes remain
 correlatable across restarts. Authorization headers, tokens, application

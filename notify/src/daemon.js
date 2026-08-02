@@ -6,7 +6,11 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { createNotifyAuditLog } from './audit.js';
+import {
+  createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES,
+} from './audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
 import {
@@ -78,6 +82,8 @@ function ownerAudit(paths) {
       dir: paths.auditDir,
       scope: 'owner',
       base: { instance: paths.instance },
+      maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+      maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
     }));
   }
   return ownerAuditLogs.get(paths.auditDir);

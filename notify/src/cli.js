@@ -4,7 +4,11 @@ import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from '
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNotifyAuditLog } from './audit.js';
+import {
+  createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES,
+} from './audit.js';
 import { runNotifyDaemonCommand } from './daemon.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
@@ -52,6 +56,8 @@ export function notifySenderAudit(flags = {}, env = process.env) {
       dir: paths.auditDir,
       scope: 'sender',
       base: { instance: profile },
+      maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+      maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
     }));
   }
   return senderAuditLogs.get(paths.auditDir);

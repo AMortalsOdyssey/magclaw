@@ -6,7 +6,11 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNotifyAuditLog } from './audit.js';
+import {
+  createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES,
+} from './audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
@@ -110,6 +114,8 @@ function handlerAudit(profilePaths) {
       dir: paths.auditDir,
       scope: 'owner',
       base: { instance: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 48) },
+      maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+      maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
     }));
   }
   return handlerAuditLogs.get(paths.auditDir);

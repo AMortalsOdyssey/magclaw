@@ -1,5 +1,15 @@
 # @magclaw/notify Release Notes
 
+## 0.3.5 - 2026-08-03 - Deep local audit retention
+
+### new
+
+- Expands sender and owner Daemon audit retention to 20 MiB by 300 files, about 5.86 GiB per local location and exactly 100 times the previous capacity.
+
+### performance
+
+- Keeps ordinary audit writes constant-time by scanning and pruning shards only during initialization, date changes, or rotation, and reads audit tails backward in bounded chunks.
+
 ## 0.3.4 - 2026-08-03 - Owner-only runtime logs
 
 ### security

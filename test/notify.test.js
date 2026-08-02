@@ -36,7 +36,12 @@ import { normalizeNotifySummary, renderNotifySummaryMarkdown } from '../notify/s
 import { ensureNotifyRuntimeLogs, notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
 import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify/src/executable.js';
 import { normalizeNotifyInstance } from '../notify/src/instance.js';
-import { createNotifyAuditLog, sanitizeNotifyAuditRecord } from '../notify/src/audit.js';
+import {
+  createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES,
+  sanitizeNotifyAuditRecord,
+} from '../notify/src/audit.js';
 import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify/src/service.js';
 
 function responseRecorder() {
@@ -159,6 +164,41 @@ test('Notify audit files rotate, keep owner-only permissions, correlate events, 
   assert.equal(direct.metadata.note, 'Bearer [redacted]');
 });
 
+test('Notify local audit retention is 100x larger and tail reads the latest records across large shards', async () => {
+  assert.equal(LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES, 20 * 1024 * 1024);
+  assert.equal(LOCAL_NOTIFY_AUDIT_MAX_FILES, 300);
+  assert.equal(
+    LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES * LOCAL_NOTIFY_AUDIT_MAX_FILES,
+    (2 * 1024 * 1024 * 30) * 100,
+  );
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-audit-tail-'));
+  const audit = createNotifyAuditLog({
+    dir: root,
+    scope: 'owner',
+    maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
+    maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
+  });
+  for (let index = 0; index < 700; index += 1) {
+    await audit.append({
+      event: 'owner.performance.sample',
+      requestId: `nreq_${index}`,
+      metadata: { padding: 'safe-observation-'.repeat(8) },
+    });
+  }
+  const status = await audit.status();
+  assert.equal(status.maxTotalBytes, LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES * LOCAL_NOTIFY_AUDIT_MAX_FILES);
+  const records = await audit.readTail(3);
+  assert.deepEqual(records.map((record) => record.requestId), ['nreq_697', 'nreq_698', 'nreq_699']);
+
+  const relayStatus = await createNotifyAuditLog({
+    dir: await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-relay-audit-')),
+    scope: 'relay',
+  }).status();
+  assert.equal(relayStatus.maxFileBytes, 2 * 1024 * 1024);
+  assert.equal(relayStatus.maxFiles, 30);
+});
+
 test('Notify HTTP routes emit sanitized correlation metadata without request content', async () => {
   const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };
   const events = [];
@@ -222,7 +262,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(claudeSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.4', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.5', 'mcp']);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {

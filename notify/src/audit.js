@@ -1,9 +1,12 @@
 import crypto from 'node:crypto';
-import { appendFile, chmod, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, open, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 30;
+export const LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES = 20 * 1024 * 1024;
+export const LOCAL_NOTIFY_AUDIT_MAX_FILES = 300;
+const TAIL_READ_CHUNK_BYTES = 64 * 1024;
 const SENSITIVE_KEY = /(authorization|bearer|token|secret|password|cookie|app.?id|chat.?id|open.?id|union.?id|user.?id|content|markdown|instruction|image.?key)/i;
 
 function clean(value = '', max = 500) {
@@ -86,6 +89,9 @@ export function createNotifyAuditLog(options = {}) {
   const maxFiles = limit(options.maxFiles, DEFAULT_MAX_FILES, 365);
   const warn = options.warn || ((message) => process.stderr.write(`${message}\n`));
   let chain = Promise.resolve();
+  let activeDate = '';
+  let activeFile = '';
+  let activeSize = 0;
 
   async function ensureDir() {
     if (!dir) return false;
@@ -94,36 +100,66 @@ export function createNotifyAuditLog(options = {}) {
     return true;
   }
 
-  async function files() {
+  function compareAuditFiles(left, right) {
+    const leftOrder = auditFileOrder(left);
+    const rightOrder = auditFileOrder(right);
+    return leftOrder.date.localeCompare(rightOrder.date) || leftOrder.index - rightOrder.index;
+  }
+
+  async function fileNames() {
     if (!await ensureDir()) return [];
-    const entries = await readdir(dir).catch(() => []);
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    return entries
+      .filter((entry) => entry.isFile() && isAuditFile(entry.name))
+      .map((entry) => entry.name)
+      .sort(compareAuditFiles);
+  }
+
+  async function files() {
+    const names = await fileNames();
     const records = [];
-    for (const name of entries.filter(isAuditFile)) {
+    for (const name of names) {
       const file = path.join(dir, name);
       const info = await stat(file).catch(() => null);
       if (info?.isFile()) records.push({ name, file, size: info.size });
     }
-    return records.sort((left, right) => {
-      const leftOrder = auditFileOrder(left.name);
-      const rightOrder = auditFileOrder(right.name);
-      return leftOrder.date.localeCompare(rightOrder.date) || leftOrder.index - rightOrder.index;
-    });
+    return records;
   }
 
-  async function currentFile(occurredAt) {
-    const date = dateKey(occurredAt);
-    const dated = (await files()).filter((item) => item.name.startsWith(`notify-audit-${date}`));
-    const latest = dated.at(-1);
-    if (!latest) return path.join(dir, auditFileName(date));
-    if (latest.size < maxFileBytes) return latest.file;
-    const suffix = latest.name.match(/-(\d{3})\.jsonl$/)?.[1];
-    const nextIndex = suffix ? Number(suffix) + 1 : 1;
-    return path.join(dir, auditFileName(date, nextIndex));
+  function nextFile(date, current = '') {
+    const order = auditFileOrder(path.basename(current));
+    return path.join(dir, auditFileName(date, order.date === date ? order.index + 1 : 0));
+  }
+
+  async function initializeActiveFile(date) {
+    const names = await fileNames();
+    const latestName = names.filter((name) => auditFileOrder(name).date === date).at(-1);
+    activeDate = date;
+    activeFile = latestName ? path.join(dir, latestName) : path.join(dir, auditFileName(date));
+    const info = latestName ? await stat(activeFile).catch(() => null) : null;
+    activeSize = info?.isFile() ? info.size : 0;
+    if (activeSize >= maxFileBytes) {
+      activeFile = nextFile(date, activeFile);
+      activeSize = 0;
+    }
   }
 
   async function prune() {
-    const existing = await files();
-    for (const item of existing.slice(0, Math.max(0, existing.length - maxFiles))) await unlink(item.file).catch(() => {});
+    const names = await fileNames();
+    for (const name of names.slice(0, Math.max(0, names.length - maxFiles))) {
+      await unlink(path.join(dir, name)).catch(() => {});
+    }
+  }
+
+  async function rotateFor(lineBytes) {
+    let rotated = false;
+    while (activeSize > 0 && activeSize + lineBytes > maxFileBytes) {
+      activeFile = nextFile(activeDate, activeFile);
+      const info = await stat(activeFile).catch(() => null);
+      activeSize = info?.isFile() ? info.size : 0;
+      rotated = true;
+    }
+    return rotated;
   }
 
   function append(record = {}) {
@@ -131,11 +167,21 @@ export function createNotifyAuditLog(options = {}) {
     const payload = sanitizeNotifyAuditRecord({ ...base, ...record, scope: record.scope || scope, occurredAt: record.occurredAt || now() });
     const operation = chain.then(async () => {
       await ensureDir();
-      const file = await currentFile(payload.occurredAt);
-      await appendFile(file, `${JSON.stringify(payload)}\n`, { mode: 0o600 });
-      await chmod(file, 0o600).catch(() => {});
-      await prune();
-      return { written: true, file, record: payload };
+      const date = dateKey(payload.occurredAt);
+      const initialized = activeDate !== date || !activeFile;
+      if (initialized) await initializeActiveFile(date);
+      else {
+        const info = await stat(activeFile).catch(() => null);
+        activeSize = info?.isFile() ? info.size : 0;
+      }
+      const line = `${JSON.stringify(payload)}\n`;
+      const lineBytes = Buffer.byteLength(line);
+      const rotated = await rotateFor(lineBytes);
+      await appendFile(activeFile, line, { mode: 0o600 });
+      activeSize += lineBytes;
+      await chmod(activeFile, 0o600).catch(() => {});
+      if (initialized || rotated) await prune();
+      return { written: true, file: activeFile, record: payload };
     });
     chain = operation.catch((error) => {
       warn(`[notify-audit] write failed event=${payload.event} message=${clean(error.message, 300)}`);
@@ -147,11 +193,10 @@ export function createNotifyAuditLog(options = {}) {
     await chain.catch(() => {});
     const wanted = limit(tailLimit, 100, 1000);
     const lines = [];
-    const existing = await files();
-    for (let index = existing.length - 1; index >= 0 && lines.length < wanted; index -= 1) {
-      const item = existing[index];
-      const text = await readFile(item.file, 'utf8').catch(() => '');
-      if (text) lines.unshift(...text.split(/\r?\n/).filter(Boolean));
+    const names = await fileNames();
+    for (let index = names.length - 1; index >= 0 && lines.length < wanted; index -= 1) {
+      const fileLines = await readTailLines(path.join(dir, names[index]), wanted - lines.length);
+      if (fileLines.length > 0) lines.unshift(...fileLines);
     }
     return lines.slice(-wanted).map((line) => {
       try { return JSON.parse(line); } catch { return null; }
@@ -162,6 +207,40 @@ export function createNotifyAuditLog(options = {}) {
     append,
     dir,
     readTail,
-    status: async () => ({ dir, files: (await files()).map((item) => ({ name: item.name, size: item.size })), maxFileBytes, maxFiles }),
+    status: async () => ({
+      dir,
+      files: (await files()).map((item) => ({ name: item.name, size: item.size })),
+      maxFileBytes,
+      maxFiles,
+      maxTotalBytes: maxFileBytes * maxFiles,
+    }),
   };
+}
+
+async function readTailLines(file, wanted) {
+  const handle = await open(file, 'r').catch(() => null);
+  if (!handle) return [];
+  try {
+    const info = await handle.stat();
+    let position = info.size;
+    let newlineCount = 0;
+    const chunks = [];
+    while (position > 0 && newlineCount <= wanted) {
+      const length = Math.min(TAIL_READ_CHUNK_BYTES, position);
+      position -= length;
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      const chunk = buffer.subarray(0, bytesRead);
+      chunks.unshift(chunk);
+      for (const byte of chunk) if (byte === 10) newlineCount += 1;
+    }
+    let text = Buffer.concat(chunks).toString('utf8');
+    if (position > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+    return text.split(/\r?\n/).filter(Boolean).slice(-wanted);
+  } finally {
+    await handle.close();
+  }
 }
