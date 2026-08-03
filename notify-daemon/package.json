@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/notify-daemon",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Private owner runtime for MagClaw Notify.",
   "type": "module",

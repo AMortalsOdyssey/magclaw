@@ -1,0 +1,22 @@
+{
+  "id": "magclaw-notify-approval",
+  "name": "MagClaw Notify Approval",
+  "description": "Routes MagClaw Notify approval card callbacks straight to the owner Daemon, without an Agent turn.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "accountId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "notifyHome": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

@@ -480,18 +480,17 @@ test('Notify daemon control server survives a client that disconnects before the
   }
 });
 
-test('Notify approval status uses the dedicated approval Agent and reports effective policy drift', async () => {
+test('Notify approval status reports plugin mode and refuses to manage an exec allowlist', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-approval-agent-'));
   const instance = 'approval-agent-test';
   const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
-  const handlerPath = path.join(os.homedir(), '.local', 'share', 'magclaw-notify', 'approval-handlers', instance);
   const fakeOpenClaw = path.join(root, 'fake-openclaw');
   await writeFile(fakeOpenClaw, [
     '#!/usr/bin/env node',
     'const args = process.argv.slice(2);',
-    `const handlerPath = ${JSON.stringify(handlerPath)};`,
-    "if (args[0] === 'approvals') process.stdout.write(JSON.stringify({ file: { agents: { 'monkey-owner': { allowlist: [{ pattern: handlerPath }] }, 'monkey-member': { allowlist: [] } } } }));",
-    "else process.stdout.write(JSON.stringify({ effectivePolicy: { scopes: [{ agentId: 'monkey-owner', security: { effective: 'allowlist' }, ask: { effective: 'on-miss' } }] } }));",
+    "if (args[0] === 'plugins') process.stdout.write(JSON.stringify({ plugins: [{ id: 'magclaw-notify-approval', enabled: true }] }));",
+    "else if (args[0] === 'approvals') process.stdout.write(JSON.stringify({ file: { agents: { 'monkey-owner': { allowlist: [{ pattern: '/Users/x/.local/share/magclaw-notify/approval-handlers/default' }] } } } }));",
+    "else process.stdout.write('{}');",
     '',
   ].join('\n'));
   await chmod(fakeOpenClaw, 0o700);
@@ -500,44 +499,38 @@ test('Notify approval status uses the dedicated approval Agent and reports effec
     confirmationProvider: { account: 'monkey', ownerOpenId: 'ou_owner', approvalAgentId: 'monkey-owner', eventConsumer: 'openclaw' },
   });
   const status = await runNotifyDaemonCommand(['openclaw-approval', 'status'], { instance, notifyHome: root });
-  assert.equal(status.approvalAgentId, 'monkey-owner');
-  assert.equal(status.allowlistMatched, true);
-  assert.equal(status.execSecurity, 'allowlist');
-  assert.equal(status.execAsk, 'on-miss');
-  assert.notEqual(status.approvalAgentId, 'monkey-member');
+  assert.equal(status.mode, 'plugin');
+  assert.equal(status.pluginLoaded, true);
+  assert.equal(status.agentShellApprovalRequired, false);
+  assert.match(status.pluginPath, /notify-daemon\/openclaw-plugin$/);
+  // A leftover exec allowlist entry from the old shell handler must be surfaced.
+  assert.equal(status.staleAllowlistEntries.length, 1);
+  assert.equal(status.staleAllowlistEntries[0].agentId, 'monkey-owner');
+  await assert.rejects(
+    runNotifyDaemonCommand(['openclaw-approval', 'enable'], { instance, notifyHome: root }),
+    /handled by the OpenClaw plugin/i,
+  );
 });
 
-test('OpenClaw card approvals use an instance-scoped, strictly validated handler', async () => {
+test('Notify handler Skill installs no Agent-invocable approval command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-openclaw-handler-'));
-  const fakeBin = path.join(root, 'fake-notify.mjs');
-  const notifyHome = path.join(root, 'notify-home');
-  await writeFile(fakeBin, 'console.log(JSON.stringify(process.argv.slice(2)))\n');
-  const installed = await installNotifyHandlerSkill({
-    targets: ['openclaw'],
-    homeDir: root,
-    approvalHandler: {
-      instance: 'product-a',
-      notifyHome,
-      nodePath: process.execPath,
-      binPath: fakeBin,
-    },
-  });
-  const handlerPath = installed[0].approvalHandler;
-  assert.equal((await stat(handlerPath)).mode & 0o777, 0o700);
-  const valid = spawnSync(handlerPath, ['ncf_a12f', 'once', 'ou_owner1'], { encoding: 'utf8' });
-  assert.equal(valid.status, 0);
-  assert.deepEqual(JSON.parse(valid.stdout), [
-    'daemon', 'confirm', '--notify-home', notifyHome, '--instance', 'product-a', '--id', 'ncf_a12f', '--once', '--operator-open-id', 'ou_owner1',
-  ]);
-  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'rotate', 'ou_owner1'], { encoding: 'utf8' }).status, 64);
-  assert.equal(spawnSync(handlerPath, ['ncf_bad/value', 'once', 'ou_owner1'], { encoding: 'utf8' }).status, 64);
-  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'once', 'owner1'], { encoding: 'utf8' }).status, 64);
+  const legacyHandler = path.join(root, '.local', 'share', 'magclaw-notify', 'approval-handlers', 'product-a');
+  await mkdir(path.dirname(legacyHandler), { recursive: true });
+  await writeFile(legacyHandler, '#!/bin/sh\nexit 0\n');
+  const installed = await installNotifyHandlerSkill({ targets: ['openclaw'], homeDir: root });
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].approvalHandler, undefined);
+  // Installing must also clean up any handler left by an earlier version.
+  await assert.rejects(stat(legacyHandler), /ENOENT/);
   const skill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
-  assert.match(skill, /approval-handlers\/product-a CONFIRMATION_ID once OPERATOR_OPEN_ID/);
   const sourceSkill = await readFile(path.join(process.cwd(), 'notify-daemon', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
-  assert.match(sourceSkill, /<NOTIFY_APPROVAL_HANDLER> CONFIRMATION_ID once OPERATOR_OPEN_ID/);
-  assert.doesNotMatch(sourceSkill, /\.local\/share\/magclaw-notify\/approval-handlers/);
-  assert.doesNotMatch(skill, /setup-token rotate/);
+  for (const text of [skill, sourceSkill]) {
+    assert.doesNotMatch(text, /approval-handlers/);
+    assert.doesNotMatch(text, /NOTIFY_APPROVAL_HANDLER/);
+    assert.doesNotMatch(text, /setup-token rotate/);
+    // The Skill must tell the Agent approvals are not its job.
+    assert.match(text, /Do not approve, confirm, or reject any Notify request by any means\./);
+  }
 });
 
 test('Notify instances isolate local state and generate platform autostart services', () => {

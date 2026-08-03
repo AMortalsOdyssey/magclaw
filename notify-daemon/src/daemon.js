@@ -32,7 +32,7 @@ import {
   installNotifyHandlerSkill,
   listNotifyTargetGrants,
   notifyHandlerStatus,
-  notifyOpenClawApprovalHandlerPath,
+  notifyOpenClawApprovalPluginPath,
   prepareNotifyDelivery,
   processAuthorizedNotifyDelivery,
   revokeNotifyTargetGrant,
@@ -824,35 +824,44 @@ async function manageOpenClawApproval(paths, positional) {
   const config = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
   const agentId = await resolveOpenClawApprovalAgent(config);
   const openclawCommand = clean(config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
-  const handlerPath = notifyOpenClawApprovalHandlerPath(paths.instance);
-  if (action === 'enable') {
-    if (!await readFile(handlerPath, 'utf8').then(Boolean).catch(() => false)) {
-      throw new Error('Install the OpenClaw Notify handler Skill before enabling its approval rule.');
-    }
-    await runOpenClawCommand(openclawCommand, ['approvals', 'allowlist', 'add', '--agent', agentId, '--json', handlerPath]);
-    return { enabled: true, instance: paths.instance, agentId, handlerPath };
-  }
-  if (action === 'disable') {
-    await runOpenClawCommand(openclawCommand, ['approvals', 'allowlist', 'remove', '--agent', agentId, '--json', handlerPath]);
-    return { enabled: false, instance: paths.instance, agentId, handlerPath };
-  }
+  const pluginPath = notifyOpenClawApprovalPluginPath();
   if (action === 'status') {
-    const result = await runOpenClawCommand(openclawCommand, ['approvals', 'get', '--json']);
-    const snapshot = JSON.parse(result.stdout || '{}');
-    const policy = openClawApprovalPolicy(snapshot, agentId, handlerPath);
-    let execPolicy = {};
+    // Approvals no longer run through an Agent-invocable shell command, so the
+    // only thing to report is whether the deterministic plugin is loaded and
+    // that no stale exec allowlist entry survives.
+    let pluginLoaded = false;
+    let pluginError = '';
     try {
-      const policyResult = await runOpenClawCommand(openclawCommand, ['exec-policy', 'show', '--json']);
-      const policySnapshot = JSON.parse(policyResult.stdout || '{}');
-      const scope = policySnapshot?.effectivePolicy?.scopes?.find((item) => item?.agentId === agentId) || {};
-      execPolicy = {
-        execSecurity: scope?.security?.effective || scope?.security?.requested || 'unknown',
-        execAsk: scope?.ask?.effective || scope?.ask?.requested || 'unknown',
-      };
+      const result = await runOpenClawCommand(openclawCommand, ['plugins', 'list', '--json']);
+      const snapshot = JSON.parse(result.stdout || '{}');
+      pluginLoaded = JSON.stringify(snapshot).includes('magclaw-notify-approval');
     } catch (error) {
-      execPolicy = { execSecurity: 'unknown', execAsk: 'unknown', policyError: clean(error.message, 300) };
+      pluginError = clean(error.message, 300);
     }
-    return { enabled: policy.allowlistMatched, instance: paths.instance, approvalAgentId: agentId, agentId, handlerPath, ...policy, ...execPolicy };
+    let staleAllowlistEntries = [];
+    try {
+      const result = await runOpenClawCommand(openclawCommand, ['approvals', 'get', '--json']);
+      const snapshot = JSON.parse(result.stdout || '{}');
+      const agents = snapshot?.file?.agents || snapshot?.agents || {};
+      for (const [id, entry] of Object.entries(agents)) {
+        for (const item of Array.isArray(entry?.allowlist) ? entry.allowlist : []) {
+          const pattern = String(item?.pattern || item || '');
+          if (pattern.includes('magclaw-notify')) staleAllowlistEntries.push({ agentId: id, pattern });
+        }
+      }
+    } catch { staleAllowlistEntries = []; }
+    return {
+      mode: 'plugin',
+      approvalAgentId: agentId,
+      pluginPath,
+      pluginLoaded,
+      ...(pluginError ? { pluginError } : {}),
+      staleAllowlistEntries,
+      agentShellApprovalRequired: false,
+    };
+  }
+  if (action === 'enable' || action === 'disable') {
+    throw new Error(`Notify approvals are handled by the OpenClaw plugin at ${pluginPath}. Register it under plugins.load.paths and plugins.entries instead of managing an exec allowlist.`);
   }
   throw new Error(`Unknown OpenClaw approval command: ${action}`);
 }
@@ -927,29 +936,15 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
       },
     });
     const installedHandlerSkills = config.confirmationProvider.eventConsumer === 'openclaw'
-      ? await installNotifyHandlerSkill({
-          targets: ['openclaw'],
-          approvalHandler: {
-            instance,
-            notifyHome: paths.home,
-            nodePath: process.execPath,
-            binPath: BIN_PATH,
-          },
-        })
+      ? await installNotifyHandlerSkill({ targets: ['openclaw'] })
       : [];
-    return { ...config, installedHandlerSkills };
+    return { ...config, installedHandlerSkills, approvalPluginPath: notifyOpenClawApprovalPluginPath() };
   }
   if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });
   if (command === 'sync-directory') return syncNotifyDirectory(paths.handler);
   if (command === 'install-handler-skill') return installNotifyHandlerSkill({
     targets: commaList(flags.targets || flags.target || 'openclaw'),
-    approvalHandler: {
-      instance,
-      notifyHome: paths.home,
-      nodePath: process.execPath,
-      binPath: BIN_PATH,
-    },
   });
   if (command === 'confirm') {
     const decisions = [['approve', flags.approve], ['once', flags.once], ['always', flags.always], ['reject', flags.reject]].filter(([, enabled]) => enabled === true);

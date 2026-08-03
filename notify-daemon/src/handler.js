@@ -219,8 +219,8 @@ async function copyTree(source, target) {
   }
 }
 
-export function notifyOpenClawApprovalHandlerPath(instance = 'default', homeDir = os.homedir()) {
-  return path.join(homeDir, '.local', 'share', 'magclaw-notify', 'approval-handlers', instance);
+export function notifyOpenClawApprovalPluginPath() {
+  return path.join(HANDLER_ROOT, 'openclaw-plugin');
 }
 
 export async function installNotifyHandlerSkill(options = {}) {
@@ -238,42 +238,11 @@ export async function installNotifyHandlerSkill(options = {}) {
     if (!target) continue;
     await rm(target, { recursive: true, force: true });
     await copyTree(HANDLER_SKILL_SOURCE, target);
-    const record = { kind, target };
-    if (kind === 'openclaw' && options.approvalHandler) {
-      const handler = options.approvalHandler;
-      const instance = cleanText(handler.instance || 'default', 48);
-      if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(instance)) throw new Error('OpenClaw Notify approval handler requires a normalized instance.');
-      const handlerPath = notifyOpenClawApprovalHandlerPath(instance, homeDir);
-      const handlerRoot = path.dirname(handlerPath);
-      const script = [
-        '#!/bin/sh',
-        'set -eu',
-        '[ "$#" -eq 3 ] || { echo "usage: notify-approval CONFIRMATION_ID DECISION OPERATOR_OPEN_ID" >&2; exit 64; }',
-        'confirmation_id=$1',
-        'decision=$2',
-        'operator_open_id=$3',
-        'case "$confirmation_id" in ncf_*) ;; *) echo "invalid confirmation id" >&2; exit 64 ;; esac',
-        'confirmation_suffix=${confirmation_id#ncf_}',
-        '[ -n "$confirmation_suffix" ] || { echo "invalid confirmation id" >&2; exit 64; }',
-        'case "$confirmation_suffix" in *[!0-9a-f]*) echo "invalid confirmation id" >&2; exit 64 ;; esac',
-        'case "$decision" in once|always|approve|reject) ;; *) echo "invalid decision" >&2; exit 64 ;; esac',
-        'case "$operator_open_id" in ou_[A-Za-z0-9]*) ;; *) echo "invalid operator open id" >&2; exit 64 ;; esac',
-        'operator_suffix=${operator_open_id#ou_}',
-        '[ -n "$operator_suffix" ] || { echo "invalid operator open id" >&2; exit 64; }',
-        'case "$operator_suffix" in *[!A-Za-z0-9]*) echo "invalid operator open id" >&2; exit 64 ;; esac',
-        `exec ${shellQuote(handler.nodePath || process.execPath)} ${shellQuote(handler.binPath)} daemon confirm --notify-home ${shellQuote(handler.notifyHome)} --instance ${shellQuote(instance)} --id "$confirmation_id" "--$decision" --operator-open-id "$operator_open_id"`,
-        '',
-      ].join('\n');
-      await mkdir(handlerRoot, { recursive: true });
-      await writeFile(handlerPath, script, { mode: 0o700 });
-      await chmod(handlerPath, 0o700).catch(() => {});
-      const installedSkillPath = path.join(target, 'SKILL.md');
-      const installedSkill = await readFile(installedSkillPath, 'utf8');
-      await writeFile(installedSkillPath, installedSkill.replaceAll('<NOTIFY_APPROVAL_HANDLER>', handlerPath), { mode: 0o600 });
-      record.approvalHandler = handlerPath;
-    }
-    installed.push(record);
+    installed.push({ kind, target });
   }
+  // Approvals are handled deterministically by the OpenClaw plugin, so no
+  // Agent-invocable approval command is installed anywhere.
+  await rm(path.join(homeDir, '.local', 'share', 'magclaw-notify', 'approval-handlers'), { recursive: true, force: true });
   return installed;
 }
 
