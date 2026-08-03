@@ -1,5 +1,11 @@
 # @magclaw/notify Release Notes
 
+## 0.3.7 - 2026-08-03 - Balanced local audit retention
+
+### changed
+
+- Reduces sender and owner Daemon audit retention to 20 MiB by 30 files, exactly 10 times the original capacity and at most 600 MiB per local location.
+
 ## 0.3.6 - 2026-08-03 - Safe OpenClaw group context
 
 ### new

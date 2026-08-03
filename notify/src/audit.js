@@ -5,7 +5,7 @@ import path from 'node:path';
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 30;
 export const LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES = 20 * 1024 * 1024;
-export const LOCAL_NOTIFY_AUDIT_MAX_FILES = 300;
+export const LOCAL_NOTIFY_AUDIT_MAX_FILES = 30;
 const TAIL_READ_CHUNK_BYTES = 64 * 1024;
 const SENSITIVE_KEY = /(authorization|bearer|token|secret|password|cookie|app.?id|chat.?id|open.?id|union.?id|user.?id|content|markdown|instruction|image.?key)/i;
 

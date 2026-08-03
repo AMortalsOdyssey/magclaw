@@ -164,12 +164,12 @@ test('Notify audit files rotate, keep owner-only permissions, correlate events, 
   assert.equal(direct.metadata.note, 'Bearer [redacted]');
 });
 
-test('Notify local audit retention is 100x larger and tail reads the latest records across large shards', async () => {
+test('Notify local audit retention is 10x larger and tail reads the latest records across large shards', async () => {
   assert.equal(LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES, 20 * 1024 * 1024);
-  assert.equal(LOCAL_NOTIFY_AUDIT_MAX_FILES, 300);
+  assert.equal(LOCAL_NOTIFY_AUDIT_MAX_FILES, 30);
   assert.equal(
     LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES * LOCAL_NOTIFY_AUDIT_MAX_FILES,
-    (2 * 1024 * 1024 * 30) * 100,
+    (2 * 1024 * 1024 * 30) * 10,
   );
 
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-audit-tail-'));
@@ -262,7 +262,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(claudeSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.6', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.7', 'mcp']);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {

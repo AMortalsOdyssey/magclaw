@@ -330,8 +330,8 @@ record is one JSON object per line and uses stable `requestId`, `confirmationId`
 `relayId`, and `commandId` fields where available.
 
 Local audit files are owner-only (`0700` directory, `0600` files), rotate at
-20 MiB, and retain at most 300 files per location. This is a 100x increase over
-the original limit, with a maximum of about 5.86 GiB per location. Normal
+20 MiB, and retain at most 30 files per location. This is a 10x increase over
+the original limit, with a maximum of 600 MiB (about 0.59 GiB) per location. Normal
 writes inspect only the active shard; directory cleanup happens on startup,
 date changes, or rotation, and `tail` reads backward from the end of each file:
 
