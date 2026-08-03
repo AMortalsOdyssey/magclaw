@@ -689,6 +689,49 @@ test('Notify approval card update falls back from callback token to the original
   assert.deepEqual(JSON.parse(patchBody.content), card);
 });
 
+test('Any Feishu-authenticated member can start their own Notify Daemon login by default', async () => {
+  const fingerprint = `mfp_${'a'.repeat(64)}`;
+  const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };
+  let currentUser = null;
+  const newcomer = feishuUser('usr_newcomer', 'Newcomer', 'tenant_other');
+  // No bootstrap secret: this Relay is open, so owning a Daemon is self-service.
+  const deps = routeDeps(state, {
+    currentUser: () => currentUser,
+    currentActor: () => (currentUser ? { user: currentUser, member: { workspaceId: 'ws_1', role: 'member' } } : null),
+  });
+  const started = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Newcomer Bot', machineFingerprint: fingerprint, client: { hostname: 'new-mac', platform: 'linux', arch: 'x64' } },
+  });
+  assert.equal(started.res.status, 201);
+
+  // Starting a login grants nothing until it is confirmed in the browser.
+  const beforeConfirm = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
+  });
+  assert.equal(beforeConfirm.res.body.status, 'pending');
+
+  // An anonymous visitor cannot confirm it.
+  const anonymous = await callRoute(deps, 'GET', started.res.body.verificationUri);
+  assert.equal(anonymous.res.status, 302);
+
+  currentUser = newcomer;
+  const reviewed = await callRoute(deps, 'GET', started.res.body.verificationUri);
+  assert.equal(reviewed.res.status, 200);
+  const csrfToken = reviewed.res.raw.match(/name="csrf_token" value="([^"]+)"/)[1];
+  const confirmed = await callRoute(deps, 'POST', '/notify/daemon/auth/approve', {
+    body: { user_code: started.res.body.userCode, csrf_token: csrfToken },
+  });
+  assert.equal(confirmed.res.status, 200);
+  const approved = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
+  });
+  assert.equal(approved.res.body.status, 'approved');
+  // The newcomer owns their own Relay installation and can issue Setup Tokens.
+  assert.ok(approved.res.body.relayId);
+  assert.ok(approved.res.body.inviteToken);
+  assert.equal(approved.res.body.user.id, 'usr_newcomer');
+});
+
 test('Notify device authorization is owner-started, POST-confirmed, CSRF-protected, and one-time', async () => {
   const fingerprint = `mfp_${'f'.repeat(64)}`;
   const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };

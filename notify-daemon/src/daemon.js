@@ -819,6 +819,79 @@ function openClawApprovalPolicy(snapshot = {}, agentId = '', handlerPath = '') {
   };
 }
 
+/**
+ * Reports every initialization requirement as a discrete, checkable item so a new
+ * owner can see exactly what is still missing instead of discovering it at
+ * delivery time. Ordered from "cannot work at all" to "optional".
+ */
+async function runNotifyDaemonDoctor(paths, flags = {}) {
+  const daemonConfig = await readJson(paths.config, {});
+  const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
+  const directory = await readJson(path.join(paths.handler.dir, 'notify', 'directory.json'), {});
+  const delivery = handlerConfig.deliveryProvider || {};
+  const confirmation = handlerConfig.confirmationProvider || {};
+  const agent = handlerConfig.agentProvider || {};
+  const groups = Array.isArray(directory.groups) ? directory.groups : [];
+  const people = Array.isArray(directory.people) ? directory.people : [];
+  const checks = [];
+  const add = (id, required, ok, detail, fix) => checks.push({
+    id, required, status: ok ? 'ok' : (required ? 'missing' : 'optional'), detail, ...(ok ? {} : { fix }),
+  });
+
+  add('relay.login', true, Boolean(daemonConfig.relayUrl && daemonConfig.relayId && daemonConfig.token),
+    daemonConfig.relayUrl ? `Relay ${daemonConfig.relayUrl} as ${daemonConfig.relayHandle || daemonConfig.relayId}` : 'No Relay login stored.',
+    'magclaw-notify daemon login --relay-url <url> --instance <name>');
+  const tokenExpiresAt = Date.parse(daemonConfig.tokenExpiresAt || '');
+  add('relay.token_valid', true, Number.isFinite(tokenExpiresAt) && tokenExpiresAt > Date.now(),
+    Number.isFinite(tokenExpiresAt) ? `Daemon token expires ${daemonConfig.tokenExpiresAt}` : 'No Daemon token expiry recorded.',
+    'magclaw-notify daemon login again to refresh the Daemon token');
+  add('feishu.delivery_provider', true, Boolean(delivery.enabled && delivery.account),
+    delivery.account ? `${delivery.kind} using account/profile ${delivery.account}` : 'No Feishu delivery provider configured.',
+    'magclaw-notify daemon configure --delivery-provider lark-cli-feishu --delivery-account <profile> --delivery-enabled true');
+  add('feishu.owner_dm', true, Boolean(confirmation.enabled && confirmation.account && (confirmation.ownerOpenId || confirmation.target)),
+    confirmation.ownerOpenId || confirmation.target ? 'Owner approval DM target configured.' : 'No owner approval DM target configured.',
+    'magclaw-notify daemon configure --confirmation-account <profile> --owner-open-id <ou_...> --confirmation-enabled true');
+  const eventConsumer = confirmation.eventConsumer || 'openclaw';
+  add('feishu.event_consumer', true, ['openclaw', 'standalone'].includes(eventConsumer),
+    eventConsumer === 'standalone'
+      ? 'This Daemon consumes card.action.trigger itself. No Agent runtime is required.'
+      : 'An Agent runtime owns the Feishu event connection and must forward approval callbacks.',
+    'magclaw-notify daemon configure --event-consumer standalone');
+  if (eventConsumer === 'openclaw') {
+    add('agent.approval_forwarder', true, false,
+      `Register the approval plugin so card callbacks reach this Daemon: ${notifyOpenClawApprovalPluginPath()}`,
+      'Add the plugin path to plugins.load.paths and enable magclaw-notify-approval in plugins.entries');
+    checks[checks.length - 1].status = 'verify';
+  }
+  add('directory.groups', true, groups.some((group) => group && group.chatId && group.enabled !== false),
+    `${groups.length} group(s) configured, ${groups.filter((g) => g?.chatId).length} with a Chat ID.`,
+    'magclaw-notify daemon add-group --name <name> --chat-id <chat id> --aliases <alias>');
+  add('directory.people', false, people.some((person) => person && person.openId && person.enabled !== false),
+    `${people.length} person(s) configured. Only needed to @-mention people.`,
+    'magclaw-notify daemon add-person --name <name> --open-id <ou_...>');
+  add('agent.analysis', false, Boolean(agent.kind && agent.agentId),
+    agent.agentId ? `${agent.kind} agent ${agent.agentId} resolves mention aliases.` : 'No analysis Agent configured; structured summaries are delivered as-is.',
+    'magclaw-notify daemon configure --agent-provider openclaw --agent-id <agent>');
+  add('sender.setup_token', false, Boolean(daemonConfig.inviteToken),
+    daemonConfig.inviteToken ? 'A Setup Token exists for senders.' : 'No Setup Token issued yet.',
+    'magclaw-notify daemon setup-token rotate');
+
+  const blocking = checks.filter((check) => check.status === 'missing');
+  const verify = checks.filter((check) => check.status === 'verify');
+  return {
+    instance: paths.instance,
+    ready: blocking.length === 0,
+    eventConsumer,
+    requiresAgentRuntime: eventConsumer === 'openclaw',
+    blocking: blocking.map((check) => check.id),
+    needsManualVerification: verify.map((check) => check.id),
+    checks: flags.all === true ? checks : checks.filter((check) => check.status !== 'ok'),
+    summary: blocking.length === 0
+      ? 'Every required initialization step is complete.'
+      : `${blocking.length} required step(s) still missing.`,
+  };
+}
+
 async function manageOpenClawApproval(paths, positional) {
   const action = positional[1] || 'status';
   const config = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
@@ -899,6 +972,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'status') return notifyDaemonStatus(flags);
   if (command === 'autostart') return manageNotifyDaemonAutostart(paths, positional, flags);
   if (command === 'openclaw-approval') return manageOpenClawApproval(paths, positional);
+  if (command === 'doctor') return runNotifyDaemonDoctor(paths, flags);
   if (command === 'audit') {
     const action = positional[1] || 'status';
     if (action === 'status') return ownerAudit(paths).status();

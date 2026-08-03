@@ -311,12 +311,17 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/start') {
     const body = await readJson(req);
-    const suppliedBootstrap = compactNotifyText(req.headers?.['x-magclaw-notify-bootstrap'] || body.bootstrapToken || body.bootstrap_token || '', 500);
-    const bootstrapAllowed = notifyDaemonBootstrapSecret
-      && safeSecretEqual(suppliedBootstrap, hashNotifySecret(notifyDaemonBootstrapSecret));
-    if (!browserUser && !bootstrapAllowed) {
-      sendError(res, 401, 'Notify Daemon login must be started by an authenticated owner or with the owner bootstrap token.');
-      return true;
+    // Anyone with a Feishu-authenticated MagClaw account may run their own Notify
+    // Daemon: this endpoint only mints an unapproved device code. The real gate is
+    // the browser confirmation page, which requires that login plus a one-time
+    // CSRF token, so starting a login grants nothing on its own. An operator can
+    // still restrict a private deployment with MAGCLAW_NOTIFY_DAEMON_BOOTSTRAP_TOKEN.
+    if (notifyDaemonBootstrapSecret) {
+      const suppliedBootstrap = compactNotifyText(req.headers?.['x-magclaw-notify-bootstrap'] || body.bootstrapToken || body.bootstrap_token || '', 500);
+      if (!browserUser && !safeSecretEqual(suppliedBootstrap, hashNotifySecret(notifyDaemonBootstrapSecret))) {
+        sendError(res, 401, 'This Notify Relay restricts Daemon logins. Supply --bootstrap-token or start the login from an authenticated browser session.');
+        return true;
+      }
     }
     let requestedInstance;
     try {

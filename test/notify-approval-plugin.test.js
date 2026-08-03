@@ -106,3 +106,49 @@ test('Notify approval plugin surfaces a daemon rejection instead of silently suc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('Notify Daemon doctor separates blocking initialization from optional setup', async () => {
+  const { runNotifyDaemonCommand } = await import('../notify-daemon/src/daemon.js');
+  const fresh = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-doctor-'));
+  try {
+    const report = await runNotifyDaemonCommand(['doctor'], { notifyHome: fresh, instance: 'default', all: true });
+    assert.equal(report.ready, false);
+    // A brand-new owner must be told about the Relay login, Feishu delivery, the
+    // owner DM target, and at least one group before anything can be delivered.
+    for (const id of ['relay.login', 'feishu.delivery_provider', 'feishu.owner_dm', 'directory.groups']) {
+      assert.ok(report.blocking.includes(id), `${id} should block`);
+    }
+    // Mentions and an analysis Agent are genuinely optional.
+    for (const id of ['directory.people', 'agent.analysis', 'sender.setup_token']) {
+      assert.equal(report.checks.find((check) => check.id === id).status, 'optional', id);
+      assert.ok(!report.blocking.includes(id), `${id} must not block`);
+    }
+    // Every unmet check must carry an actionable command.
+    for (const check of report.checks.filter((item) => item.status !== 'ok')) {
+      assert.ok(check.fix && check.fix.length > 0, `${check.id} needs a fix hint`);
+    }
+  } finally {
+    await rm(fresh, { recursive: true, force: true });
+  }
+});
+
+test('Notify Daemon doctor reports the standalone consumer as needing no Agent runtime', async () => {
+  const { runNotifyDaemonCommand } = await import('../notify-daemon/src/daemon.js');
+  const { configureNotifyHandler } = await import('../notify-daemon/src/handler.js');
+  const { notifyDaemonPaths } = await import('../notify-daemon/src/daemon.js');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-doctor-standalone-'));
+  try {
+    const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'default');
+    await configureNotifyHandler(paths.handler, {
+      confirmationProvider: { eventConsumer: 'standalone', account: 'monkey', ownerOpenId: 'ou_owner', enabled: true },
+    });
+    const report = await runNotifyDaemonCommand(['doctor'], { notifyHome: root, instance: 'default', all: true });
+    assert.equal(report.eventConsumer, 'standalone');
+    assert.equal(report.requiresAgentRuntime, false);
+    // No Agent forwarder check at all when the Daemon consumes events itself.
+    assert.deepEqual(report.needsManualVerification, []);
+    assert.equal(report.checks.find((check) => check.id === 'feishu.event_consumer').status, 'ok');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -15,17 +15,36 @@ repository or copy them into public package documentation.
 
 ## Owner setup
 
-Run the owner CLI from a trusted checkout. For a new installation, the Relay
-operator must inject a bootstrap secret at runtime and provide that value to the
-owner through a private channel:
+Running a Notify Daemon is self-service: anyone with a Feishu-authenticated
+MagClaw login can own one, hand out their own Setup Tokens, and receive requests
+through the Relay. Starting a login only mints an unapproved device code — the
+real gate is the browser confirmation page, which needs that login plus a
+one-time CSRF token.
 
 ```sh
 magclaw-notify-daemon login \
   --instance product-a \
   --relay-url https://notify.example.com \
-  --name "Product A" \
-  --bootstrap-token "RUNTIME_BOOTSTRAP_TOKEN"
+  --name "Product A"
 ```
+
+A private deployment can restrict this by setting
+`MAGCLAW_NOTIFY_DAEMON_BOOTSTRAP_TOKEN` on the Relay; owners then add
+`--bootstrap-token "RUNTIME_BOOTSTRAP_TOKEN"`. Leave it unset for an open Relay.
+
+Check what still needs initializing at any point:
+
+```sh
+magclaw-notify-daemon doctor --instance product-a --all
+```
+
+It reports each requirement as `ok`, `missing`, `optional`, or `verify`, with the
+exact command to fix it. Five things are required — Relay login, a Feishu
+delivery credential, the owner DM target, an event consumer, and one group
+mapped to a Chat ID. Mentions, an analysis Agent, and Setup Tokens are optional.
+
+Backing this with an Agent runtime other than OpenClaw, or with no Agent at all:
+read [AGENT-CONTRACT.md](AGENT-CONTRACT.md).
 
 Configure providers and the dedicated approval Agent separately. The analysis
 Agent is never reused as the approval Agent:
