@@ -42,7 +42,7 @@ import {
 } from './handler.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BIN_PATH = path.join(PACKAGE_ROOT, 'bin', 'magclaw-notify.js');
+const BIN_PATH = path.join(PACKAGE_ROOT, 'bin', 'magclaw-notify-daemon.js');
 const DEFAULT_RECONNECT_MIN_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const ownerAuditLogs = new Map();

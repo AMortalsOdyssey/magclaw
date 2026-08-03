@@ -37,6 +37,9 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   const notifyDaemonPackage = await readJson('notify-daemon/package.json');
   assert.equal(notifyDaemonPackage.name, '@magclaw/notify-daemon');
   assert.equal(notifyDaemonPackage.private, true);
+  const notifyDaemonSource = await readFile(path.join(ROOT, 'notify-daemon/src/daemon.js'), 'utf8');
+  assert.match(notifyDaemonSource, /bin', 'magclaw-notify-daemon\.js'/);
+  assert.equal(notifyDaemonPackage.bin['magclaw-notify-daemon'], 'bin/magclaw-notify-daemon.js');
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
