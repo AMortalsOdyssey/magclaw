@@ -94,14 +94,27 @@ export async function startNotifyDaemonControlServer(paths, signal, dependencies
     await chmod(path.dirname(paths.controlSocket), 0o700).catch(() => {});
     await rm(paths.controlSocket, { force: true });
   }
+  const audit = ownerAudit(paths);
   const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     socket.setEncoding('utf8');
     let body = '';
+    // A control client that gives up must never take the Daemon down with it.
+    socket.on('error', () => {});
+    const reply = (payload) => {
+      if (socket.destroyed || socket.writableEnded) return false;
+      try {
+        socket.end(`${JSON.stringify(payload)}\n`);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     socket.on('data', (chunk) => {
       body += chunk;
       if (body.length > 64 * 1024) socket.destroy(new Error('Notify daemon control request is too large.'));
     });
     socket.on('end', async () => {
+      let accepted;
       try {
         const request = JSON.parse(body || '{}');
         if (request.action !== 'confirm') throw new Error('Unsupported Notify daemon control action.');
@@ -111,15 +124,48 @@ export async function startNotifyDaemonControlServer(paths, signal, dependencies
         if (!/^ncf_[a-f0-9]+$/.test(confirmationId)) throw new Error('Invalid Notify confirmation id.');
         if (!['approve', 'once', 'always', 'reject'].includes(decision)) throw new Error('Invalid Notify confirmation decision.');
         if (!/^ou_[A-Za-z0-9]+$/.test(operatorOpenId)) throw new Error('A valid Notify owner open id is required.');
-        const result = await processApproval(paths.handler, {
-          action_value: { source: 'magclaw_notify', instance: paths.instance, confirmationId, decision },
-          operator_id: operatorOpenId,
-        });
-        socket.end(`${JSON.stringify({ ok: true, result })}\n`);
+        accepted = { confirmationId, decision, operatorOpenId };
       } catch (error) {
-        socket.end(`${JSON.stringify({ ok: false, error: clean(error.message, 1000) })}\n`);
+        reply({ ok: false, error: clean(error.message, 1000) });
+        return;
+      }
+      // Acknowledge the decision immediately. Agent analysis and Feishu delivery
+      // can take minutes, far longer than any caller should hold this socket open;
+      // the original approval card carries the final outcome.
+      reply({
+        ok: true,
+        result: {
+          accepted: true,
+          confirmationId: accepted.confirmationId,
+          decision: accepted.decision,
+          note: 'Decision accepted. Delivery continues asynchronously; the original approval card carries the final result.',
+        },
+      });
+      try {
+        const result = await processApproval(paths.handler, {
+          action_value: { source: 'magclaw_notify', instance: paths.instance, confirmationId: accepted.confirmationId, decision: accepted.decision },
+          operator_id: accepted.operatorOpenId,
+        });
+        await audit.append({
+          event: 'owner.control.confirm_completed',
+          outcome: result?.result?.status || result?.results?.[0]?.status || 'completed',
+          confirmationId: accepted.confirmationId,
+          metadata: { decision: accepted.decision },
+        });
+      } catch (error) {
+        await audit.append({
+          event: 'owner.control.confirm_completed',
+          outcome: 'failed',
+          severity: 'error',
+          confirmationId: accepted.confirmationId,
+          metadata: { decision: accepted.decision, ...auditError(error) },
+        });
+        process.stderr.write(`[magclaw-notify] control confirm failed: ${clean(error.message, 500)}\n`);
       }
     });
+  });
+  server.on('error', (error) => {
+    process.stderr.write(`[magclaw-notify] control socket error: ${clean(error.message, 500)}\n`);
   });
   await new Promise((resolve, reject) => {
     const onError = (error) => { server.off('listening', onListening); reject(error); };

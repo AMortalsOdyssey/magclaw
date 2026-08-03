@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -417,18 +418,66 @@ test('Notify approval subprocesses submit validated decisions to the single daem
       return { handled: true, confirmation: { id: event.action_value.confirmationId }, action: event.action_value };
     },
   });
-  assert.equal(control.running, true);
-  if (process.platform !== 'win32') assert.equal((await stat(paths.controlSocket)).mode & 0o777, 0o600);
-  const result = await requestNotifyDaemonControl(paths, {
-    action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1',
+  try {
+    assert.equal(control.running, true);
+    if (process.platform !== 'win32') assert.equal((await stat(paths.controlSocket)).mode & 0o777, 0o600);
+    // The decision is acknowledged immediately; delivery continues asynchronously
+    // because Agent analysis and Feishu delivery far outlast any caller's socket.
+    const result = await requestNotifyDaemonControl(paths, {
+      action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1',
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(result.confirmationId, 'ncf_a12f');
+    assert.equal(result.decision, 'once');
+    for (let attempt = 0; attempt < 100 && !received.length; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(received.length, 1);
+    assert.equal(received[0].operator_id, 'ou_owner1');
+    await assert.rejects(
+      requestNotifyDaemonControl(paths, { action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: '' }),
+      /valid Notify owner open id/i,
+    );
+  } finally {
+    controller.abort();
+  }
+});
+
+test('Notify daemon control server survives a client that disconnects before the decision completes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-control-epipe-'));
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'control-epipe');
+  let released;
+  const processed = new Promise((resolve) => { released = resolve; });
+  const controller = new AbortController();
+  const control = await startNotifyDaemonControlServer(paths, controller.signal, {
+    processApproval: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      released();
+      return { handled: true, confirmation: { id: 'ncf_a12f' }, action: {} };
+    },
   });
-  assert.equal(result.handled, true);
-  assert.equal(received[0].operator_id, 'ou_owner1');
-  await assert.rejects(
-    requestNotifyDaemonControl(paths, { action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: '' }),
-    /valid Notify owner open id/i,
-  );
-  controller.abort();
+  try {
+    // Abandon the socket the instant the request is written, so the Daemon's own
+    // reply lands on a dead peer. That must not raise an unhandled error event.
+    await new Promise((resolve, reject) => {
+      const socket = net.createConnection(paths.controlSocket);
+      socket.once('error', reject);
+      socket.once('connect', () => {
+        socket.end(`${JSON.stringify({ action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1' })}\n`);
+        socket.destroy();
+        resolve();
+      });
+    });
+    await processed;
+    // Still serving after the dead-peer write.
+    const result = await requestNotifyDaemonControl(paths, {
+      action: 'confirm', confirmationId: 'ncf_b34e', decision: 'reject', operatorOpenId: 'ou_owner1',
+    });
+    assert.equal(result.accepted, true);
+    assert.equal(control.running, true);
+  } finally {
+    controller.abort();
+  }
 });
 
 test('Notify approval status uses the dedicated approval Agent and reports effective policy drift', async () => {
