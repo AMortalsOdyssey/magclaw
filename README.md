@@ -325,6 +325,7 @@ access, secrets, and local filesystem reads stay on the local runner.
 | `npm run test:flow` | Run heavier end-to-end flow tests. |
 | `npm run test:pg` | Run PostgreSQL persistence tests; requires `MAGCLAW_TEST_DATABASE_URL` for PG-backed cases. |
 | `npm run daemon:pack` | Dry-run the daemon npm package contents. |
+| `npm run version:recommend -- --version <semver> --change <type>` | Calculate the next package version and npm channel from [VERSIONING.md](./VERSIONING.md). |
 
 Test selection lives in [TESTING.md](./TESTING.md). The default loop is targeted:
 use quick tests for narrow server/client changes, UI tests for rendering

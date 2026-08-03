@@ -298,6 +298,7 @@ Codex 进程控制、shell 权限、密钥和本地文件系统读取都保留�
 | `npm run test:flow` | 运行更重的端到端 flow tests。 |
 | `npm run test:pg` | 运行 PostgreSQL persistence tests；PG case 需要 `MAGCLAW_TEST_DATABASE_URL`。 |
 | `npm run daemon:pack` | dry-run daemon npm package 内容。 |
+| `npm run version:recommend -- --version <semver> --change <type>` | 按 [VERSIONING.md](./VERSIONING.md) 自动计算下一个包版本和 npm 发布通道。 |
 
 测试选择规则在 [TESTING.md](./TESTING.md)。默认循环是 targeted：窄改动跑 quick
 tests，渲染合同跑 UI tests，跨 surface 行为跑 flow tests，云端持久化或迁移相关改动跑

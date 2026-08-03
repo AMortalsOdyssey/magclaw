@@ -48,6 +48,7 @@ const suites = {
     'test/system-routes.test.js',
     'test/task-routes.test.js',
     'test/ui-sse-render.test.js',
+    'test/version-policy.test.js',
     'test/web-assets.test.js',
   ],
   ui: [

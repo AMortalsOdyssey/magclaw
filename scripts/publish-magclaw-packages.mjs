@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { inferDistTag } from './version-policy.mjs';
 
 const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/cli-core', 'cli-core'],
@@ -59,14 +60,16 @@ function packageVersionFromNpmResult(result) {
   return cleanText(result?.version || result?.latest);
 }
 
-function verifyNpmPackage(pkg, npmResult) {
+function verifyNpmPackage(pkg, npmResult, options = {}) {
   const version = packageVersionFromNpmResult(npmResult);
   if (version !== pkg.version) {
     throw new Error(`npm registry returned ${pkg.name}@${version || 'unknown'}, expected ${pkg.version}.`);
   }
-  const latest = cleanText(npmResult?.distTags?.latest || npmResult?.['dist-tags']?.latest);
-  if (latest && latest !== pkg.version) {
-    throw new Error(`npm latest dist-tag for ${pkg.name} is ${latest}, expected ${pkg.version}.`);
+  const distTag = cleanText(options.distTag || pkg.distTag || inferDistTag(pkg.version));
+  const distTags = npmResult?.distTags || npmResult?.['dist-tags'] || {};
+  const taggedVersion = cleanText(distTags[distTag]);
+  if (taggedVersion !== pkg.version) {
+    throw new Error(`npm ${distTag} dist-tag for ${pkg.name} is ${taggedVersion || 'missing'}, expected ${pkg.version}.`);
   }
 }
 
@@ -108,6 +111,7 @@ export async function runPackagePublishRelease(options = {}) {
     name: cleanText(pkg.name),
     version: cleanText(pkg.version),
     dir: cleanText(pkg.dir),
+    distTag: cleanText(pkg.distTag || options.distTag) || inferDistTag(pkg.version),
   })).filter((pkg) => pkg.name && pkg.version);
   if (!packages.length) throw new Error('No MagClaw packages selected for release.');
 
@@ -135,16 +139,22 @@ export async function runPackagePublishRelease(options = {}) {
     for (const pkg of packages) {
       if (!verifyOnly) {
         phase = 'npm-publish';
-        logger.info?.(`[packages:publish] publishing ${pkg.name}@${pkg.version}`);
-        await npmPublish(pkg, { registryUrl, publishId });
+        logger.info?.(`[packages:publish] publishing ${pkg.name}@${pkg.version} with dist-tag ${pkg.distTag}`);
+        await npmPublish(pkg, { registryUrl, publishId, distTag: pkg.distTag });
       } else {
         logger.info?.(`[packages:publish] verify-only checking ${pkg.name}@${pkg.version}`);
       }
 
       phase = 'npm-verify';
-      const npmResult = await verifyWithRetry(pkg, npmVerify, { registryUrl, publishId, verifyOnly, logger });
-      verifyNpmPackage(pkg, npmResult);
-      verified.push({ packageName: pkg.name, version: pkg.version, npm: npmResult });
+      const npmResult = await verifyWithRetry(pkg, npmVerify, {
+        registryUrl,
+        publishId,
+        verifyOnly,
+        logger,
+        distTag: pkg.distTag,
+      });
+      verifyNpmPackage(pkg, npmResult, { distTag: pkg.distTag });
+      verified.push({ packageName: pkg.name, version: pkg.version, distTag: pkg.distTag, npm: npmResult });
     }
 
     logger.info?.(`[packages:publish] completed ${publishId}`);
@@ -270,7 +280,7 @@ async function defaultNpmPackDryRun(pkg, options = {}) {
 }
 
 async function defaultNpmPublish(pkg, options = {}) {
-  const args = ['publish', pkg.dir, '--access', 'public', '--tag', 'latest'];
+  const args = ['publish', pkg.dir, '--access', 'public', '--tag', options.distTag || inferDistTag(pkg.version)];
   if (options.registryUrl) args.push('--registry', options.registryUrl);
   return runCommand('npm', args);
 }
@@ -296,7 +306,8 @@ function usage() {
   return [
     'Usage: node scripts/publish-magclaw-packages.mjs [--dry-run|--verify-only|--sync-only] [--package <name>] [--registry <url>]',
     '',
-    'Publishes selected MagClaw npm packages, then verifies npm latest dist-tags.',
+    'Publishes selected MagClaw npm packages, then verifies the dist-tag inferred from each SemVer.',
+    'Stable versions use latest; alpha/dev/canary use canary; all other prereleases use next.',
     'If @magclaw/cli-core is selected, @magclaw/daemon and @magclaw/computer are included so shared daemon/computer CLI changes ship with both entry packages.',
     '@magclaw/team-sharing is a standalone package; publish it explicitly with --package @magclaw/team-sharing.',
     '--verify-only verifies already-published npm versions without publishing; --sync-only is kept as a deprecated alias.',

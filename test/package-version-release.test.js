@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import os from 'node:os';
 import { collectReleasePackages, runPackagePublishRelease, validateDependencyAvailability } from '../scripts/publish-magclaw-packages.mjs';
@@ -11,6 +11,7 @@ const releasePackages = [
   { name: '@magclaw/computer', version: '0.1.40', dir: '/repo/computer' },
   { name: '@magclaw/team-sharing', version: '0.1.40', dir: '/repo/team-sharing' },
 ];
+const notifyManifest = JSON.parse(await readFile(new URL('../notify/package.json', import.meta.url), 'utf8'));
 
 async function writePackage(root, dir, pkg) {
   const packageDir = join(root, dir);
@@ -134,7 +135,31 @@ test('collect release packages allows Notify to publish independently', async ()
     packageNames: ['@magclaw/notify'],
   });
   assert.deepEqual(packages.map((pkg) => pkg.name), ['@magclaw/notify']);
-  assert.equal(packages[0].version, '0.3.6');
+  assert.equal(packages[0].version, notifyManifest.version);
+});
+
+test('package release runner infers next for prereleases and preserves latest', async () => {
+  const calls = [];
+  const prerelease = [{
+    name: '@magclaw/notify',
+    version: '0.4.0-beta.1',
+    dir: '/repo/notify',
+  }];
+
+  const result = await runPackagePublishRelease({
+    packages: prerelease,
+    publishId: 'pkgrel_prerelease',
+    npmPublish: async (pkg, options) => calls.push(['npm-publish', pkg.name, options.distTag]),
+    npmVerify: async (pkg) => ({
+      packageName: pkg.name,
+      version: pkg.version,
+      distTags: { latest: '0.3.7', next: pkg.version },
+    }),
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  assert.deepEqual(calls, [['npm-publish', '@magclaw/notify', 'next']]);
+  assert.equal(result.verified[0].distTag, 'next');
 });
 
 test('package release runner publishes packages and verifies npm latest without DB access', async () => {
