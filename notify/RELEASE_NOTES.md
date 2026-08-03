@@ -1,99 +1,60 @@
 # @magclaw/notify Release Notes
 
-## 0.3.7 - 2026-08-03 - Balanced local audit retention
+## 0.4.0 - 2026-08-03 - Sender-only package boundary
 
 ### changed
 
-- Reduces sender and owner Daemon audit retention to 20 MiB by 30 files, exactly 10 times the original capacity and at most 600 MiB per local location.
-
-## 0.3.6 - 2026-08-03 - Safe OpenClaw group context
-
-### new
-
-- Optionally mirrors each successfully delivered, sanitized Notify conclusion into the matching shared OpenClaw Feishu group session, so later Kizuna questions can use the exact update as context without creating a second group message.
-
-### security
-
-- Redacts local paths, private addresses, host names, Feishu identifiers, credentials, authorization headers, and sensitive URL query parameters before Agent analysis, card delivery, and group-context mirroring.
-
-## 0.3.5 - 2026-08-03 - Deep local audit retention
-
-### new
-
-- Expands sender and owner Daemon audit retention to 20 MiB by 300 files, about 5.86 GiB per local location and exactly 100 times the previous capacity.
-
-### performance
-
-- Keeps ordinary audit writes constant-time by scanning and pruning shards only during initialization, date changes, or rotation, and reads audit tails backward in bounded chunks.
-
-## 0.3.4 - 2026-08-03 - Owner-only runtime logs
-
-### security
-
-- Enforces `0700` on the local Daemon runtime log directory and `0600` on stdout/stderr files during foreground startup, background startup, restart, and autostart enablement.
-
-## 0.3.3 - 2026-08-03 - Reliable background provider commands
+- Limits the public package to sender CLI commands, structured summaries,
+  sender-local audit support, Agent Skills, and Claude Desktop MCP tools.
+- Owner-only commands are no longer distributed by this package.
 
 ### fixed
 
-- Gives launchd and systemd owner services a stable executable search path and resolves Homebrew or user-local `openclaw` and `lark-cli` commands even when the daemon starts outside an interactive shell.
-- Adds an explicit OpenClaw approval-handler toggle. Its per-instance executable accepts only a stored confirmation ID and one fixed card decision, so owners do not need to allowlist the general Notify CLI.
-
-### new
-
-- Adds correlation-friendly JSONL audit trails for sender CLI and MCP calls, Relay HTTP and WebSocket routing, owner Daemon commands, OpenClaw analysis, approval cards, and final Feishu delivery, with local inspection commands and bounded rotation.
+- Preserves existing Claude Desktop MCP configuration, refuses to overwrite
+  invalid JSON, creates a backup before changing an existing configuration,
+  and replaces the file atomically.
+- Keeps distinct explicitly submitted requests distinct even when their visible
+  summaries are identical.
 
 ### security
 
-- Persists sanitized cloud audit events to rotating files, structured server logs, and `cloud_audit_logs`; client IPs are keyed hashes and credentials, Feishu identifiers, message bodies, Markdown, instructions, and card content are excluded.
+- Removes owner runtime examples, private deployment details, and real-world
+  identity examples from public package documentation.
+- Retains the current-turn explicit authorization requirement for every send.
 
-## 0.3.2 - 2026-08-02 - Persistent custom Daemon homes
+## 0.3.7 - 2026-08-03 - Balanced sender audit retention
 
-### fixed
+- Keeps sender-local audit retention bounded at 20 MiB by 30 files.
 
-- Preserves an explicitly selected `MAGCLAW_NOTIFY_HOME` in generated launchd, systemd user, and Windows Scheduled Task commands, so an upgraded background service cannot silently start against an empty default state directory.
+## 0.3.6 - 2026-08-03 - Safer shared context
 
-## 0.3.1 - 2026-08-02 - Multi-instance owner services
-
-### new
-
-- Adds isolated `--instance` owner Daemons so one owner and machine can issue separate Setup Tokens, directories, grants, providers, receipts, and cloud Relay routes for multiple projects.
-- Adds per-instance launchd, systemd user, and Windows Scheduled Task autostart management plus start, restart, stop, status, enable, and disable commands.
-- Adds Setup Token disable with optional revocation of every existing sender session; rotation explicitly re-enables a disabled setup entry point.
-
-### fixed
-
-- Prevents the Notify Daemon from competing with OpenClaw for the same Feishu application events. OpenClaw is the default single Monkey event consumer and hands Notify card actions to the deterministic local CLI; standalone Feishu consumption must now be enabled explicitly.
+- Redacts local paths, private addresses, host names, Feishu identifiers,
+  credentials, authorization headers, and sensitive URL parameters from public
+  notification content.
 
 ## 0.3.0 - 2026-08-02 - Structured summaries and multi-host tools
 
-### new
+- Adds one normalized summary schema for features, fixes, performance work,
+  investigations, design decisions, deployments, research, documentation,
+  mixed tasks, and custom sections.
+- Adds native Codex and Claude Code Skill installs plus local stdio MCP tools
+  for Claude Desktop on POSIX and Windows.
+- Adds safe links and up to four public HTTPS images.
+- Disables implicit Skill invocation and requires current-turn authorization in
+  the Skill, CLI, API request, and MCP send tool.
 
-- Adds one normalized summary schema for features, fixes, performance work, investigations, design decisions, deployments, research, documentation, mixed tasks, and custom sections.
-- Adds native Codex and Claude Code Skill installs plus a local stdio MCP tool for Claude Desktop, including POSIX and Windows configuration.
-- Adds Feishu card links and up to four public HTTPS images uploaded by the owner bot after private-network, type, redirect, and size checks.
+## 0.2.2 - 2026-08-01 - Asynchronous sender states
 
-### security
-
-- Keeps implicit Skill invocation disabled and requires current-turn authorization in the Skill, CLI, Relay, and MCP send tool.
-- Preserves client-structured facts during owner-side alias resolution and continues to keep Chat IDs, Open IDs, credentials, and Feishu image keys local.
-
-## 0.2.2 - 2026-08-01 - Per-user target approvals and async acknowledgement
-### new
-- Adds 48-hour owner approval batches scoped to one authenticated Feishu user and one local group, with allow-once, permanent-allow, and reject decisions.
-- Adds Monkey card-action consumption over Feishu WebSocket, owner-only operator checks, local target grant audit/revocation, and sender-visible approved target names.
-- Adds a two-phase Relay protocol: HTTPS waits only for the Daemon permission ACK while Agent parsing and Feishu delivery finish asynchronously.
-### fixed
-- Deduplicates owner cards for repeated requests in the same pending batch and automatically resumes stored requests after approval.
-- Marks untouched approval batches expired without creating a grant; the next explicit send starts a new batch.
+- Adds sender-visible `processing`, `awaiting_owner_approval`, `sent`,
+  `failed`, `rejected`, and `approval_expired` states.
+- Prevents repeated pending requests from creating duplicate authorization
+  prompts while preserving each submitted request's final state.
 
 ## 0.2.1 - 2026-08-01 - Sender access controls
-### security
-- Adds Feishu-tenant-bound 90-day sender sessions, owner access audit and revocation, and Setup Token rotation.
 
-## 0.2.0 - 2026-08-01 - Standalone Notify Relay and Daemon
-### new
-- Adds an independent owner-side Notify Daemon that connects only to the Notify Relay and does not depend on MagClaw Server, Computer, workspace, or the existing Daemon.
-- Adds stable optional-name Daemon handles, machine binding, high-entropy Setup Tokens, exact Relay routing, local Agent providers, directory mapping, confirmations, and Feishu card delivery.
-### security
-- Short Daemon handles are identifiers only; sender authorization uses a non-enumerable Setup Token that is stored by the Relay only as a hash.
+- Adds Feishu-tenant-bound sender sessions and owner-managed revocation.
+
+## 0.2.0 - 2026-08-01 - Initial Notify sender
+
+- Adds authenticated, explicitly authorized, structured notification requests
+  without exposing group or person identifiers to the sender.

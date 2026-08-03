@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { normalizeNotifyInstance } from '../../notify/src/instance.js';
+import { normalizeNotifyInstance } from '../../notify-daemon/src/instance.js';
 import {
   NOTIFY_DEVICE_TTL_MS,
   NOTIFY_TOKEN_TTL_MS,
@@ -26,8 +26,38 @@ function htmlEscape(value = '') {
   return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function approvalHtml(request = {}) {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fffaf7;color:#1a1a1a;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.card{width:min(440px,calc(100% - 40px));padding:30px;border:2px solid #1a1a1a;border-radius:8px;box-shadow:5px 5px 0 #1a1a1a;background:#fff}.mark{color:#ff3faa;font-weight:900;letter-spacing:.08em}h1{font-size:22px}p{color:#67515f;line-height:1.55}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>已批准这台设备</h1><p>登录身份：${htmlEscape(request.approvedUser?.name || request.approvedUser?.email || 'MagClaw member')}</p><p>可以回到终端继续。这个授权只允许显式提交 Notify 请求，不会公开本地群聊或飞书身份目录。</p></main></body></html>`;
+const APPROVAL_PAGE_STYLE = 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fffaf7;color:#1a1a1a;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.card{width:min(500px,calc(100% - 40px));padding:30px;border:2px solid #1a1a1a;border-radius:8px;box-shadow:5px 5px 0 #1a1a1a;background:#fff}.mark{color:#ff3faa;font-weight:900;letter-spacing:.08em}h1{font-size:22px}p,dt,dd{color:#67515f;line-height:1.55}dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 14px}dd{margin:0;overflow-wrap:anywhere}button{width:100%;margin-top:18px;padding:12px 16px;border:2px solid #1a1a1a;border-radius:6px;background:#ff3faa;color:#fff;font:inherit;font-weight:800;cursor:pointer}';
+
+function approvalDeviceRows(request = {}) {
+  const fingerprint = String(request.machineFingerprint || '');
+  return `<dl><dt>设备</dt><dd>${htmlEscape(request.client?.hostname || '未提供')}</dd><dt>系统</dt><dd>${htmlEscape([request.client?.platform, request.client?.arch].filter(Boolean).join(' / ') || '未提供')}</dd><dt>设备指纹</dt><dd>${htmlEscape(fingerprint ? `…${fingerprint.slice(-8)}` : '未提供')}</dd><dt>请求时间</dt><dd>${htmlEscape(request.createdAt || '')}</dd></dl>`;
+}
+
+function approvalConfirmationHtml(request = {}, csrfToken = '', action = '') {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>确认授权这台设备？</h1>${approvalDeviceRows(request)}<p>只有在你刚刚主动从终端发起此登录时才继续。确认后，设备会获得与当前 Notify 身份对应的有限权限。</p><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="user_code" value="${htmlEscape(request.userCode || '')}"><input type="hidden" name="csrf_token" value="${htmlEscape(csrfToken)}"><button type="submit">确认并授权</button></form></main></body></html>`;
+}
+
+function approvalSuccessHtml(request = {}, installation = null) {
+  const handle = installation?.handle || request.relayHandle || '';
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>已批准这台设备</h1>${approvalDeviceRows(request)}${handle ? `<p>Notify 标识：${htmlEscape(handle)}</p>` : ''}<p>登录身份：${htmlEscape(request.approvedUser?.name || request.approvedUser?.email || 'MagClaw member')}</p><p>可以回到终端继续。</p></main></body></html>`;
+}
+
+function safeSecretEqual(raw = '', expectedHash = '') {
+  const actual = Buffer.from(hashNotifySecret(raw));
+  const expected = Buffer.from(String(expectedHash || ''));
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+async function readApprovalBody(req, readJson) {
+  if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) return req.body;
+  const type = String(req.headers?.['content-type'] || '').toLowerCase();
+  if (type.includes('application/json')) return readJson(req);
+  let raw = '';
+  for await (const chunk of req) {
+    raw += String(chunk);
+    if (raw.length > 16 * 1024) throw new Error('Notify approval form is too large.');
+  }
+  return Object.fromEntries(new URLSearchParams(raw));
 }
 
 function requestIp(req) {
@@ -40,7 +70,8 @@ function notifyRouteAuditEvent(method = '', pathname = '') {
   ));
   const names = {
     'POST notify/daemon/auth/start': 'relay.api.daemon_auth_started',
-    'GET notify/daemon/auth/approve': 'relay.api.daemon_auth_approved',
+    'GET notify/daemon/auth/approve': 'relay.api.daemon_auth_reviewed',
+    'POST notify/daemon/auth/approve': 'relay.api.daemon_auth_approved',
     'POST notify/daemon/auth/token': 'relay.api.daemon_token_polled',
     'GET notify/daemon/access': 'relay.api.sender_access_listed',
     'POST notify/daemon/access/revoke': 'relay.api.sender_access_revoked',
@@ -48,7 +79,8 @@ function notifyRouteAuditEvent(method = '', pathname = '') {
     'POST notify/daemon/setup-token/disable': 'relay.api.setup_token_disabled',
     'POST notify/daemon/result': 'relay.api.delivery_result_reported',
     'POST notify/auth/start': 'relay.api.sender_auth_started',
-    'GET notify/auth/approve': 'relay.api.sender_auth_approved',
+    'GET notify/auth/approve': 'relay.api.sender_auth_reviewed',
+    'POST notify/auth/approve': 'relay.api.sender_auth_approved',
     'POST notify/auth/token': 'relay.api.sender_token_polled',
     'GET notify/auth/whoami': 'relay.api.sender_identity_read',
     'POST notify/auth/revoke': 'relay.api.sender_session_revoked',
@@ -217,6 +249,7 @@ export async function handleNotifyApi(req, res, url, deps) {
   const {
     currentActor = () => null,
     currentUser = () => null,
+    notifyDaemonBootstrapSecret = '',
     notifyRelay,
     getState,
     makeId,
@@ -278,6 +311,13 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/notify/daemon/auth/start') {
     const body = await readJson(req);
+    const suppliedBootstrap = compactNotifyText(req.headers?.['x-magclaw-notify-bootstrap'] || body.bootstrapToken || body.bootstrap_token || '', 500);
+    const bootstrapAllowed = notifyDaemonBootstrapSecret
+      && safeSecretEqual(suppliedBootstrap, hashNotifySecret(notifyDaemonBootstrapSecret));
+    if (!browserUser && !bootstrapAllowed) {
+      sendError(res, 401, 'Notify Daemon login must be started by an authenticated owner or with the owner bootstrap token.');
+      return true;
+    }
     let requestedInstance;
     try {
       requestedInstance = normalizeNotifyInstance(body.instance || 'default');
@@ -297,7 +337,8 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     const deviceCode = randomNotifySecret('mcn_daemon_dev');
-    const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const rawUserCode = crypto.randomBytes(5).toString('hex').toUpperCase();
+    const userCode = `${rawUserCode.slice(0, 5)}-${rawUserCode.slice(5)}`;
     const request = {
       id: makeId('nau'),
       type: 'auth_device',
@@ -351,6 +392,52 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendError(res, 403, feishuAccess.reason);
       return true;
     }
+    const installation = request.relayId ? notifyInstallation(state, request.relayId) : null;
+    if (installation && installation.ownerUserId !== browserUser.id) {
+      sendError(res, 403, 'Only the Notify Relay owner can approve this Daemon.');
+      return true;
+    }
+    const csrfToken = randomNotifySecret('mcn_csrf');
+    request.approvalCsrfHash = hashNotifySecret(csrfToken);
+    request.approvalActorId = browserUser.id;
+    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.now() + 5 * 60_000)).toISOString();
+    request.updatedAt = now();
+    await persistState(request.workspaceId ? { workspaceId: request.workspaceId, reason: 'notify_daemon_auth_review' } : undefined);
+    emitAudit(200, { relayId: request.relayId, status: 'confirmation_required' }, 'confirmation_required');
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(approvalConfirmationHtml(request, csrfToken, '/notify/daemon/auth/approve'));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/notify/daemon/auth/approve') {
+    const body = await readApprovalBody(req, readJson);
+    const request = findDeviceRequest(state, '', body.user_code || body.userCode, 'daemon');
+    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.now()) {
+      sendError(res, 404, 'Notify Daemon login request not found, already used, or expired.');
+      return true;
+    }
+    if (!browserUser) {
+      sendError(res, 401, 'Notify owner login is required.');
+      return true;
+    }
+    if (!consumeRate(state, { workspaceId: request.workspaceId || actorWorkspaceId || 'notify', key: `daemon-approve:${requestIp(req)}:${browserUser.id}`, limit: START_LIMIT, now })) {
+      sendError(res, 429, 'Too many Notify Daemon approval attempts.');
+      return true;
+    }
+    const csrfToken = compactNotifyText(body.csrf_token || body.csrfToken || '', 500);
+    if (
+      request.approvalActorId !== browserUser.id
+      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.now()
+      || !safeSecretEqual(csrfToken, request.approvalCsrfHash)
+    ) {
+      sendError(res, 403, 'Notify approval confirmation is invalid or expired. Reload the approval page.');
+      return true;
+    }
+    const feishuAccess = feishuAccessAllowed(state, null, browserUser);
+    if (!feishuAccess.allowed) {
+      sendError(res, 403, feishuAccess.reason);
+      return true;
+    }
     let installation = request.relayId ? notifyInstallation(state, request.relayId) : null;
     if (!installation) {
       installation = notifyRecords(state).find((record) => (
@@ -368,19 +455,12 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     if (!installation) {
       installation = {
-        id: makeId('nrl'),
-        type: 'installation',
-        workspaceId: actorWorkspaceId,
-        ownerUserId: browserUser.id || '',
-        owner: publicAuthUser(browserUser),
-        name: request.relayName || 'MagClaw Notify',
-        instance: request.instance || 'default',
+        id: makeId('nrl'), type: 'installation', workspaceId: actorWorkspaceId,
+        ownerUserId: browserUser.id || '', owner: publicAuthUser(browserUser),
+        name: request.relayName || 'MagClaw Notify', instance: request.instance || 'default',
         handle: relayHandle(request.relayName, request.machineFingerprint, request.instance || 'default'),
-        machineFingerprint: request.machineFingerprint,
-        setupTokenVersion: 1,
-        enabled: true,
-        createdAt: now(),
-        updatedAt: now(),
+        machineFingerprint: request.machineFingerprint, setupTokenVersion: 1, enabled: true,
+        createdAt: now(), updatedAt: now(),
       };
       notifyRecords(state).push(installation);
     }
@@ -391,11 +471,13 @@ export async function handleNotifyApi(req, res, url, deps) {
     request.status = 'approved';
     request.approvedUser = publicAuthUser(browserUser);
     request.approvedAt = now();
+    request.approvalCsrfHash = '';
+    request.approvalCsrfExpiresAt = null;
     request.updatedAt = now();
     await persistState(request.workspaceId ? { workspaceId: request.workspaceId, reason: 'notify_daemon_auth_approve' } : undefined);
     emitAudit(200, { relayId: installation.id, status: 'approved' });
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(approvalHtml(request));
+    res.end(approvalSuccessHtml(request, installation));
     return true;
   }
 
@@ -649,7 +731,8 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     const deviceCode = randomNotifySecret('mcn_dev');
-    const userCode = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const rawUserCode = crypto.randomBytes(5).toString('hex').toUpperCase();
+    const userCode = `${rawUserCode.slice(0, 5)}-${rawUserCode.slice(5)}`;
     const request = {
       id: makeId('nau'),
       type: 'auth_device',
@@ -666,8 +749,8 @@ export async function handleNotifyApi(req, res, url, deps) {
         platform: compactNotifyText(body.client?.platform || '', 40),
         arch: compactNotifyText(body.client?.arch || '', 40),
       },
-      status: browserUser ? 'approved' : 'pending',
-      approvedUser: browserUser ? publicAuthUser(browserUser) : null,
+      status: 'pending',
+      approvedUser: null,
       createdAt: now(),
       updatedAt: now(),
       expiresAt: new Date(Date.now() + NOTIFY_DEVICE_TTL_MS).toISOString(),
@@ -712,14 +795,65 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendError(res, installation ? 403 : 404, installation ? feishuAccess.reason : 'Notify Relay installation is unavailable.');
       return true;
     }
+    const csrfToken = randomNotifySecret('mcn_csrf');
+    request.approvalCsrfHash = hashNotifySecret(csrfToken);
+    request.approvalActorId = browserUser.id;
+    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.now() + 5 * 60_000)).toISOString();
+    request.updatedAt = now();
+    await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_review' });
+    emitAudit(200, { relayId: request.relayId, status: 'confirmation_required' }, 'confirmation_required');
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(approvalConfirmationHtml(request, csrfToken, '/notify/auth/approve'));
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/notify/auth/approve') {
+    const body = await readApprovalBody(req, readJson);
+    const request = findDeviceRequest(state, '', body.user_code || body.userCode, 'client');
+    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.now()) {
+      sendError(res, 404, 'Notify login request not found, already used, or expired.');
+      return true;
+    }
+    if (!browserUser) {
+      sendError(res, 401, 'Notify login is required.');
+      return true;
+    }
+    if (!consumeRate(state, { workspaceId: request.workspaceId || actorWorkspaceId || 'notify', key: `sender-approve:${requestIp(req)}:${browserUser.id}`, limit: START_LIMIT, now })) {
+      sendError(res, 429, 'Too many Notify approval attempts.');
+      return true;
+    }
+    const csrfToken = compactNotifyText(body.csrf_token || body.csrfToken || '', 500);
+    if (
+      request.approvalActorId !== browserUser.id
+      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.now()
+      || !safeSecretEqual(csrfToken, request.approvalCsrfHash)
+    ) {
+      sendError(res, 403, 'Notify approval confirmation is invalid or expired. Reload the approval page.');
+      return true;
+    }
+    const installation = notifyInstallation(state, request.relayId);
+    if (installation && setupTokenVersion(installation) !== Number(request.setupTokenVersion || 1)) {
+      request.status = 'rejected';
+      request.updatedAt = now();
+      await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_setup_token_rotated' });
+      sendError(res, 403, 'Notify Setup Token was rotated. Start login again with the new Setup Token.');
+      return true;
+    }
+    const feishuAccess = feishuAccessAllowed(state, installation, browserUser);
+    if (!installation || !feishuAccess.allowed) {
+      sendError(res, installation ? 403 : 404, installation ? feishuAccess.reason : 'Notify Relay installation is unavailable.');
+      return true;
+    }
     request.status = 'approved';
     request.approvedUser = publicAuthUser(browserUser);
     request.approvedAt = now();
+    request.approvalCsrfHash = '';
+    request.approvalCsrfExpiresAt = null;
     request.updatedAt = now();
     await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_approve' });
     emitAudit(200, { relayId: request.relayId, status: 'approved' });
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(approvalHtml(request));
+    res.end(approvalSuccessHtml(request, installation));
     return true;
   }
 
@@ -735,6 +869,14 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, status: 'expired' });
       return true;
     }
+    const installation = notifyInstallation(state, request.relayId);
+    if (!installation || setupTokenVersion(installation) !== Number(request.setupTokenVersion || 1)) {
+      request.status = 'rejected';
+      request.updatedAt = now();
+      await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_setup_token_rotated' });
+      sendJson(res, 200, { ok: true, status: 'rejected', reason: 'setup_token_rotated' });
+      return true;
+    }
     if (request.status !== 'approved') {
       sendJson(res, 200, { ok: true, status: request.status || 'pending' });
       return true;
@@ -742,14 +884,6 @@ export async function handleNotifyApi(req, res, url, deps) {
     const fingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
     if (request.machineFingerprint && request.machineFingerprint !== fingerprint) {
       sendError(res, 401, 'Notify login was requested from another machine.');
-      return true;
-    }
-    const installation = notifyInstallation(state, request.relayId);
-    if (!installation || setupTokenVersion(installation) !== Number(request.setupTokenVersion || 1)) {
-      request.status = 'rejected';
-      request.updatedAt = now();
-      await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_setup_token_rotated' });
-      sendJson(res, 200, { ok: true, status: 'rejected', reason: 'setup_token_rotated' });
       return true;
     }
     const token = randomNotifySecret('mcn');

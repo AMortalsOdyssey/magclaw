@@ -1762,6 +1762,7 @@ function notifyApiDeps() {
   return {
     currentActor: (req) => cloudAuth.currentActor(req),
     currentUser: (req) => cloudAuth.currentUser(req),
+    notifyDaemonBootstrapSecret: process.env.MAGCLAW_NOTIFY_DAEMON_BOOTSTRAP_TOKEN || '',
     audit: recordNotifyCloudAudit,
     notifyRelay,
     getState: () => state,

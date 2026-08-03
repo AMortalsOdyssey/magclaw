@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/notify",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "Explicit Agent Skill and MCP tool for structured Feishu notifications.",
   "type": "module",
   "bin": {
@@ -10,13 +10,15 @@
     "access": "public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.2",
-    "ws": "^8.21.0"
+    "@modelcontextprotocol/sdk": "^1.25.2"
   },
   "files": [
     "bin/",
-    "src/",
-    "skills/",
+    "src/audit.js",
+    "src/cli.js",
+    "src/mcp.js",
+    "src/summary.js",
+    "skills/magclaw-notify/",
     "RELEASE_NOTES.md",
     "README.md"
   ],

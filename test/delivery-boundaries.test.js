@@ -32,7 +32,11 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   const notifyPackage = await readJson('notify/package.json');
   assert.equal(notifyPackage.name, '@magclaw/notify');
   assert.equal(notifyPackage.publishConfig.access, 'public');
-  assert.deepEqual(notifyPackage.files, ['bin/', 'src/', 'skills/', 'RELEASE_NOTES.md', 'README.md']);
+  assert.deepEqual(notifyPackage.files, ['bin/', 'src/audit.js', 'src/cli.js', 'src/mcp.js', 'src/summary.js', 'skills/magclaw-notify/', 'RELEASE_NOTES.md', 'README.md']);
+
+  const notifyDaemonPackage = await readJson('notify-daemon/package.json');
+  assert.equal(notifyDaemonPackage.name, '@magclaw/notify-daemon');
+  assert.equal(notifyDaemonPackage.private, true);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
@@ -72,23 +76,23 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   assert.equal(files.some((file) => file.startsWith('shared/')), false);
 });
 
-test('Notify package includes the standalone client, Daemon, MCP tool, structured protocol, and explicit Skill assets', () => {
+test('Notify package includes sender CLI, MCP tools, structured protocol, and explicit Skill assets only', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './notify'], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/magclaw-delivery-boundaries-cache', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const packed = JSON.parse(result.stdout)[0];
   const files = packed.files.map((file) => file.path);
   assert.ok(files.includes('bin/magclaw-notify.js'));
   assert.ok(files.includes('src/cli.js'));
-  assert.ok(files.includes('src/daemon.js'));
-  assert.ok(files.includes('src/handler.js'));
   assert.ok(files.includes('src/mcp.js'));
   assert.ok(files.includes('src/summary.js'));
   assert.ok(files.includes('skills/magclaw-notify/SKILL.md'));
   assert.ok(files.includes('skills/magclaw-notify/references/summary-templates.md'));
-  assert.ok(files.includes('skills/magclaw-notify-handler/SKILL.md'));
+  assert.equal(files.some((file) => /src\/(?:daemon|handler|service|executable|instance)\.js$/.test(file)), false);
+  assert.equal(files.some((file) => file.includes('magclaw-notify-handler')), false);
   assert.equal(files.some((file) => file.startsWith('server/')), false);
   assert.equal(files.some((file) => file.includes('config.json')), false);
 });
@@ -97,6 +101,8 @@ test('cloud runtime images include the shared Notify summary protocol module', a
   for (const file of ['Dockerfile', 'web/Dockerfile']) {
     const source = await readFile(path.join(ROOT, file), 'utf8');
     assert.match(source, /COPY notify\/src\/summary\.js \.\/notify\/src\/summary\.js/);
+    assert.match(source, /COPY notify\/src\/audit\.js \.\/notify\/src\/audit\.js/);
+    assert.match(source, /COPY notify-daemon\/src\/instance\.js \.\/notify-daemon\/src\/instance\.js/);
   }
 });
 

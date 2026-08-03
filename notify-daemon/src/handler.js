@@ -10,9 +10,9 @@ import {
   createNotifyAuditLog,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
-} from './audit.js';
+} from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
-import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from './summary.js';
+import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../../notify/src/summary.js';
 
 const HANDLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HANDLER_SKILL_SOURCE = path.join(HANDLER_ROOT, 'skills', 'magclaw-notify-handler');
@@ -157,6 +157,7 @@ export function defaultNotifyHandlerConfig() {
       account: '',
       target: '',
       ownerOpenId: '',
+      approvalAgentId: '',
       eventConsumer: 'openclaw',
       enabled: false,
       dryRun: false,
@@ -247,20 +248,28 @@ export async function installNotifyHandlerSkill(options = {}) {
       const script = [
         '#!/bin/sh',
         'set -eu',
-        '[ "$#" -eq 2 ] || { echo "usage: notify-approval CONFIRMATION_ID DECISION" >&2; exit 64; }',
+        '[ "$#" -eq 3 ] || { echo "usage: notify-approval CONFIRMATION_ID DECISION OPERATOR_OPEN_ID" >&2; exit 64; }',
         'confirmation_id=$1',
         'decision=$2',
+        'operator_open_id=$3',
         'case "$confirmation_id" in ncf_*) ;; *) echo "invalid confirmation id" >&2; exit 64 ;; esac',
         'confirmation_suffix=${confirmation_id#ncf_}',
         '[ -n "$confirmation_suffix" ] || { echo "invalid confirmation id" >&2; exit 64; }',
         'case "$confirmation_suffix" in *[!0-9a-f]*) echo "invalid confirmation id" >&2; exit 64 ;; esac',
         'case "$decision" in once|always|approve|reject) ;; *) echo "invalid decision" >&2; exit 64 ;; esac',
-        `exec ${shellQuote(handler.nodePath || process.execPath)} ${shellQuote(handler.binPath)} daemon confirm --notify-home ${shellQuote(handler.notifyHome)} --instance ${shellQuote(instance)} --id "$confirmation_id" "--$decision"`,
+        'case "$operator_open_id" in ou_[A-Za-z0-9]*) ;; *) echo "invalid operator open id" >&2; exit 64 ;; esac',
+        'operator_suffix=${operator_open_id#ou_}',
+        '[ -n "$operator_suffix" ] || { echo "invalid operator open id" >&2; exit 64; }',
+        'case "$operator_suffix" in *[!A-Za-z0-9]*) echo "invalid operator open id" >&2; exit 64 ;; esac',
+        `exec ${shellQuote(handler.nodePath || process.execPath)} ${shellQuote(handler.binPath)} daemon confirm --notify-home ${shellQuote(handler.notifyHome)} --instance ${shellQuote(instance)} --id "$confirmation_id" "--$decision" --operator-open-id "$operator_open_id"`,
         '',
       ].join('\n');
       await mkdir(handlerRoot, { recursive: true });
       await writeFile(handlerPath, script, { mode: 0o700 });
       await chmod(handlerPath, 0o700).catch(() => {});
+      const installedSkillPath = path.join(target, 'SKILL.md');
+      const installedSkill = await readFile(installedSkillPath, 'utf8');
+      await writeFile(installedSkillPath, installedSkill.replaceAll('<NOTIFY_APPROVAL_HANDLER>', handlerPath), { mode: 0o600 });
       record.approvalHandler = handlerPath;
     }
     installed.push(record);
@@ -863,11 +872,11 @@ async function uploadNotifyImages(command, config, analysis, tempDir) {
   return uploaded;
 }
 
-async function deliverViaLarkCli({ config, group, analysis, people, requester, tempDir }) {
+async function deliverViaLarkCli({ config, group, analysis, people, requester, requestId, tempDir }) {
   const command = cleanText(config.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
   const uploadedImages = config.dryRun ? [] : await uploadNotifyImages(command, config, analysis, tempDir || os.tmpdir());
   const card = larkCardForNotify({ ...analysis, uploadedImages }, people, requester);
-  const idempotencyKey = `mcn_${crypto.createHash('sha256').update(JSON.stringify({ chatId: group.chatId, card })).digest('base64url')}`;
+  const idempotencyKey = `mcn_${crypto.createHash('sha256').update(JSON.stringify({ requestId, chatId: group.chatId, card })).digest('base64url')}`;
   const args = [
     '--profile', String(config.account),
     'im', '+messages-send',
@@ -1362,6 +1371,7 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
       analysis,
       people: peopleResolution,
       requester: request.requester,
+      requestId: request.id,
       tempDir: state.paths.tempDir,
     });
     const groupContextSync = sent.dryRun
@@ -1712,7 +1722,11 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
   if (!['approve', 'once', 'always', 'reject'].includes(decision)) throw new Error('Notify confirmation decision must be approve, once, always, or reject.');
   const expectedOwnerOpenId = cleanText(state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target || '', 200);
   const operatorId = cleanText(options.operatorId || '', 200);
-  if (operatorId && expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) throw new Error('Only the configured Notify owner can approve this request.');
+  if (expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) {
+    throw new Error(operatorId
+      ? 'Only the configured Notify owner can approve this request.'
+      : 'The configured Notify owner identity is required to approve this request.');
+  }
   if (record.kind === 'target_access') {
     const targetDecision = decision === 'approve' ? 'always' : decision;
     return completeTargetAccessConfirmation(profilePaths, confirmationId, targetDecision);
@@ -1885,7 +1899,11 @@ export async function inspectNotifyCardAction(profilePaths, event = {}) {
   if (!confirmation) throw new Error('Pending Notify confirmation not found.');
   const expectedOwnerOpenId = cleanText(state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target || '', 200);
   const operatorId = cleanText(event.operator_id || event.operatorId || '', 200);
-  if (operatorId && expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) throw new Error('Only the configured Notify owner can approve this request.');
+  if (expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) {
+    throw new Error(operatorId
+      ? 'Only the configured Notify owner can approve this request.'
+      : 'The configured Notify owner identity is required to approve this request.');
+  }
   return { handled: true, action, confirmation };
 }
 
@@ -2002,6 +2020,7 @@ export async function notifyHandlerStatus(profilePaths) {
     deliveryProvider: state.config.deliveryProvider.kind,
     deliveryConfigured: Boolean(state.config.deliveryProvider.enabled && state.config.deliveryProvider.account),
     confirmationConfigured: Boolean(state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && state.config.confirmationProvider.target),
+    approvalAgentId: state.config.confirmationProvider.approvalAgentId || '',
     approvalEventConsumer: state.config.confirmationProvider.eventConsumer || 'openclaw',
     approvalListenerConfigured: Boolean(state.config.confirmationProvider.kind === 'lark-cli-feishu' && state.config.confirmationProvider.eventConsumer === 'standalone' && state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && (state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target)),
     groups: state.directory.groups.length,

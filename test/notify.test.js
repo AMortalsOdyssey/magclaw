@@ -19,6 +19,7 @@ import {
   confirmNotifyMapping,
   configureNotifyHandler,
   handleNotifyDelivery,
+  inspectNotifyCardAction,
   installNotifyHandlerSkill,
   larkCardForApprovalOutcome,
   larkCardForTargetApproval,
@@ -29,20 +30,28 @@ import {
   resolveNotifyGroup,
   resolveNotifyPeople,
   prepareNotifyDelivery,
-} from '../notify/src/handler.js';
+} from '../notify-daemon/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
-import { ensureNotifyRuntimeLogs, notifyDaemonPaths, processNotifyApprovalEvent, startNotifyApprovalListener } from '../notify/src/daemon.js';
-import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify/src/executable.js';
-import { normalizeNotifyInstance } from '../notify/src/instance.js';
+import {
+  ensureNotifyRuntimeLogs,
+  notifyDaemonPaths,
+  processNotifyApprovalEvent,
+  requestNotifyDaemonControl,
+  runNotifyDaemonCommand,
+  startNotifyApprovalListener,
+  startNotifyDaemonControlServer,
+} from '../notify-daemon/src/daemon.js';
+import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify-daemon/src/executable.js';
+import { normalizeNotifyInstance } from '../notify-daemon/src/instance.js';
 import {
   createNotifyAuditLog,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
   sanitizeNotifyAuditRecord,
 } from '../notify/src/audit.js';
-import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify/src/service.js';
+import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify-daemon/src/service.js';
 
 function responseRecorder() {
   return {
@@ -113,6 +122,22 @@ async function callRoute(deps, method, pathname, options = {}) {
   const handled = await handleNotifyApi(req, res, new URL(pathname, 'http://magclaw.test'), deps);
   assert.equal(handled, true);
   return { req, res };
+}
+
+async function approveNotifyDevice(deps, verificationUri) {
+  const reviewed = await callRoute(deps, 'GET', verificationUri);
+  assert.equal(reviewed.res.status, 200);
+  assert.match(reviewed.res.raw, /确认授权这台设备/);
+  const csrfToken = reviewed.res.raw.match(/name="csrf_token" value="([^"]+)"/)?.[1] || '';
+  const userCode = reviewed.res.raw.match(/name="user_code" value="([^"]+)"/)?.[1] || '';
+  assert.ok(csrfToken);
+  assert.match(userCode, /^[A-F0-9]{5}-[A-F0-9]{5}$/);
+  const approved = await callRoute(deps, 'POST', new URL(verificationUri, 'http://magclaw.test').pathname, {
+    body: { user_code: userCode, csrf_token: csrfToken },
+  });
+  assert.equal(approved.res.status, 200);
+  assert.match(approved.res.raw, /已批准这台设备/);
+  return { reviewed, approved };
 }
 
 test('Notify submission requires explicit current-turn authorization and strips raw mentions', () => {
@@ -250,6 +275,10 @@ test('Notify structured summaries normalize mixed work and preserve safe rich co
 
 test('Notify integrations install native Skills and a Claude Desktop MCP entry without implicit invocation', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-'));
+  const desktopConfigPath = path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  await mkdir(path.dirname(desktopConfigPath), { recursive: true });
+  const originalDesktopConfig = `${JSON.stringify({ mcpServers: { existing: { command: 'existing-mcp' } }, theme: 'dark' }, null, 2)}\n`;
+  await writeFile(desktopConfigPath, originalDesktopConfig);
   const installed = await installNotifyIntegrations({ targets: 'codex,claude-code,claude-desktop' }, {
     homeDir: root,
     platform: 'darwin',
@@ -260,9 +289,23 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(codexMetadata, /allow_implicit_invocation: false/);
   const claudeSkill = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(claudeSkill, /disable-model-invocation: true/);
-  const desktop = JSON.parse(await readFile(path.join(root, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json'), 'utf8'));
+  const desktop = JSON.parse(await readFile(desktopConfigPath, 'utf8'));
+  assert.equal(desktop.theme, 'dark');
+  assert.equal(desktop.mcpServers.existing.command, 'existing-mcp');
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.3.7', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.0', 'mcp']);
+  assert.equal(await readFile(`${desktopConfigPath}.magclaw-notify.bak`, 'utf8'), originalDesktopConfig);
+
+  const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-invalid-'));
+  const invalidConfigPath = path.join(invalidRoot, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+  await mkdir(path.dirname(invalidConfigPath), { recursive: true });
+  await writeFile(invalidConfigPath, '{ "mcpServers": { trailing: true, }, }\n');
+  await assert.rejects(
+    installNotifyIntegrations({ targets: 'claude-desktop' }, { homeDir: invalidRoot, platform: 'darwin', env: {} }),
+    /not valid JSON; no changes were made/i,
+  );
+  assert.equal(await readFile(invalidConfigPath, 'utf8'), '{ "mcpServers": { trailing: true, }, }\n');
+  await assert.rejects(readFile(`${invalidConfigPath}.magclaw-notify.bak`, 'utf8'), /ENOENT/);
 
   const windowsRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-win-'));
   await installNotifyIntegrations({ targets: 'claude-code,claude-desktop' }, {
@@ -273,6 +316,23 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   const windowsDesktop = JSON.parse(await readFile(path.join(windowsRoot, 'Roaming', 'Claude', 'claude_desktop_config.json'), 'utf8'));
   assert.equal(windowsDesktop.mcpServers['magclaw-notify'].command, 'cmd.exe');
   assert.deepEqual(windowsDesktop.mcpServers['magclaw-notify'].args.slice(0, 4), ['/d', '/s', '/c', 'npx']);
+});
+
+test('Public Notify package contains sender capabilities only and public docs omit owner runtime details', async () => {
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', './notify'], {
+    cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, NPM_CONFIG_CACHE: path.join(os.tmpdir(), 'magclaw-notify-pack-test-cache'), NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
+  });
+  assert.equal(packed.status, 0, packed.stderr);
+  const files = JSON.parse(packed.stdout)[0].files.map((item) => item.path).sort();
+  assert.ok(files.includes('src/cli.js'));
+  assert.ok(files.includes('src/mcp.js'));
+  assert.ok(files.includes('skills/magclaw-notify/SKILL.md'));
+  assert.equal(files.some((file) => /(?:daemon|handler|service|executable|instance)\.js$/.test(file)), false);
+  assert.equal(files.some((file) => file.includes('magclaw-notify-handler')), false);
+  const publicDocs = `${await readFile(path.join(process.cwd(), 'notify', 'README.md'), 'utf8')}\n${await readFile(path.join(process.cwd(), 'notify', 'RELEASE_NOTES.md'), 'utf8')}`;
+  for (const forbidden of ['MAGCLAW_NOTIFY_AUDIT_HASH_KEY', 'cloud_audit_logs', '.notify-audit-hash-key', '测试monkey', '蒋海波']) {
+    assert.doesNotMatch(publicDocs, new RegExp(forbidden));
+  }
 });
 
 test('Notify MCP preview is non-sending and send tool requires explicit current-turn authorization', async () => {
@@ -346,6 +406,58 @@ test('Notify approval listener stays off by default when OpenClaw owns Monkey ev
   assert.equal(listener.running, false);
 });
 
+test('Notify approval subprocesses submit validated decisions to the single daemon writer', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-control-'));
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'control-test');
+  const received = [];
+  const controller = new AbortController();
+  const control = await startNotifyDaemonControlServer(paths, controller.signal, {
+    processApproval: async (_profilePaths, event) => {
+      received.push(event);
+      return { handled: true, confirmation: { id: event.action_value.confirmationId }, action: event.action_value };
+    },
+  });
+  assert.equal(control.running, true);
+  if (process.platform !== 'win32') assert.equal((await stat(paths.controlSocket)).mode & 0o777, 0o600);
+  const result = await requestNotifyDaemonControl(paths, {
+    action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1',
+  });
+  assert.equal(result.handled, true);
+  assert.equal(received[0].operator_id, 'ou_owner1');
+  await assert.rejects(
+    requestNotifyDaemonControl(paths, { action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: '' }),
+    /valid Notify owner open id/i,
+  );
+  controller.abort();
+});
+
+test('Notify approval status uses the dedicated approval Agent and reports effective policy drift', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-approval-agent-'));
+  const instance = 'approval-agent-test';
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
+  const handlerPath = path.join(os.homedir(), '.local', 'share', 'magclaw-notify', 'approval-handlers', instance);
+  const fakeOpenClaw = path.join(root, 'fake-openclaw');
+  await writeFile(fakeOpenClaw, [
+    '#!/usr/bin/env node',
+    'const args = process.argv.slice(2);',
+    `const handlerPath = ${JSON.stringify(handlerPath)};`,
+    "if (args[0] === 'approvals') process.stdout.write(JSON.stringify({ file: { agents: { 'monkey-owner': { allowlist: [{ pattern: handlerPath }] }, 'monkey-member': { allowlist: [] } } } }));",
+    "else process.stdout.write(JSON.stringify({ effectivePolicy: { scopes: [{ agentId: 'monkey-owner', security: { effective: 'allowlist' }, ask: { effective: 'on-miss' } }] } }));",
+    '',
+  ].join('\n'));
+  await chmod(fakeOpenClaw, 0o700);
+  await configureNotifyHandler(paths.handler, {
+    agentProvider: { command: fakeOpenClaw, agentId: 'monkey-member' },
+    confirmationProvider: { account: 'monkey', ownerOpenId: 'ou_owner', approvalAgentId: 'monkey-owner', eventConsumer: 'openclaw' },
+  });
+  const status = await runNotifyDaemonCommand(['openclaw-approval', 'status'], { instance, notifyHome: root });
+  assert.equal(status.approvalAgentId, 'monkey-owner');
+  assert.equal(status.allowlistMatched, true);
+  assert.equal(status.execSecurity, 'allowlist');
+  assert.equal(status.execAsk, 'on-miss');
+  assert.notEqual(status.approvalAgentId, 'monkey-member');
+});
+
 test('OpenClaw card approvals use an instance-scoped, strictly validated handler', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-openclaw-handler-'));
   const fakeBin = path.join(root, 'fake-notify.mjs');
@@ -363,15 +475,19 @@ test('OpenClaw card approvals use an instance-scoped, strictly validated handler
   });
   const handlerPath = installed[0].approvalHandler;
   assert.equal((await stat(handlerPath)).mode & 0o777, 0o700);
-  const valid = spawnSync(handlerPath, ['ncf_a12f', 'once'], { encoding: 'utf8' });
+  const valid = spawnSync(handlerPath, ['ncf_a12f', 'once', 'ou_owner1'], { encoding: 'utf8' });
   assert.equal(valid.status, 0);
   assert.deepEqual(JSON.parse(valid.stdout), [
-    'daemon', 'confirm', '--notify-home', notifyHome, '--instance', 'product-a', '--id', 'ncf_a12f', '--once',
+    'daemon', 'confirm', '--notify-home', notifyHome, '--instance', 'product-a', '--id', 'ncf_a12f', '--once', '--operator-open-id', 'ou_owner1',
   ]);
-  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'rotate'], { encoding: 'utf8' }).status, 64);
-  assert.equal(spawnSync(handlerPath, ['ncf_bad/value', 'once'], { encoding: 'utf8' }).status, 64);
+  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'rotate', 'ou_owner1'], { encoding: 'utf8' }).status, 64);
+  assert.equal(spawnSync(handlerPath, ['ncf_bad/value', 'once', 'ou_owner1'], { encoding: 'utf8' }).status, 64);
+  assert.equal(spawnSync(handlerPath, ['ncf_a12f', 'once', 'owner1'], { encoding: 'utf8' }).status, 64);
   const skill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
-  assert.match(skill, /approval-handlers\/INSTANCE CONFIRMATION_ID once/);
+  assert.match(skill, /approval-handlers\/product-a CONFIRMATION_ID once OPERATOR_OPEN_ID/);
+  const sourceSkill = await readFile(path.join(process.cwd(), 'notify-daemon', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
+  assert.match(sourceSkill, /<NOTIFY_APPROVAL_HANDLER> CONFIRMATION_ID once OPERATOR_OPEN_ID/);
+  assert.doesNotMatch(sourceSkill, /\.local\/share\/magclaw-notify\/approval-handlers/);
   assert.doesNotMatch(skill, /setup-token rotate/);
 });
 
@@ -531,6 +647,53 @@ test('Notify approval card update falls back from callback token to the original
   assert.deepEqual(JSON.parse(patchBody.content), card);
 });
 
+test('Notify device authorization is owner-started, POST-confirmed, CSRF-protected, and one-time', async () => {
+  const fingerprint = `mfp_${'f'.repeat(64)}`;
+  const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };
+  let currentUser = null;
+  const owner = feishuUser('usr_owner', 'Owner', 'tenant_owner');
+  const deps = routeDeps(state, {
+    currentUser: () => currentUser,
+    currentActor: () => currentUser ? { user: currentUser, member: { workspaceId: 'ws_1', role: 'owner' } } : null,
+    notifyDaemonBootstrapSecret: 'bootstrap-test-secret',
+  });
+  const denied = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Monkey', machineFingerprint: fingerprint },
+  });
+  assert.equal(denied.res.status, 401);
+  const started = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    headers: { 'x-magclaw-notify-bootstrap': 'bootstrap-test-secret' },
+    body: { relayName: 'Monkey', machineFingerprint: fingerprint, client: { hostname: 'owner-mac', platform: 'darwin', arch: 'arm64' } },
+  });
+  assert.equal(started.res.status, 201);
+  assert.match(started.res.body.userCode, /^[A-F0-9]{5}-[A-F0-9]{5}$/);
+
+  currentUser = owner;
+  const reviewed = await callRoute(deps, 'GET', started.res.body.verificationUri);
+  assert.equal(reviewed.res.status, 200);
+  assert.match(reviewed.res.raw, /owner-mac/);
+  assert.equal(notifyRecords(state).some((record) => record.type === 'installation'), false);
+  const pending = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
+  });
+  assert.equal(pending.res.body.status, 'pending');
+  const userCode = reviewed.res.raw.match(/name="user_code" value="([^"]+)"/)?.[1];
+  const csrfToken = reviewed.res.raw.match(/name="csrf_token" value="([^"]+)"/)?.[1];
+  const rejected = await callRoute(deps, 'POST', '/notify/daemon/auth/approve', {
+    body: { user_code: userCode, csrf_token: 'wrong-token' },
+  });
+  assert.equal(rejected.res.status, 403);
+  const approved = await callRoute(deps, 'POST', '/notify/daemon/auth/approve', {
+    body: { user_code: userCode, csrf_token: csrfToken },
+  });
+  assert.equal(approved.res.status, 200);
+  assert.match(approved.res.raw, /Notify 标识/);
+  const replay = await callRoute(deps, 'POST', '/notify/daemon/auth/approve', {
+    body: { user_code: userCode, csrf_token: csrfToken },
+  });
+  assert.equal(replay.res.status, 404);
+});
+
 test('Standalone Notify Daemon creates a stable handle and one-time setup token', async () => {
   const fingerprint = `mfp_${'a'.repeat(64)}`;
   const state = {
@@ -545,8 +708,7 @@ test('Standalone Notify Daemon creates a stable handle and one-time setup token'
   assert.equal(started.res.status, 201);
   assert.equal(started.res.body.status, 'pending');
 
-  const approval = await callRoute(deps, 'GET', started.res.body.verificationUri);
-  assert.equal(approval.res.status, 200);
+  await approveNotifyDevice(deps, started.res.body.verificationUri);
   const installation = notifyRecords(state).find((record) => record.type === 'installation');
   assert.match(installation.handle, /^magclaw-[a-f0-9]{7}$/);
   assert.equal(installation.machineFingerprint, fingerprint);
@@ -555,13 +717,13 @@ test('Standalone Notify Daemon creates a stable handle and one-time setup token'
   const repeatedStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
     body: { machineFingerprint: fingerprint },
   });
-  await callRoute(deps, 'GET', repeatedStart.res.body.verificationUri);
+  await approveNotifyDevice(deps, repeatedStart.res.body.verificationUri);
   assert.equal(notifyRecords(state).filter((record) => record.type === 'installation').length, 1);
 
   const renamedStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
     body: { relayName: 'Monkey', machineFingerprint: fingerprint },
   });
-  await callRoute(deps, 'GET', renamedStart.res.body.verificationUri);
+  await approveNotifyDevice(deps, renamedStart.res.body.verificationUri);
   const installations = notifyRecords(state).filter((record) => record.type === 'installation');
   assert.equal(installations.length, 2);
   assert.match(installations[1].handle, /^monkey-[a-f0-9]{7}$/);
@@ -598,7 +760,7 @@ test('One owner and machine can create isolated Notify instances for different p
     const started = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
       body: { instance, relayName: 'Monkey', machineFingerprint: fingerprint },
     });
-    await callRoute(deps, 'GET', started.res.body.verificationUri);
+    await approveNotifyDevice(deps, started.res.body.verificationUri);
     return callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
       body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
     });
@@ -630,7 +792,7 @@ test('Notify sender authorization lasts 90 days and is limited to the owner Feis
   const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
     body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint },
   });
-  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  await approveNotifyDevice(deps, daemonStart.res.body.verificationUri);
   const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
   });
@@ -647,11 +809,12 @@ test('Notify sender authorization lasts 90 days and is limited to the owner Feis
   const clientStart = await callRoute(deps, 'POST', '/api/notify/auth/start', {
     body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: `mfp_${'3'.repeat(64)}` },
   });
+  await approveNotifyDevice(deps, clientStart.res.body.verificationUri);
   const clientAuth = await callRoute(deps, 'POST', '/api/notify/auth/token', {
     body: { deviceCode: clientStart.res.body.deviceCode, machineFingerprint: `mfp_${'3'.repeat(64)}` },
   });
   const lifetime = Date.parse(clientAuth.res.body.tokenExpiresAt) - before;
-  assert.ok(lifetime <= NOTIFY_TOKEN_TTL_MS && lifetime >= NOTIFY_TOKEN_TTL_MS - 2000);
+  assert.ok(lifetime >= NOTIFY_TOKEN_TTL_MS && lifetime <= NOTIFY_TOKEN_TTL_MS + 2000);
 });
 
 test('Notify owner can list and revoke sender access and rotate a leaked Setup Token', async () => {
@@ -673,7 +836,7 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
   const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
     body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint, client: { hostname: 'owner-mac', platform: 'darwin', arch: 'arm64' } },
   });
-  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  await approveNotifyDevice(deps, daemonStart.res.body.verificationUri);
   const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
   });
@@ -691,6 +854,7 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
         client: { hostname, platform: 'darwin', arch: 'arm64' },
       },
     });
+    await approveNotifyDevice(deps, started.res.body.verificationUri);
     return callRoute(deps, 'POST', '/api/notify/auth/token', {
       body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
     });
@@ -816,7 +980,7 @@ test('Setup token routes an authenticated client request to exactly one independ
   const daemonStart = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
     body: { relayName: 'Monkey', machineFingerprint: daemonFingerprint },
   });
-  await callRoute(deps, 'GET', daemonStart.res.body.verificationUri);
+  await approveNotifyDevice(deps, daemonStart.res.body.verificationUri);
   const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
   });
@@ -825,6 +989,7 @@ test('Setup token routes an authenticated client request to exactly one independ
   const clientStart = await callRoute(deps, 'POST', '/api/notify/auth/start', {
     body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: clientFingerprint },
   });
+  await approveNotifyDevice(deps, clientStart.res.body.verificationUri);
   const clientAuth = await callRoute(deps, 'POST', '/api/notify/auth/token', {
     body: { deviceCode: clientStart.res.body.deviceCode, machineFingerprint: clientFingerprint },
   });
@@ -888,6 +1053,45 @@ test('Notify lark-cli card injects only locally resolved Feishu mentions', () =>
     tag: 'img', img_key: 'img_local_uploaded', alt: { tag: 'plain_text', content: '验收截图' },
   });
   assert.match(card.body.elements.at(-1).content, /由 李四/);
+});
+
+test('Notify provider idempotency includes requestId so identical summaries remain distinct', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-provider-idempotency-'));
+  const profilePaths = { dir: root, profile: 'provider-idempotency' };
+  const argsLog = path.join(root, 'lark-args.jsonl');
+  const fakeLark = path.join(root, 'fake-lark');
+  await writeFile(fakeLark, [
+    '#!/usr/bin/env node',
+    "const fs = require('fs');",
+    `fs.appendFileSync(${JSON.stringify(argsLog)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+    "process.stdout.write(JSON.stringify({ data: { message_id: 'om_sent' } }));",
+    '',
+  ].join('\n'));
+  await chmod(fakeLark, 0o700);
+  await addNotifyGroup(profilePaths, { name: '研发群', chatId: 'oc_local_only' });
+  await configureNotifyHandler(profilePaths, {
+    agentProvider: { command: path.join(root, 'missing-agent') },
+    deliveryProvider: { kind: 'lark-cli-feishu', command: fakeLark, account: 'monkey', enabled: true },
+  });
+  const makeRequest = (id) => ({
+    id,
+    requester: { id: 'usr_sender', name: '李四' },
+    payload: {
+      target: { group: '研发群' },
+      content: { title: '相同结论', markdown: '- 完成同一项修复' },
+      mentions: [], context: {},
+    },
+  });
+  for (const id of ['nreq_same_1', 'nreq_same_2']) {
+    const awaiting = await handleNotifyDelivery(profilePaths, makeRequest(id));
+    const approved = await confirmNotifyMapping(profilePaths, awaiting.confirmationId, 'once');
+    assert.equal(approved.result.status, 'sent');
+  }
+  const calls = (await readFile(argsLog, 'utf8')).trim().split('\n').map(JSON.parse);
+  const keys = calls.map((args) => args[args.indexOf('--idempotency-key') + 1]);
+  assert.equal(keys.length, 2);
+  assert.notEqual(keys[0], keys[1]);
+  assert.ok(keys.every((key) => /^mcn_[A-Za-z0-9_-]{43}$/.test(key)));
 });
 
 test('Notify public summaries redact local machine details and credentials without losing repo-relative evidence', () => {
@@ -1085,6 +1289,14 @@ test('Notify target approval batches per user and group with once, permanent, ow
   const card = larkCardForTargetApproval(batch);
   assert.deepEqual(card.body.elements.filter((element) => element.tag === 'button').map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
 
+  await assert.rejects(
+    inspectNotifyCardAction(profilePaths, { action_value: { source: 'magclaw_notify', confirmationId: first.confirmationId, decision: 'always' } }),
+    /owner identity is required/i,
+  );
+  await assert.rejects(
+    confirmNotifyMapping(profilePaths, first.confirmationId, 'always'),
+    /owner identity is required/i,
+  );
   await assert.rejects(
     confirmNotifyMapping(profilePaths, first.confirmationId, 'always', { operatorId: 'ou_not_owner' }),
     /Only the configured Notify owner/i,

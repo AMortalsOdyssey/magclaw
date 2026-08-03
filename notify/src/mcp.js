@@ -113,7 +113,7 @@ export async function runNotifyMcpServer() {
     import('@modelcontextprotocol/sdk/server/stdio.js'),
     import('@modelcontextprotocol/sdk/types.js'),
   ]);
-  const server = new Server({ name: 'magclaw-notify', version: '0.3.7' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'magclaw-notify', version: '0.4.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDefinitions() }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => handleNotifyMcpTool(request.params.name, request.params.arguments || {}));
   await server.connect(new StdioServerTransport());

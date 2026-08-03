@@ -72,7 +72,7 @@ MagClaw 是一个面向 AI Coding Agent 的协作平台：团队先创建一个
 | 移动端浏览器 | 手机使用独立 mobile shell；平板和窄桌面保留 Chat rail，并把 Thread 提升到主内容列。 |
 | Release | Web Service 和 Daemon 拥有独立版本序列，Settings 与 Computer 详情会展示 release notes 和版本检查。 |
 | 滚动升级恢复 | 支持 daemon delivery replay、SSE `lastSeq` resume、K8s drain readiness 和轻量 daemon release notice。 |
-| 显式 Notify | `@magclaw/notify` 只提交用户在当前轮明确授权的总结；Cloud 单向转发，本地 Daemon provider 解析私有飞书目标并完成确认。 |
+| 显式 Notify | `@magclaw/notify` 只在用户当前轮明确授权后提交简洁总结，并返回发送端可见的投递状态。 |
 
 ## 系统架构
 
@@ -113,8 +113,8 @@ MagClaw 把协作控制面和本机执行面拆开：
   `/var/lib/magclaw/uploads`。
 - **Daemon** 在 `~/.magclaw/daemon/profiles/<serverSlug>/` 下保存 Server
   profile，上报 runtime，接收 Agent 命令，并启动本机 runtime 进程。
-- **MagClaw Notify** 复用可靠的 Daemon relay，并使用独立的
-  `notify:deliver` 协议。Cloud 只保存身份、授权、状态和队列元数据；群聊、人员目录与飞书 ID 只留在本地。
+- **MagClaw Notify** 提供发送端 Skill、MCP 工具、结构化总结和投递状态，
+  不向发送端暴露原始飞书标识。
 - **Agent workspace** 把每个 Agent 的 context 和 memory 放在源码仓库外。
   本地单机模式也会在 `~/.magclaw/agents/<agentId>/` 暴露 workspace surface。
 

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,6 @@ import {
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
 } from './audit.js';
-import { runNotifyDaemonCommand } from './daemon.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,6 +70,20 @@ async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   await chmod(file, 0o600).catch(() => {});
+}
+
+async function writeJsonAtomic(file, value) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.magclaw-notify.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    await chmod(temporary, 0o600).catch(() => {});
+    await rename(temporary, file);
+    await chmod(file, 0o600).catch(() => {});
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 function machineFingerprint() {
@@ -145,7 +158,19 @@ export function claudeDesktopConfigPath(options = {}) {
 
 async function installClaudeDesktopTool(options = {}) {
   const configPath = claudeDesktopConfigPath(options);
-  const config = await readJson(configPath, {});
+  const existing = await readFile(configPath, 'utf8').catch((error) => {
+    if (error?.code === 'ENOENT') return '';
+    throw error;
+  });
+  let config = {};
+  if (existing.trim()) {
+    try {
+      config = JSON.parse(existing);
+    } catch (error) {
+      const snippet = '"mcpServers": { "magclaw-notify": { "command": "npx", "args": ["--yes", "@magclaw/notify@latest", "mcp"] } }';
+      throw new Error(`Claude Desktop config is not valid JSON; no changes were made. Fix ${configPath} or add this entry manually: ${snippet}. Parse error: ${error.message}`);
+    }
+  }
   const packageJson = await readJson(PACKAGE_JSON, { name: '@magclaw/notify', version: 'latest' });
   const spec = `${packageJson.name}@${packageJson.version}`;
   const platform = options.platform || process.platform;
@@ -154,8 +179,26 @@ async function installClaudeDesktopTool(options = {}) {
     : { command: 'npx', args: ['--yes', spec, 'mcp'] };
   config.mcpServers = config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
   config.mcpServers['magclaw-notify'] = server;
-  await writeJson(configPath, config);
-  return { kind: 'claude-desktop', type: 'mcp', path: configPath, restartRequired: true, server };
+  const backupPath = `${configPath}.magclaw-notify.bak`;
+  if (existing) {
+    await mkdir(path.dirname(backupPath), { recursive: true });
+    await writeFile(backupPath, existing, { mode: 0o600 });
+    await chmod(backupPath, 0o600).catch(() => {});
+  }
+  await writeJsonAtomic(configPath, config);
+  return { kind: 'claude-desktop', type: 'mcp', path: configPath, backupPath: existing ? backupPath : null, restartRequired: true, server };
+}
+
+async function loadNotifyDaemonCommand() {
+  try {
+    return (await import('@magclaw/notify-daemon')).runNotifyDaemonCommand;
+  } catch (packageError) {
+    try {
+      return (await import('../../notify-daemon/src/daemon.js')).runNotifyDaemonCommand;
+    } catch {
+      throw new Error('Notify owner commands require the private @magclaw/notify-daemon package. The public @magclaw/notify package only contains sender capabilities.');
+    }
+  }
 }
 
 function skillRoot(kind, homeDir) {
@@ -255,6 +298,10 @@ async function login(flags, positional) {
     updatedAt: new Date().toISOString(),
   };
   await writeJson(paths.config, config);
+  if (!flags.noSkill) {
+    const requestedTargets = String(flags.targets || flags.target || 'auto-detected hosts');
+    process.stderr.write(`Installing MagClaw Notify integrations for ${requestedTargets}. Existing host configuration will be preserved; Claude Desktop is backed up before modification.\n`);
+  }
   const installedIntegrations = flags.noSkill ? [] : await installNotifyIntegrations(flags);
   return { profile, relayUrl, relayHandle: config.relayHandle, user: config.user, installedIntegrations };
 }
@@ -356,27 +403,14 @@ function help() {
     '  magclaw-notify install [--targets codex,claude-code,claude-desktop]',
     '  magclaw-notify mcp',
     '  magclaw-notify logout',
-    '  magclaw-notify audit status|tail [--profile NAME] [--limit 100]',
-    '  magclaw-notify daemon login --instance PROJECT --relay-url URL [--name NAME]',
-    '  magclaw-notify daemon configure --instance PROJECT --agent-provider openclaw [--group-context-sync true] --delivery-provider lark-cli-feishu',
-    '  magclaw-notify daemon add-group --instance PROJECT --name NAME --chat-id CHAT_ID',
-    '  magclaw-notify daemon add-person --instance PROJECT --name NAME --open-id OPEN_ID',
-    '  magclaw-notify daemon access list --instance PROJECT [--all]',
-    '  magclaw-notify daemon access revoke --instance PROJECT --access-id ID',
-    '  magclaw-notify daemon grants list --instance PROJECT [--all]',
-    '  magclaw-notify daemon grants revoke --instance PROJECT --grant-id ID',
-    '  magclaw-notify daemon setup-token rotate|disable --instance PROJECT [--revoke-existing]',
-    '  magclaw-notify daemon openclaw-approval enable|disable|status --instance PROJECT',
-    '  magclaw-notify daemon audit status|tail --instance PROJECT [--limit 100]',
-    '  magclaw-notify daemon start|restart|run|status|stop --instance PROJECT',
-    '  magclaw-notify daemon autostart enable|disable|status --instance PROJECT', '',
+    '  magclaw-notify audit status|tail [--profile NAME] [--limit 100]', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
   ].join('\n');
 }
 
 async function executeNotifyCli(command, positional, flags) {
   let result;
-  if (command === 'daemon') result = await runNotifyDaemonCommand(positional, flags);
+  if (command === 'daemon') result = await (await loadNotifyDaemonCommand())(positional, flags);
   else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
   else if (command === 'send') result = await sendNotify(flags);
   else if (command === 'status') result = await status(flags, positional);

@@ -75,7 +75,7 @@ execution box by accident.
 | Mobile browser | Phone browsers use a dedicated mobile shell; tablets and narrow desktops keep the Chat rail and move Threads into the main column. |
 | Release visibility | Web Service and Daemon have independent release notes and version checks in Settings and Computer details. |
 | Upgrade recovery | Daemon delivery replay, SSE `lastSeq` resume, K8s drain readiness, and lightweight daemon release notices support rolling upgrades. |
-| Explicit Notify | `@magclaw/notify` submits only current-turn user-authorized summaries; Cloud relays them one-way while local Daemon providers resolve private Feishu targets and confirmations. |
+| Explicit Notify | `@magclaw/notify` submits concise summaries only after current-turn user authorization and exposes sender-visible delivery states. |
 
 ## Architecture
 
@@ -117,9 +117,8 @@ MagClaw keeps the coordination plane and execution plane separate:
 - The **Daemon** keeps a Server profile under
   `~/.magclaw/daemon/profiles/<serverSlug>/`, reports runtimes, receives Agent
   commands, and starts local runtime processes.
-- **MagClaw Notify** reuses the reliable Daemon relay with a separate
-  `notify:deliver` protocol. Cloud stores identity, authorization, status, and
-  queue metadata; group/person directories and Feishu identifiers stay local.
+- **MagClaw Notify** provides sender Skills, MCP tools, structured summaries,
+  and sender-visible delivery states without exposing raw Feishu identifiers.
 - The **Agent workspace** keeps per-Agent context and memory outside the source
   checkout. Local single-machine mode also exposes a workspace surface under
   `~/.magclaw/agents/<agentId>/`.
