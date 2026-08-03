@@ -466,6 +466,107 @@ function stripTags(value = '') {
   return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function decodeHtmlEntities(value = '') {
+  const named = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    nbsp: ' ',
+  };
+  return String(value || '').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
+    const key = String(entity || '').toLowerCase();
+    if (key.startsWith('#x')) {
+      const code = Number.parseInt(key.slice(2), 16);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    if (key.startsWith('#')) {
+      const code = Number.parseInt(key.slice(1), 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return Object.hasOwn(named, key) ? named[key] : match;
+  });
+}
+
+function cleanSharePreviewText(value = '', max = 120, { stripMarkup = false } = {}) {
+  let text = decodeHtmlEntities(value);
+  if (stripMarkup) text = stripTags(text);
+  text = text
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return compactText(text, max);
+}
+
+function shareDescriptionLooksLikeSource(value = '') {
+  const text = decodeHtmlEntities(value).trim();
+  if (!text) return false;
+  if (/^(<!doctype|<html\b|<head\b|<meta\b|<style\b|<script\b|<svg\b|<\?xml)/i.test(text)) return true;
+  if (/<(?:html|head|meta|style|script|title|body)\b/i.test(text)) return true;
+  const head = text.slice(0, 320);
+  const tagCount = (head.match(/<[^>]+>/g) || []).length;
+  return tagCount >= 5;
+}
+
+function htmlMetaDescription(content = '') {
+  const text = String(content || '');
+  for (const match of text.matchAll(/<meta\b([^>]*)>/gi)) {
+    const attrs = match[1] || '';
+    const name = htmlAttr(attrs, 'name') || htmlAttr(attrs, 'property');
+    if (!/^(description|og:description|twitter:description)$/i.test(name)) continue;
+    const description = cleanSharePreviewText(htmlAttr(attrs, 'content'), 260, { stripMarkup: true });
+    if (description) return description;
+  }
+  return '';
+}
+
+function htmlBodyPreviewText(content = '', max = 120) {
+  const text = String(content || '');
+  const bodyMatch = text.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const body = bodyMatch ? bodyMatch[1] : text;
+  const visible = body
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<(script|style|svg|head|title)\b[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|li|h[1-6]|section|article|div)>/gi, '\n');
+  return cleanSharePreviewText(visible, max, { stripMarkup: true });
+}
+
+function markdownPreviewText(content = '', max = 120) {
+  const text = String(content || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)]\([^)]+\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '')
+    .replace(/[*_~|]+/g, ' ');
+  return cleanSharePreviewText(text, max, { stripMarkup: true });
+}
+
+function shareContentPreviewText(content = '', contentType = '', max = 120) {
+  const type = normalizeShareContentType(contentType, content);
+  if (type === 'html') {
+    return htmlMetaDescription(content) || htmlBodyPreviewText(content, max);
+  }
+  if (type === 'svg') {
+    return htmlBodyPreviewText(content, max);
+  }
+  return markdownPreviewText(content, max);
+}
+
+function sharePreviewText(share = {}, record = {}, max = 120) {
+  const explicit = String(share.description || '').trim();
+  if (explicit && !shareDescriptionLooksLikeSource(explicit)) {
+    return cleanSharePreviewText(explicit, max, { stripMarkup: true });
+  }
+  return shareContentPreviewText(record.content || share.content || '', record.contentType || share.contentType || '', max);
+}
+
 function slugSegment(value = '', fallback = 'section') {
   const slug = String(value || '')
     .trim()
@@ -629,7 +730,7 @@ function shareListItemPayload(req, share = {}, teamSharingState = {}, extra = {}
     id: String(share.id || '').trim(),
     shareId: String(share.id || '').trim(),
     title: String(share.title || '').trim(),
-    description: String(share.description || '').trim(),
+    description: sharePreviewText(share, record, 120),
     contentType: String(record.contentType || share.contentType || '').trim(),
     versionId: String(record.version?.id || share.currentVersionId || '').trim(),
     contentHash: String(record.contentHash || '').trim(),
@@ -1445,13 +1546,16 @@ function renderShareIndexHtml(shares = [], teamSharingState = {}) {
     <details class="share-channel" open>
       <summary><span class="share-channel-caret">▸</span><span># ${htmlEscape(channel)}</span><span class="share-channel-count">${items.length}</span></summary>
       <div class="share-channel-content">
-        ${items.map(({ share, record }) => `
-          <a class="share-entry" href="/s/${encodeURIComponent(share.id)}">
-            <h2>${htmlEscape(share.title || share.id)}</h2>
-            <p>${htmlEscape(compactText(share.description || record.content || '', 180))}</p>
-            <small>${htmlEscape(record.contentType || share.contentType || 'artifact')} · 创建者 ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(formatChinaDateTime(share.updatedAt || share.createdAt || ''))}</small>
-          </a>
-        `).join('')}
+        ${items.map(({ share, record }) => {
+          const preview = sharePreviewText(share, record, 96);
+          return `
+            <a class="share-entry" href="/s/${encodeURIComponent(share.id)}">
+              <h2>${htmlEscape(share.title || share.id)}</h2>
+              ${preview ? `<p>${htmlEscape(preview)}</p>` : ''}
+              <small>${htmlEscape(record.contentType || share.contentType || 'artifact')} · 创建者 ${htmlEscape(share.creator?.name || 'Unknown creator')} · ${htmlEscape(formatChinaDateTime(share.createdAt || share.updatedAt || ''))}</small>
+            </a>
+          `;
+        }).join('')}
       </div>
     </details>
   `).join('\n') || '<p>No shared pages yet.</p>';
@@ -6024,7 +6128,12 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       const contentChanged = sharePatchChangesContent(operations);
       const contentType = normalizeShareContentType(body.contentType || metadataOperation.contentType || currentContentType, patched.content);
       const nextTitle = compactText(body.title || metadataOperation.title || share.title || 'MagClaw shared page', 140);
-      const nextDescription = compactText(body.description || metadataOperation.description || share.description || patched.content, 260);
+      const nextDescription = sharePreviewText({
+        ...share,
+        description: body.description || metadataOperation.description || share.description || '',
+        content: patched.content,
+        contentType,
+      }, { content: patched.content, contentType }, 260);
       let blob = current.blob;
       let contentHash = current.contentHash;
       let assetIds = Array.from(new Set([
@@ -6290,7 +6399,11 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       id: typeof makeId === 'function' ? makeId('shv') : `shv_${blob.contentHash.slice(0, 16)}`,
       shareId,
       title: compactText(body.title || body.name || 'MagClaw shared page', 140),
-      description: compactText(body.description || content, 260),
+      description: sharePreviewText({
+        description: body.description || '',
+        content,
+        contentType: rawContentType,
+      }, { content, contentType: rawContentType }, 260),
       contentType: rawContentType,
       contentHash: blob.contentHash,
       contentBlobId: blob.id,

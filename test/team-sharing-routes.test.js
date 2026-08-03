@@ -2253,6 +2253,70 @@ test('team sharing route creates an authenticated share and protects it by works
   assert.equal(scopedWrongServerIndex.statusCode, 403);
 });
 
+test('team sharing share list derives concise previews for html shares', async () => {
+  const html = [
+    '<!doctype html><html lang="zh-CN"><head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<meta name="description" content="Kizuna &amp; 团队接入 Team Sharing 的安装、上报和检索要点。">',
+    '<style>:root { --ink: #102033; }</style>',
+    '<title>Kizuna Team Sharing 使用指南</title>',
+    '</head><body><main>',
+    '<h1>Kizuna Team Sharing 使用指南</h1>',
+    '<p>这里是正文内容，说明如何安装、上报、搜索和验收。</p>',
+    '</main></body></html>',
+  ].join('');
+  const deps = routeDeps({
+    currentActor: () => ({ member: { workspaceId: 'ws_route', humanId: 'hum_creator', role: 'owner', name: 'Creator' } }),
+    readJson: async () => ({
+      title: 'Kizuna Team Sharing 使用指南',
+      contentType: 'html',
+      content: html,
+      workspaceId: 'ws_route',
+      channelPath: 'feishu://docs/team/channel/product-sharing',
+    }),
+  });
+
+  const created = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'POST', headers: { host: 'magclaw.example', 'x-forwarded-proto': 'https' } },
+    created,
+    new URL('https://magclaw.example/api/team-sharing/shares'),
+    deps,
+  ), true);
+  assert.equal(created.statusCode, 201);
+  assert.equal(deps.state.teamSharing.shares[0].description, 'Kizuna & 团队接入 Team Sharing 的安装、上报和检索要点。');
+  assert.doesNotMatch(deps.state.teamSharing.shares[0].description, /<!doctype|<meta|<style/i);
+
+  deps.state.teamSharing.shares[0].description = html
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  deps.state.teamSharing.shares[0].updatedAt = '2026-06-02T10:00:00.000Z';
+  const listRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    listRes,
+    new URL('https://magclaw.example/api/team-sharing/shares?workspaceId=ws_route'),
+    deps,
+  ), true);
+  assert.equal(listRes.statusCode, 200);
+  assert.equal(listRes.data.shares[0].description, 'Kizuna & 团队接入 Team Sharing 的安装、上报和检索要点。');
+  assert.doesNotMatch(JSON.stringify(listRes.data.shares[0]), /<!doctype html|width=device-width|:root/i);
+
+  const indexRes = makeResponse();
+  assert.equal(await handleTeamSharingApi(
+    { method: 'GET', headers: {} },
+    indexRes,
+    new URL('https://magclaw.example/share'),
+    deps,
+  ), true);
+  assert.equal(indexRes.statusCode, 200);
+  assert.match(indexRes.body, /Kizuna &amp; 团队接入 Team Sharing 的安装、上报和检索要点。/);
+  assert.match(indexRes.body, /2026年06月01日 18:00:00/);
+  assert.doesNotMatch(indexRes.body, /2026年06月02日 18:00:00/);
+  assert.doesNotMatch(indexRes.body, /&lt;!doctype html|&lt;meta charset|&lt;style&gt;:root/i);
+});
+
 test('team sharing share assets are deduped, protected, and range-readable', async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-team-sharing-assets-'));
   const saveAttachmentBuffer = async ({ name, type, buffer, source, extra = {} }) => {
