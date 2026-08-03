@@ -81,48 +81,15 @@ profile exits with an `already running` error; a repeated background start for
 that profile reports the existing process instead of creating another
 connection.
 
-## Notify bridge
+## Notify
 
-Daemon `0.1.47` includes the one-way `notify:deliver` bridge used by
-`@magclaw/notify`. The public client authenticates to MagClaw Cloud and never
-receives local Feishu routing data. The Daemon keeps group/person mappings,
-pending confirmations, request context, memory, and delivery receipts under:
+Notify is no longer part of this package. The one-way notification path is a
+separate, self-contained pair of packages:
 
-```text
-~/.magclaw/daemon/profiles/<profile>/notify/
-```
+- senders install the public `@magclaw/notify`;
+- the owner runs the private `@magclaw/notify-daemon`, which keeps its own
+  Relay connection, local directory, approvals, and delivery providers under
+  `~/.magclaw/notify/`.
 
-The local Agent provider is configurable as `openclaw`, `codex`,
-`claude-code`, or `hermes`. Delivery and owner confirmation are separate
-providers. Delivery supports `openclaw-feishu` for cards without mentions and
-`lark-cli-feishu` for deterministic card mentions. They are disabled by
-default, and the Feishu account/profile, confirmation target, group Chat IDs,
-and person Open IDs start empty.
-
-```sh
-magclaw-notify-handler status --profile my-server
-magclaw-notify-handler configure --profile my-server \
-  --agent-provider openclaw --agent-id silver-member
-magclaw-notify-handler add-group --profile my-server \
-  --name "研发群" --chat-id "<local-chat-id>" --aliases "技术群"
-magclaw-notify-handler configure --profile my-server \
-  --delivery-provider lark-cli-feishu \
-  --delivery-command "/path/to/lark-cli" \
-  --delivery-enabled true --delivery-account "<monkey-lark-profile>"
-magclaw-notify-handler register-route --profile my-server
-magclaw-notify-handler sync-directory --profile my-server
-```
-
-`register-route` binds Notify to that exact Computer with its existing machine
-token. Another Computer cannot take over an active route; switching routes
-requires a MagClaw owner/admin action.
-
-Ambiguous group aliases and newly proposed person nicknames pause the request.
-An owner confirmation is bound to an exact confirmation ID, persists the local
-mapping, resumes the stored request, and reports the final status back to Cloud.
-Person disambiguation also requires an explicit alias mapping such as
-`--person-map "三哥=张三"`; a standalone “approve” cannot create an identity.
-
-Do not put bot credentials in these commands or files. OpenClaw or lark-cli
-owns the Feishu account secret; Notify stores only the local provider profile
-name and resolved Feishu directory identifiers.
+The Daemon in this package no longer accepts `notify:deliver` frames and no
+longer installs any Notify Skill.

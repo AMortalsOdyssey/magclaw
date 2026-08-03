@@ -1,5 +1,26 @@
 # @magclaw/cli-core Release Notes
 
+## 0.2.0 - 2026-08-03 - Notify removed from cli-core
+
+### breaking
+
+- Removes the `magclaw-notify-handler` command, its Skill, and the owner-side
+  Notify handler implementation from this package. Senders use `@magclaw/notify`;
+  owners use the private `@magclaw/notify-daemon`.
+- The Daemon no longer advertises or accepts `notify:deliver` frames.
+
+### fixed
+
+- Stops overwriting an installed `magclaw-notify-handler` Skill with this
+  package's stale copy on every daemon ready frame, which could disable the
+  owner approval handoff.
+- Removes an obsolete `magclaw-notify-handler` shim during durable CLI install.
+
+### security
+
+- This package no longer distributes owner-side Notify approval, directory,
+  grant, or Feishu delivery logic.
+
 ## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
 ### bug fix
 - Explicitly requested people are preserved when the local Agent returns an empty or partial mention list, so deterministic Feishu cards still contain real mentions.

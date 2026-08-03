@@ -1,5 +1,17 @@
 # @magclaw/daemon Release Notes
 
+## 0.2.0 - 2026-08-03 - Notify moved out of the Daemon
+
+### breaking
+
+- The Daemon no longer advertises or accepts `notify:deliver` frames and no
+  longer installs a Notify Skill. Senders use `@magclaw/notify`; the owner runs
+  the private `@magclaw/notify-daemon`.
+
+### changed
+
+- Tracks `@magclaw/cli-core@0.2.0`.
+
 ## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
 ### bug fix
 - Ships the shared Notify handler fix that prevents local Agent analysis from dropping user-requested Feishu mentions.

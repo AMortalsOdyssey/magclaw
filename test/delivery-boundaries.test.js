@@ -100,6 +100,28 @@ test('Notify package includes sender CLI, MCP tools, structured protocol, and ex
   assert.equal(files.some((file) => file.includes('config.json')), false);
 });
 
+test('No public package other than the owner Notify Daemon ships owner-side Notify implementation or Skills', () => {
+  for (const pkg of ['./cli-core', './daemon', './computer', './team-sharing', './notify']) {
+    const result = spawnSync('npm', ['pack', '--dry-run', '--json', pkg], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/magclaw-delivery-boundaries-cache', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
+    });
+    assert.equal(result.status, 0, `${pkg}: ${result.stderr || result.stdout}`);
+    const files = JSON.parse(result.stdout)[0].files.map((file) => file.path);
+    assert.equal(
+      files.some((file) => file.includes('magclaw-notify-handler')),
+      false,
+      `${pkg} must not ship the owner Notify handler Skill or command`,
+    );
+    assert.equal(
+      files.some((file) => /notify-handler\.js$/.test(file)),
+      false,
+      `${pkg} must not ship an owner Notify handler implementation`,
+    );
+  }
+});
+
 test('cloud runtime images include the shared Notify summary protocol module', async () => {
   for (const file of ['Dockerfile', 'web/Dockerfile']) {
     const source = await readFile(path.join(ROOT, file), 'utf8');

@@ -1,5 +1,12 @@
 # @magclaw/computer Release Notes
 
+## 0.2.0 - 2026-08-03 - Locked set alignment
+
+### changed
+
+- Tracks `@magclaw/cli-core@0.2.0`, which no longer ships owner-side Notify
+  code, commands, or Skills.
+
 ## 0.1.47 - 2026-08-01 - Explicit Notify mention preservation
 ### bug fix
 - Ships the shared Notify handler fix that preserves user-requested Feishu mentions through Agent analysis.

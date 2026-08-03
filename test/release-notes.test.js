@@ -31,11 +31,11 @@ test('release notes expose independent Web, Daemon, and Computer version catalog
   assert.match(notes.web.releases[0].title, /Standalone Notify Relay/);
   assert.match(notes.web.releases[0].new[0], /independently from MagClaw Server/i);
   assert.equal(notes.web.releases[1].version, '0.4.1');
-  assert.equal(notes.daemon.releases[0].version, '0.1.47');
-  assert.match(notes.daemon.releases[0].title, /Explicit Notify mention preservation/);
+  assert.equal(notes.daemon.releases[0].version, '0.2.0');
+  assert.match(notes.daemon.releases[0].title, /Notify moved out of the Daemon/);
   assert.match(notes.teamSharing.releases[0].title, /Unattended upgrade hardening/i);
   assert.match(notes.teamSharing.releases[0].bugFix[0], /POSIX quoting/i);
-  assert.match(notes.cliCore.releases[0].title, /Explicit Notify mention preservation/);
+  assert.match(notes.cliCore.releases[0].title, /Notify removed from cli-core/);
 });
 
 test('release notes normalization keeps the seeded catalog authoritative', () => {
@@ -63,9 +63,9 @@ test('release notes normalization keeps the seeded catalog authoritative', () =>
   assert.deepEqual(notes.web.releases.map((release) => release.version).slice(0, 3), ['0.4.2', '0.4.1', '0.4.0']);
   assert.match(notes.web.releases[0].new[0], /independently from MagClaw Server/i);
   assert.equal(notes.web.releases[11].features[0], 'Feishu authorization login is now supported.');
-  assert.equal(notes.daemon.releases[0].version, '0.1.47');
+  assert.equal(notes.daemon.releases[0].version, '0.2.0');
   assert.ok(notes.daemon.releases.some((release) => release.version === '0.1.17'));
-  assert.equal(notes.computer.releases[0].version, '0.1.47');
+  assert.equal(notes.computer.releases[0].version, '0.2.0');
   assert.ok(notes.computer.releases.some((release) => release.version === '0.1.23'));
   assert.equal(notes.teamSharing.releases[0].version, '0.2.15');
 });
