@@ -36,7 +36,7 @@ import {
   updateNotifyDirectoryAlias,
   prepareNotifyDelivery,
 } from '../notify-daemon/src/handler.js';
-import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
+import { installNotifyIntegrations, notifyIdempotencyKey, notifyRequestIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown, sanitizeNotifyMarkdown } from '../notify/src/summary.js';
 import {
@@ -166,10 +166,19 @@ test('Notify submission requires explicit current-turn authorization and strips 
   assert.equal(payload.content.markdown, '完成修复');
 });
 
-test('Notify idempotency keys are stable ASCII even for Chinese group names', () => {
+test('Notify idempotency keys are stable for turns and unique for standalone sends', () => {
   const first = notifyIdempotencyKey('session-1:turn-1:研发群');
   assert.equal(first, notifyIdempotencyKey('session-1:turn-1:研发群'));
   assert.match(first, /^mcn_[A-Za-z0-9_-]{43}$/);
+  assert.equal(
+    notifyRequestIdempotencyKey({ sessionId: 'session-1', turnId: 'turn-1' }, '研发群'),
+    notifyRequestIdempotencyKey({ sessionId: 'session-1', turnId: 'turn-1' }, '研发群'),
+  );
+  const values = ['uuid-a', 'uuid-b'];
+  assert.notEqual(
+    notifyRequestIdempotencyKey({}, '研发群', () => values.shift()),
+    notifyRequestIdempotencyKey({}, '研发群', () => values.shift()),
+  );
 });
 
 test('Notify audit files rotate, keep owner-only permissions, correlate events, and redact secrets and message bodies', async () => {
@@ -335,7 +344,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.equal(desktop.theme, 'dark');
   assert.equal(desktop.mcpServers.existing.command, 'existing-mcp');
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.1', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.2', 'mcp']);
   assert.equal(await readFile(`${desktopConfigPath}.magclaw-notify.bak`, 'utf8'), originalDesktopConfig);
 
   const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-invalid-'));

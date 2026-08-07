@@ -331,6 +331,17 @@ export function notifyIdempotencyKey(value) {
   return `mcn_${crypto.createHash('sha256').update(String(value || '')).digest('base64url')}`;
 }
 
+export function notifyRequestIdempotencyKey(flags = {}, group = '', randomUUID = crypto.randomUUID) {
+  const explicit = String(flags.idempotencyKey || '').trim();
+  if (explicit) return notifyIdempotencyKey(explicit);
+  const sessionId = String(flags.sessionId || '').trim();
+  const turnId = String(flags.turnId || '').trim();
+  const source = sessionId || turnId
+    ? [sessionId, turnId, group].join(':')
+    : randomUUID();
+  return notifyIdempotencyKey(source);
+}
+
 export async function sendNotify(flags) {
   if (flags.authorizedCurrentTurn !== true) throw new Error('Refusing to submit: --authorized-current-turn is required for the current user-instructed turn.');
   const auth = await authenticated(flags);
@@ -339,8 +350,7 @@ export async function sendNotify(flags) {
   const summary = await readStructuredSummary(flags);
   const markdown = summary ? renderNotifySummaryMarkdown(summary) : await readMarkdown(flags);
   if (!markdown) throw new Error('--summary-json-file, --markdown, or --markdown-file is required.');
-  const idempotencySource = String(flags.idempotencyKey || [flags.sessionId, flags.turnId, group].filter(Boolean).join(':') || crypto.randomUUID());
-  const idempotencyKey = notifyIdempotencyKey(idempotencySource);
+  const idempotencyKey = notifyRequestIdempotencyKey(flags, group);
   return requestJson(auth.config.relayUrl, '/api/notify/requests', {
     method: 'POST',
     token: auth.config.token,
