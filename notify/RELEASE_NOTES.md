@@ -1,5 +1,15 @@
 # @magclaw/notify Release Notes
 
+## 0.4.2 - 2026-08-07 - Independent standalone sends
+
+### fixed
+
+- Assigns a fresh idempotency key to each standalone send that omits session
+  and turn identifiers, so separate requests to the same group are not
+  incorrectly deduplicated.
+- Preserves deterministic retry behavior when a session, turn, or explicit
+  idempotency key is supplied.
+
 ## 0.4.1 - 2026-08-07 - Safer deterministic summaries
 
 ### fixed
