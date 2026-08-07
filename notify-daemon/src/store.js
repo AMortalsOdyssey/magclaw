@@ -242,10 +242,12 @@ export async function ensureNotifyStateStore(profilePaths) {
     await mkdir(path.join(root, 'requests'), { recursive: true, mode: 0o700 });
     const databasePath = path.join(root, 'state.db');
     const database = new DatabaseSync(databasePath);
+    // Configure lock waiting before WAL/schema pragmas because multiple CLI
+    // processes may open the same database at exactly the same time.
+    database.exec('PRAGMA busy_timeout = 5000;');
     database.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
-      PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS notify_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
