@@ -65,7 +65,7 @@ test('Notify Daemon doctor separates blocking initialization from optional setup
       assert.ok(report.blocking.includes(id), `${id} should block`);
     }
     // Mentions and an analysis Agent are genuinely optional.
-    for (const id of ['directory.people', 'agent.analysis', 'sender.setup_token']) {
+    for (const id of ['directory.people', 'agent.group_context', 'sender.setup_token']) {
       assert.equal(report.checks.find((check) => check.id === id).status, 'optional', id);
       assert.ok(!report.blocking.includes(id), `${id} must not block`);
     }

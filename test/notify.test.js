@@ -1174,7 +1174,7 @@ test('Notify mirrors only sanitized delivery context into the shared OpenClaw gr
     requester: { id: 'hum_remote', name: '李四' },
     payload: {
       target: { group: '研发群' },
-      content: { title: '本轮更新 /Users/alice/code/kizuna', markdown: '- secret: raw-secret-value' },
+      content: { title: '本轮更新 /Users/alice/code/kizuna', markdown: '- secret: raw-secret-value token=sender-secret 10.0.0.8' },
       mentions: [],
       context: {},
     },
@@ -1187,9 +1187,12 @@ test('Notify mirrors only sanitized delivery context into the shared OpenClaw gr
   const groupCall = calls.find((call) => call.args.includes('feishu:group:oc_local_only'));
   assert.ok(groupCall);
   assert.match(groupCall.prompt, /Keep it as group conversation context/);
-  assert.doesNotMatch(groupCall.prompt, /Users\/alice|agent-secret|raw-secret-value|10\.0\.0\.8/);
+  assert.doesNotMatch(groupCall.prompt, /Users\/alice|sender-secret|10\.0\.0\.8/);
   assert.match(groupCall.prompt, /\[local-path\]|\[kizuna\]/);
   assert.match(groupCall.prompt, /\[private-ip\]/);
+  // The delivered content is built from the sender's submission only. An Agent
+  // reply must never become the message body, so its text cannot appear here.
+  assert.doesNotMatch(groupCall.prompt, /agent-secret|修复/);
 });
 
 test('Notify analysis cannot drop explicitly requested mentions', () => {

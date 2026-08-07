@@ -739,9 +739,11 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
   add('directory.people', false, people.some((person) => person && person.openId && person.enabled !== false),
     `${people.length} person(s) configured. Only needed to @-mention people.`,
     'magclaw-notify daemon add-person --name <name> --open-id <ou_...>');
-  add('agent.analysis', false, Boolean(agent.kind && agent.agentId),
-    agent.agentId ? `${agent.kind} agent ${agent.agentId} resolves mention aliases.` : 'No analysis Agent configured; structured summaries are delivered as-is.',
-    'magclaw-notify daemon configure --agent-provider openclaw --agent-id <agent>');
+  add('agent.group_context', false, Boolean(agent.groupContextSync === true && agent.agentId),
+    agent.groupContextSync === true && agent.agentId
+      ? `Delivered summaries are mirrored into ${agent.kind} agent ${agent.agentId}'s group session.`
+      : 'Group context sync is off; delivery is unaffected. Content is always rendered deterministically from the submitted summary.',
+    'magclaw-notify daemon configure --agent-provider openclaw --agent-id <agent> --group-context-sync true');
   add('sender.setup_token', false, Boolean(daemonConfig.inviteToken),
     daemonConfig.inviteToken ? 'A Setup Token exists for senders.' : 'No Setup Token issued yet.',
     'magclaw-notify daemon setup-token rotate');
