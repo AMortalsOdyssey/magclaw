@@ -33,7 +33,7 @@ import {
 } from '../notify-daemon/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
-import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../notify/src/summary.js';
+import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown, sanitizeNotifyMarkdown } from '../notify/src/summary.js';
 import {
   ensureNotifyRuntimeLogs,
   notifyDaemonPaths,
@@ -286,21 +286,25 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   await mkdir(path.dirname(desktopConfigPath), { recursive: true });
   const originalDesktopConfig = `${JSON.stringify({ mcpServers: { existing: { command: 'existing-mcp' } }, theme: 'dark' }, null, 2)}\n`;
   await writeFile(desktopConfigPath, originalDesktopConfig);
-  const installed = await installNotifyIntegrations({ targets: 'codex,claude-code,claude-desktop' }, {
+  const installed = await installNotifyIntegrations({ targets: 'codex,claude-code,openclaw,hermes,claude-desktop' }, {
     homeDir: root,
     platform: 'darwin',
     env: {},
   });
-  assert.deepEqual(installed.map((item) => item.kind), ['codex', 'claude-code', 'claude-desktop']);
+  assert.deepEqual(installed.map((item) => item.kind), ['codex', 'claude-code', 'openclaw', 'hermes', 'claude-desktop']);
   const codexMetadata = await readFile(path.join(root, '.codex', 'skills', 'magclaw-notify', 'agents', 'openai.yaml'), 'utf8');
   assert.match(codexMetadata, /allow_implicit_invocation: false/);
   const claudeSkill = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(claudeSkill, /disable-model-invocation: true/);
+  const openclawSkill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
+  const hermesSkill = await readFile(path.join(root, '.hermes', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
+  assert.match(openclawSkill, /disable-model-invocation: true/);
+  assert.match(hermesSkill, /disable-model-invocation: true/);
   const desktop = JSON.parse(await readFile(desktopConfigPath, 'utf8'));
   assert.equal(desktop.theme, 'dark');
   assert.equal(desktop.mcpServers.existing.command, 'existing-mcp');
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.0', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.1', 'mcp']);
   assert.equal(await readFile(`${desktopConfigPath}.magclaw-notify.bak`, 'utf8'), originalDesktopConfig);
 
   const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-invalid-'));
@@ -1137,6 +1141,43 @@ test('Notify public summaries redact local machine details and credentials witho
   assert.match(summary.images[0].url, /signature=%5Bredacted%5D/);
   assert.doesNotMatch(rendered, /Users\/alice|home\/alice|raw-secret-value|192\.168\.1\.7/);
   assert.equal(redactNotifyPublicText('secret: abc localhost:8080'), 'secret: [redacted] [local-host]');
+});
+
+test('Notify public redaction covers credential, identity, cluster, and phone inputs', () => {
+  const cases = [
+    ['GitLab token glpat-AbCdEf1234567890', 'GitLab token [redacted-secret]', /glpat-/],
+    ['GitHub ghp_abcdefghijklmnopqrstuvwxyz123456', 'GitHub [redacted-secret]', /ghp_/],
+    ['OAuth gho_abcdefghijklmnopqrstuvwxyz123456', 'OAuth [redacted-secret]', /gho_/],
+    ['service ghs_abcdefghijklmnopqrstuvwxyz123456', 'service [redacted-secret]', /ghs_/],
+    ['fine github_pat_11AAabcdefghijklmnopqrstuvwxyz', 'fine [redacted-secret]', /github_pat_/],
+    ['jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature123', 'jwt [redacted-jwt]', /eyJ/],
+    ['mail operator@example.com', 'mail [redacted-email]', /operator@/],
+    ['host relay.prod.ttyuyin.com:443', 'host [private-host]', /ttyuyin/],
+    ['dns notify.default.svc.cluster.local', 'dns [cluster-host]', /svc\.cluster/],
+    ['pod=notify-daemon-7f9d8c6b5-x2k9p namespace: magclaw-test', 'pod=[cluster-resource] namespace: [cluster-resource]', /notify-daemon|magclaw-test/],
+    ['call 13800138000', 'call [redacted-phone]', /13800138000/],
+  ];
+  for (const [input, expected, forbidden] of cases) {
+    const actual = redactNotifyPublicText(input);
+    assert.equal(actual, expected, input);
+    assert.doesNotMatch(actual, forbidden, input);
+  }
+});
+
+test('Notify rich text sanitizer keeps Markdown only and rebuilds safe HTTPS links', () => {
+  const actual = sanitizeNotifyMarkdown([
+    '<font color="red">完成</font>',
+    '<a href="https://example.com/docs?token=raw">https://evil.invalid <b>文档</b></a>',
+    '<a href="http://127.0.0.1/private">内网</a>',
+    '<at user_id="ou_secret">张三</at>',
+    '<script>alert(1)</script>',
+    '[https://evil.invalid](https://example.com/safe)',
+  ].join('\n'));
+  assert.match(actual, /^完成/m);
+  assert.match(actual, /\[文档\]\(https:\/\/example\.com\/docs\?token=%5Bredacted%5D\)/);
+  assert.match(actual, /^内网$/m);
+  assert.match(actual, /\[查看链接\]\(https:\/\/example\.com\/safe\)/);
+  assert.doesNotMatch(actual, /<|ou_secret|alert|https:\/\/evil\.invalid|http:\/\/127\.0\.0\.1/);
 });
 
 test('Notify mirrors only sanitized delivery context into the shared OpenClaw group session', async () => {

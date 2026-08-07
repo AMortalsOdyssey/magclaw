@@ -214,7 +214,7 @@ function skillRoot(kind, homeDir) {
 async function installHostSkill(kind, target) {
   await rm(target, { recursive: true, force: true });
   await copyTree(SKILL_SOURCE, target);
-  if (kind === 'claude-code') {
+  if (['claude-code', 'openclaw', 'hermes'].includes(kind)) {
     const skillFile = path.join(target, 'SKILL.md');
     const skill = await readFile(skillFile, 'utf8');
     const hostSkill = skill.replace(/^(---\n[\s\S]*?)(\n---\n)/, (_match, frontmatter, closing) => (

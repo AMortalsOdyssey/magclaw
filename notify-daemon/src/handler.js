@@ -15,7 +15,7 @@ import { resolveNotifyExecutable } from './executable.js';
 import { createEnvFeishuCredentialProvider, createFeishuRestClient } from './feishu-client.js';
 import { notifyRuntime } from './runtime-context.js';
 import { ensureNotifyStateStore, notifyStateStoreForFile } from './store.js';
-import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../../notify/src/summary.js';
+import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown, sanitizeNotifyMarkdown } from '../../notify/src/summary.js';
 
 const HANDLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HANDLER_SKILL_SOURCE = path.join(HANDLER_ROOT, 'skills', 'magclaw-notify-handler');
@@ -496,10 +496,10 @@ function buildNotifyAnalysis(request) {
     ? renderNotifySummaryMarkdown(structuredSummary)
     : request.payload?.content?.markdown || '';
   return {
-    title: cleanText(redactNotifyPublicText(request.payload?.content?.title || '工作进展通知', 1000), 160),
+    title: cleanText(sanitizeNotifyMarkdown(request.payload?.content?.title || '工作进展通知', 1000), 160),
     // Redact after rendering: a structured summary is sanitized field by field,
     // but the rendered document must be scrubbed again as a whole.
-    markdown: cleanText(redactNotifyPublicText(rendered, 96 * 1024), 96 * 1024)
+    markdown: cleanText(sanitizeNotifyMarkdown(rendered, 96 * 1024), 96 * 1024)
       .replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, '')
       .replace(/<at\b[^>]*\/?\s*>/gi, '')
       .replace(/@all\b/gi, '')

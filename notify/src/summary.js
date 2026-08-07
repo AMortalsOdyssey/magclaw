@@ -22,10 +22,14 @@ export function redactNotifyPublicText(value = '', max = 96 * 1024) {
   return String(value || '')
     .replace(/\u0000/g, '')
     .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(/\bglpat-[A-Za-z0-9_-]{8,}\b/g, '[redacted-secret]')
+    .replace(/\b(?:ghp|gho|ghs)_[A-Za-z0-9_]{16,}\b/g, '[redacted-secret]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{16,}\b/g, '[redacted-secret]')
+    .replace(/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}(?:\.[A-Za-z0-9_-]{5,})?\b/g, '[redacted-jwt]')
     .replace(/\b(?:sk|rk|pk|mcn|mfp)_[A-Za-z0-9_-]{16,}\b/g, '[redacted-secret]')
     .replace(/\b(?:oc|ou|on|om|cli)_[A-Za-z0-9_-]+\b/g, '[redacted-feishu-id]')
-    .replace(/((?:app[_ -]?secret|client[_ -]?secret|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|password|passwd|token|secret)\s*[:=]\s*)[^\s,;\]}]+/gi, '$1[redacted]')
-    .replace(/([?&](?:access_?token|auth|authorization|code|credential|key|password|secret|signature|token|x-amz-[^=&#\s]+)=)[^&#\s]*/gi, '$1[redacted]')
+    .replace(/((?:app[_ -]?secret|client[_ -]?secret|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|password|passwd|token|secret)\s*[:=]\s*)[^\s,;\])}"'<>]+/gi, '$1[redacted]')
+    .replace(/([?&](?:access_?token|auth|authorization|code|credential|key|password|secret|signature|token|x-amz-[^=&#\s]+)=)[^&#\s\])}"'<>]*/gi, '$1[redacted]')
     .replace(/file:\/\/\/(?:Users|home)\/[^\s)\]}]+/gi, '[local-path]')
     .replace(/\/(?:Users|home)\/[^/\s]+\/(?:code|src|workspace)\/kizuna(?=\/|\b)/gi, '[kizuna]')
     .replace(/\/(?:Users|home)\/[^\s)\]}]+/g, '[local-path]')
@@ -34,8 +38,48 @@ export function redactNotifyPublicText(value = '', max = 96 * 1024) {
     .replace(/\b192\.168\.(?:\d{1,3}\.)\d{1,3}\b/g, '[private-ip]')
     .replace(/\b172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3}\b/g, '[private-ip]')
     .replace(/\b169\.254\.(?:\d{1,3}\.)\d{1,3}\b/g, '[private-ip]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
+    .replace(/\b(?:[A-Za-z0-9-]+\.)*ttyuyin\.com(?::\d+)?\b/gi, '[private-host]')
+    .replace(/\b(?:[A-Za-z0-9-]+\.)+svc\.cluster\.local(?::\d+)?\b/gi, '[cluster-host]')
+    .replace(/((?:k8s[_ -]?)?(?:pod(?:[_ -]?name)?|namespace|ns)\s*[:=]\s*)[A-Za-z0-9][A-Za-z0-9._-]*/gi, '$1[cluster-resource]')
+    .replace(/(\/api\/v1\/namespaces\/)[A-Za-z0-9][A-Za-z0-9._-]*/gi, '$1[cluster-resource]')
+    .replace(/(\/pods\/)[A-Za-z0-9][A-Za-z0-9._-]*/gi, '$1[cluster-resource]')
+    .replace(/(?<!\d)1[3-9]\d{9}(?!\d)/g, '[redacted-phone]')
     .replace(/\b(?:localhost|[A-Za-z0-9._-]+\.local)(?::\d+)?\b/gi, '[local-host]')
     .slice(0, max);
+}
+
+function stripUnsafeHtml(value = '') {
+  return String(value || '')
+    .replace(/<(?:script|style|at)\b[^>]*>[\s\S]*?<\/(?:script|style|at)\s*>/gi, '')
+    .replace(/<(?:script|style|at)\b[^>]*\/?>/gi, '')
+    .replace(/<[^>]*>/g, '');
+}
+
+function markdownLabel(value = '', fallback = '查看链接') {
+  const label = stripUnsafeHtml(redactNotifyPublicText(value, 1000))
+    .replace(/(?:https?:\/\/|www\.)[^\s\])>]+/gi, '')
+    .replace(/[<>\[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return label.slice(0, 120) || fallback;
+}
+
+/**
+ * Converts the small supported rich-text surface to Markdown, then removes all
+ * remaining HTML. Every link is rebuilt from a validated HTTPS URL so Feishu
+ * never receives arbitrary tags or unsafe link labels from sender content.
+ */
+export function sanitizeNotifyMarkdown(value = '', max = 96 * 1024) {
+  let markdown = redactNotifyPublicText(value, max * 2)
+    .replace(/<a\b[^>]*\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a\s*>/gi, (_match, _quote, href, label) => {
+      try { return `[${markdownLabel(label)}](${httpsUrl(href)})`; } catch { return markdownLabel(label, ''); }
+    });
+  markdown = stripUnsafeHtml(markdown);
+  markdown = markdown.replace(/(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (_match, image, label, href) => {
+    try { return `${image}[${markdownLabel(label, image ? '图片' : '查看链接')}](${httpsUrl(href)})`; } catch { return markdownLabel(label, ''); }
+  });
+  return markdown.slice(0, max);
 }
 
 function list(value) {
@@ -94,7 +138,7 @@ export function normalizeNotifySummary(value, options = {}) {
     if (!link || typeof link !== 'object' || Array.isArray(link)) return null;
     const url = httpsUrl(link.url || link.href || '');
     if (!url) return null;
-    return { label: clean(redactNotifyPublicText(link.label || link.title || '查看详情', 400), 80), url };
+    return { label: markdownLabel(link.label || link.title || '查看详情').slice(0, 80), url };
   }).filter(Boolean).slice(0, 8);
   const images = list(value.images).map((image) => {
     if (!image || typeof image !== 'object' || Array.isArray(image)) return null;
@@ -102,7 +146,7 @@ export function normalizeNotifySummary(value, options = {}) {
     if (!url) return null;
     return {
       url,
-      alt: clean(redactNotifyPublicText(image.alt || image.caption || '任务结果图片', 600), 120),
+      alt: markdownLabel(image.alt || image.caption || '任务结果图片', '任务结果图片').slice(0, 120),
       ...(clean(redactNotifyPublicText(image.caption || '', 800), 160)
         ? { caption: clean(redactNotifyPublicText(image.caption, 800), 160) }
         : {}),
@@ -149,7 +193,7 @@ export function renderNotifySummaryMarkdown(summaryValue) {
     lines.push('', '**结果图片**');
     for (const image of summary.images) lines.push(`- [${escapeMarkdownLabel(image.caption || image.alt)}](${image.url})`);
   }
-  return lines.join('\n').trim();
+  return sanitizeNotifyMarkdown(lines.join('\n').trim());
 }
 
 export function notifySummaryJsonSchema() {

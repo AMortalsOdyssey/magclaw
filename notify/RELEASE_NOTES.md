@@ -1,5 +1,15 @@
 # @magclaw/notify Release Notes
 
+## 0.4.1 - 2026-08-07 - Safer deterministic summaries
+
+### fixed
+
+- Redacts GitLab and GitHub tokens, JWTs, email addresses, private service
+  hosts, Kubernetes resource names, and mainland China phone numbers.
+- Converts supported links to validated HTTPS Markdown and removes all other
+  HTML or Feishu rich-text tags from delivered summaries.
+- Installs OpenClaw and Hermes Skills with implicit model invocation disabled.
+
 ## 0.4.0 - 2026-08-03 - Sender-only package boundary
 
 ### changed
