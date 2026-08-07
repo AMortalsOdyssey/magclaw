@@ -11,6 +11,7 @@
     ".": "./src/daemon.js"
   },
   "dependencies": {
+    "undici": "^7.29.0",
     "ws": "^8.21.0"
   },
   "engines": {

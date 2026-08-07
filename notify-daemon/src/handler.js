@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Agent, fetch as undiciFetch } from 'undici';
 import {
   createNotifyAuditLog,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
@@ -669,13 +670,31 @@ export function isPrivateNotifyAddress(address = '') {
   return true;
 }
 
-async function assertPublicImageUrl(value) {
+export async function resolvePublicNotifyImage(value, options = {}) {
   const url = new URL(String(value || ''));
   if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Notify images must use public HTTPS URLs without embedded credentials.');
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  const addresses = net.isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
+  const lookupHost = options.lookup || lookup;
+  const addresses = net.isIP(host)
+    ? [{ address: host, family: net.isIP(host) }]
+    : await lookupHost(host, { all: true, verbatim: true });
   if (!addresses.length || addresses.some((item) => isPrivateNotifyAddress(item.address))) throw new Error('Notify image URL resolved to a private or reserved address.');
-  return url;
+  const selected = addresses[0];
+  return { url, address: selected.address, family: Number(selected.family || net.isIP(selected.address)) };
+}
+
+export function createPinnedNotifyImageLookup(address, family = net.isIP(address)) {
+  const pinnedAddress = String(address || '');
+  const pinnedFamily = Number(family || net.isIP(pinnedAddress));
+  if (!pinnedAddress || !pinnedFamily || isPrivateNotifyAddress(pinnedAddress)) throw new Error('Notify image connection requires a public pinned IP address.');
+  return (_hostname, options, callback) => {
+    if (options?.all) callback(null, [{ address: pinnedAddress, family: pinnedFamily }]);
+    else callback(null, pinnedAddress, pinnedFamily);
+  };
+}
+
+export function createPinnedNotifyImageAgent(resolved) {
+  return new Agent({ connect: { lookup: createPinnedNotifyImageLookup(resolved.address, resolved.family) } });
 }
 
 function imageExtension(contentType = '') {
@@ -683,35 +702,50 @@ function imageExtension(contentType = '') {
   return types[String(contentType).split(';')[0].trim().toLowerCase()] || '';
 }
 
-async function downloadNotifyImage(source, targetBase) {
-  let current = await assertPublicImageUrl(source.url);
+export async function downloadNotifyImage(source, targetBase, options = {}) {
+  let current = String(source.url || '');
+  const fetchImage = options.fetch || undiciFetch;
+  const agentFactory = options.agentFactory || createPinnedNotifyImageAgent;
   for (let redirect = 0; redirect <= 3; redirect += 1) {
-    const response = await fetch(current, { redirect: 'manual', headers: { accept: 'image/png,image/jpeg,image/gif,image/webp' } });
-    if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
-      await response.body?.cancel().catch(() => {});
-      current = await assertPublicImageUrl(new URL(response.headers.get('location'), current).toString());
-      continue;
-    }
-    if (!response.ok) throw new Error(`Notify image download returned HTTP ${response.status}.`);
-    const extension = imageExtension(response.headers.get('content-type') || '');
-    if (!extension) throw new Error('Notify image URL did not return a supported image type.');
-    const declared = Number(response.headers.get('content-length') || 0);
-    if (declared > 10 * 1024 * 1024) throw new Error('Notify image exceeds the 10 MB Feishu limit.');
-    const chunks = [];
-    let size = 0;
-    for await (const chunk of response.body) {
-      size += chunk.byteLength;
-      if (size > 10 * 1024 * 1024) {
-        await response.body.cancel().catch(() => {});
-        throw new Error('Notify image exceeds the 10 MB Feishu limit.');
+    const resolved = await resolvePublicNotifyImage(current, { lookup: options.lookup });
+    const dispatcher = agentFactory(resolved);
+    try {
+      const response = await fetchImage(resolved.url, {
+        dispatcher,
+        redirect: 'manual',
+        headers: {
+          accept: 'image/png,image/jpeg,image/gif,image/webp',
+          host: resolved.url.host,
+        },
+      });
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        await response.body?.cancel().catch(() => {});
+        current = new URL(response.headers.get('location'), resolved.url).toString();
+        continue;
       }
-      chunks.push(Buffer.from(chunk));
+      if (!response.ok) throw new Error(`Notify image download returned HTTP ${response.status}.`);
+      const extension = imageExtension(response.headers.get('content-type') || '');
+      if (!extension) throw new Error('Notify image URL did not return a supported image type.');
+      const declared = Number(response.headers.get('content-length') || 0);
+      if (declared > 10 * 1024 * 1024) throw new Error('Notify image exceeds the 10 MB Feishu limit.');
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > 10 * 1024 * 1024) {
+          await response.body.cancel().catch(() => {});
+          throw new Error('Notify image exceeds the 10 MB Feishu limit.');
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+      if (!size) throw new Error('Notify image is empty.');
+      const bytes = Buffer.concat(chunks, size);
+      const file = `${targetBase}${extension}`;
+      await writeFile(file, bytes, { mode: 0o600 });
+      return file;
+    } finally {
+      await dispatcher.close?.().catch(() => {});
     }
-    if (!size) throw new Error('Notify image is empty.');
-    const bytes = Buffer.concat(chunks, size);
-    const file = `${targetBase}${extension}`;
-    await writeFile(file, bytes, { mode: 0o600 });
-    return file;
   }
   throw new Error('Notify image exceeded the redirect limit.');
 }

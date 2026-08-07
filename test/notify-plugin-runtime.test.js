@@ -10,8 +10,12 @@ import {
   addNotifyGroup,
   confirmNotifyMapping,
   configureNotifyHandler,
+  createPinnedNotifyImageAgent,
+  createPinnedNotifyImageLookup,
+  downloadNotifyImage,
   prepareNotifyDelivery,
   recoverNotifyDeliveries,
+  resolvePublicNotifyImage,
 } from '../notify-daemon/src/handler.js';
 import { registerNotifyRuntime } from '../notify-daemon/src/runtime-context.js';
 import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-daemon/src/store.js';
@@ -54,6 +58,64 @@ test('Feishu REST client shares token refresh and covers deterministic message, 
   assert.equal((await client.patchMessage({ messageId: 'om_test', card: {} })).updated, true);
   assert.equal((await client.uploadImage({ bytes: Buffer.from('png'), filename: 'test.png', contentType: 'image/png' })).imageKey, 'img_test');
   assert.deepEqual(await client.listChatMembers({ chatId: 'oc_test' }), [{ member_id: 'ou_test', name: '测试用户' }]);
+});
+
+test('Notify image DNS validation pins the approved address into the undici Agent lookup', async () => {
+  let resolverCalls = 0;
+  const resolved = await resolvePublicNotifyImage('https://images.example.com/proof.png', {
+    lookup: async () => {
+      resolverCalls += 1;
+      return [{ address: resolverCalls === 1 ? '93.184.216.34' : '127.0.0.1', family: 4 }];
+    },
+  });
+  assert.equal(resolverCalls, 1);
+  assert.equal(resolved.address, '93.184.216.34');
+  const pinnedLookup = createPinnedNotifyImageLookup(resolved.address, resolved.family);
+  const connected = await new Promise((resolve, reject) => pinnedLookup('images.example.com', {}, (error, address, family) => {
+    if (error) reject(error);
+    else resolve({ address, family });
+  }));
+  assert.deepEqual(connected, { address: '93.184.216.34', family: 4 });
+  const agent = createPinnedNotifyImageAgent(resolved);
+  assert.equal(agent.constructor.name, 'Agent');
+  await agent.close();
+});
+
+test('Notify image redirects repeat DNS validation and preserve each original Host header', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-image-pin-'));
+  const lookups = [];
+  const dispatchers = [];
+  const requests = [];
+  const lookupByHost = {
+    'images.example.com': '93.184.216.34',
+    'cdn.example.net': '142.250.72.14',
+  };
+  const file = await downloadNotifyImage(
+    { url: 'https://images.example.com/start', alt: 'proof' },
+    path.join(root, 'proof'),
+    {
+      lookup: async (hostname) => {
+        lookups.push(hostname);
+        return [{ address: lookupByHost[hostname], family: 4 }];
+      },
+      agentFactory: (resolved) => {
+        const dispatcher = { resolved, closed: false, async close() { this.closed = true; } };
+        dispatchers.push(dispatcher);
+        return dispatcher;
+      },
+      fetch: async (url, options) => {
+        requests.push({ url: String(url), host: options.headers.host, dispatcher: options.dispatcher });
+        if (requests.length === 1) return new Response(null, { status: 302, headers: { location: 'https://cdn.example.net/final.png' } });
+        return new Response(Buffer.from('safe-image'), { status: 200, headers: { 'content-type': 'image/png' } });
+      },
+    },
+  );
+  assert.deepEqual(lookups, ['images.example.com', 'cdn.example.net']);
+  assert.deepEqual(dispatchers.map((item) => item.resolved.address), ['93.184.216.34', '142.250.72.14']);
+  assert.deepEqual(requests.map((item) => item.host), ['images.example.com', 'cdn.example.net']);
+  assert.ok(requests.every((request, index) => request.dispatcher === dispatchers[index]));
+  assert.ok(dispatchers.every((dispatcher) => dispatcher.closed));
+  assert.equal(await readFile(file, 'utf8'), 'safe-image');
 });
 
 test('Notify SQLite store migrates legacy JSON once and archives the old source files', async () => {
