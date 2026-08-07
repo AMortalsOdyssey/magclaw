@@ -820,7 +820,6 @@ async function deliverViaLarkCli({ config, group, analysis, people, requester, r
 }
 
 async function recordPendingConfirmation(state, request, kind, details) {
-  const pending = safeArray(await readJson(state.paths.pending, []));
   const record = {
     id: `ncf_${crypto.randomBytes(10).toString('hex')}`,
     requestId: request.id,
@@ -832,50 +831,52 @@ async function recordPendingConfirmation(state, request, kind, details) {
     updatedAt: now(),
     expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
   };
-  pending.push(record);
-  await writeJson(state.paths.pending, pending.slice(-500));
+  state.store.writeConfirmation(record);
   return record;
 }
 
 async function recordTargetAccessConfirmation(state, request, group) {
-  const pending = safeArray(await readJson(state.paths.pending, []));
-  const userId = requesterKey(request.requester);
-  const targetId = groupKey(group);
-  const existing = pending.find((record) => (
-    record.kind === 'target_access'
-      && record.status === 'pending'
-      && record.details?.userId === userId
-      && record.details?.groupId === targetId
-      && Number.isFinite(Date.parse(record.expiresAt || ''))
-      && Date.parse(record.expiresAt) > Date.now()
-  ));
-  if (existing) {
-    existing.requestIds = [...new Set([...safeArray(existing.requestIds), request.id])];
-    existing.updatedAt = now();
-    await writeJson(state.paths.pending, pending.slice(-500));
-    return { confirmation: existing, created: false, promptNeeded: Boolean(existing.promptError) && !existing.promptSentAt && !existing.promptDispatchingAt };
-  }
-  const confirmation = {
-    id: `ncf_${crypto.randomBytes(10).toString('hex')}`,
-    requestId: request.id,
-    requestIds: [request.id],
-    kind: 'target_access',
-    status: 'pending',
-    details: {
-      instance: state.profile || 'default',
-      userId,
-      userName: cleanText(request.requester?.name || request.requester?.email || '未知用户', 120),
-      groupId: targetId,
-      groupName: cleanText(group.name || request.payload?.target?.group || '', 120),
-      requestedGroup: cleanText(request.payload?.target?.group || '', 120),
-    },
-    createdAt: now(),
-    updatedAt: now(),
-    expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
-  };
-  pending.push(confirmation);
-  await writeJson(state.paths.pending, pending.slice(-500));
-  return { confirmation, created: true, promptNeeded: true };
+  return state.store.transaction(() => {
+    const pending = safeArray(state.store.read('pending', 'state', []));
+    const userId = requesterKey(request.requester);
+    const targetId = groupKey(group);
+    const existing = pending.find((record) => (
+      record.kind === 'target_access'
+        && record.status === 'pending'
+        && record.details?.userId === userId
+        && record.details?.groupId === targetId
+        && Number.isFinite(Date.parse(record.expiresAt || ''))
+        && Date.parse(record.expiresAt) > Date.now()
+    ));
+    if (existing) {
+      existing.requestIds = [...new Set([...safeArray(existing.requestIds), request.id])];
+      existing.updatedAt = now();
+      if (!state.store.compareAndSwapConfirmation(existing.id, 'pending', existing)) {
+        throw new Error('Notify target approval changed while batching the request. Retry delivery preparation.');
+      }
+      return { confirmation: existing, created: false, promptNeeded: Boolean(existing.promptError) && !existing.promptSentAt && !existing.promptDispatchingAt };
+    }
+    const confirmation = {
+      id: `ncf_${crypto.randomBytes(10).toString('hex')}`,
+      requestId: request.id,
+      requestIds: [request.id],
+      kind: 'target_access',
+      status: 'pending',
+      details: {
+        instance: state.profile || 'default',
+        userId,
+        userName: cleanText(request.requester?.name || request.requester?.email || '未知用户', 120),
+        groupId: targetId,
+        groupName: cleanText(group.name || request.payload?.target?.group || '', 120),
+        requestedGroup: cleanText(request.payload?.target?.group || '', 120),
+      },
+      createdAt: now(),
+      updatedAt: now(),
+      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    };
+    state.store.writeConfirmation(confirmation);
+    return { confirmation, created: true, promptNeeded: true };
+  });
 }
 
 export function larkCardForTargetApproval(confirmation, requests = []) {
@@ -1613,11 +1614,7 @@ function confirmationRequestIds(record = {}) {
 }
 
 async function persistPendingRecord(state, record) {
-  const latest = safeArray(await readJson(state.paths.pending, []));
-  const index = latest.findIndex((item) => item.id === record.id);
-  if (index >= 0) latest[index] = record;
-  else latest.push(record);
-  await writeJson(state.paths.pending, latest.slice(-500));
+  state.store.writeConfirmation(record);
 }
 
 async function storedNotifyRequest(state, requestId) {
@@ -1638,8 +1635,10 @@ async function reportConfirmationResults(state, record, results) {
   return cloudReports;
 }
 
-async function grantTargetAccess(state, record) {
-  const existing = state.grants.grants.find((grant) => (
+function grantTargetAccessInTransaction(state, record) {
+  const grants = jsonObject(state.store.read('grants', 'state', state.grants));
+  grants.grants = safeArray(grants.grants);
+  const existing = grants.grants.find((grant) => (
     grant.userId === record.details.userId && grant.groupId === record.details.groupId
   ));
   const timestamp = now();
@@ -1654,38 +1653,53 @@ async function grantTargetAccess(state, record) {
     revokedAt: null,
     updatedAt: timestamp,
   });
-  if (!existing) state.grants.grants.push(grant);
-  await saveTargetGrants(state);
-  await state.audit.append({
-    event: 'owner.grant.created', outcome: existing ? 'refreshed' : 'created', confirmationId: record.id,
-    metadata: { grantId: grant.id, targetGroup: record.details.groupName || '' },
-  });
-  return grant;
+  if (!existing) grants.grants.push(grant);
+  grants.updatedAt = timestamp;
+  return { grant, grants, refreshed: Boolean(existing) };
 }
 
 async function completeTargetAccessConfirmation(profilePaths, confirmationId, decision) {
   const started = await withNotifyStateLock(profilePaths, async () => {
     const state = await ensureNotifyHandlerState(profilePaths);
-    const pending = safeArray(await readJson(state.paths.pending, []));
-    const record = pending.find((item) => item.id === confirmationId);
-    if (!record) throw new Error('Pending Notify confirmation not found.');
-    if (record.status === 'expired') return { state, record, expired: true, alreadyReported: Boolean(record.result) };
-    if (record.status !== 'pending') return { state, record, alreadyDecided: true };
-    if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
-      record.status = 'expired';
-      record.updatedAt = now();
-      await writeJson(state.paths.pending, pending);
-      return { state, record, expired: true };
-    }
-    record.status = decision === 'always' ? 'approved_permanent' : decision === 'once' ? 'approved_once' : 'rejected';
-    record.decision = decision;
-    record.decidedAt = now();
-    record.updatedAt = record.decidedAt;
-    if (decision === 'always') record.grantId = (await grantTargetAccess(state, record)).id;
-    await writeJson(state.paths.pending, pending);
-    return { state, record, alreadyDecided: false };
+    return state.store.transaction(() => {
+      const pending = safeArray(state.store.read('pending', 'state', []));
+      const record = pending.find((item) => item.id === confirmationId);
+      if (!record) throw new Error('Pending Notify confirmation not found.');
+      if (record.status === 'expired') return { state, record, expired: true, alreadyReported: Boolean(record.result) };
+      if (record.status !== 'pending') return { state, record, alreadyDecided: true };
+      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
+        record.status = 'expired';
+        record.updatedAt = now();
+        if (!state.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
+          const latest = safeArray(state.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
+          return { state, record: latest, alreadyDecided: true };
+        }
+        return { state, record, expired: true };
+      }
+      record.status = decision === 'always' ? 'approved_permanent' : decision === 'once' ? 'approved_once' : 'rejected';
+      record.decision = decision;
+      record.decidedAt = now();
+      record.updatedAt = record.decidedAt;
+      const grantChange = decision === 'always' ? grantTargetAccessInTransaction(state, record) : null;
+      if (grantChange) record.grantId = grantChange.grant.id;
+      if (!state.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
+        const latest = safeArray(state.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
+        return { state, record: latest, alreadyDecided: true };
+      }
+      if (grantChange) {
+        state.store.write('grants', 'state', grantChange.grants);
+        state.grants = grantChange.grants;
+      }
+      return { state, record, grantChange, alreadyDecided: false };
+    });
   });
   const { state, record } = started;
+  if (started.grantChange) {
+    await state.audit.append({
+      event: 'owner.grant.created', outcome: started.grantChange.refreshed ? 'refreshed' : 'created', confirmationId: record.id,
+      metadata: { grantId: started.grantChange.grant.id, targetGroup: record.details.groupName || '' },
+    });
+  }
   if (!started.expired && !started.alreadyDecided) {
     await notifyRuntime(profilePaths).deliveryHooks?.afterDecisionPersisted?.({ confirmation: record, decision });
   }
@@ -1698,6 +1712,9 @@ async function completeTargetAccessConfirmation(profilePaths, confirmationId, de
     throw new Error('Notify confirmation expired. Submit a new explicitly authorized request.');
   }
   if (started.alreadyDecided) {
+    if (!record.result && !safeArray(record.results).length) {
+      throw new Error('Notify confirmation was already claimed by another process and is still being completed.');
+    }
     return {
       confirmation: record,
       results: safeArray(record.results),
@@ -1732,11 +1749,8 @@ async function completeTargetAccessConfirmation(profilePaths, confirmationId, de
 }
 
 export async function confirmNotifyMapping(profilePaths, confirmationId, decision, options = {}) {
-  const state = await ensureNotifyHandlerState(profilePaths);
-  const pending = safeArray(await readJson(state.paths.pending, []));
-  const record = pending.find((item) => item.id === confirmationId);
-  if (!record) throw new Error('Pending Notify confirmation not found.');
   if (!['approve', 'once', 'always', 'reject'].includes(decision)) throw new Error('Notify confirmation decision must be approve, once, always, or reject.');
+  const state = await ensureNotifyHandlerState(profilePaths);
   const expectedOwnerOpenId = cleanText(state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target || '', 200);
   const operatorId = cleanText(options.operatorId || '', 200);
   if (expectedOwnerOpenId && operatorId !== expectedOwnerOpenId) {
@@ -1744,96 +1758,124 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
       ? 'Only the configured Notify owner can approve this request.'
       : 'The configured Notify owner identity is required to approve this request.');
   }
-  if (record.kind === 'target_access') {
+  const initialRecord = safeArray(state.store.read('pending', 'state', [])).find((item) => item.id === confirmationId);
+  if (!initialRecord) throw new Error('Pending Notify confirmation not found.');
+  if (initialRecord.kind === 'target_access') {
     const targetDecision = decision === 'approve' ? 'always' : decision;
     return completeTargetAccessConfirmation(profilePaths, confirmationId, targetDecision);
   }
-  if (record.status === 'expired') throw new Error('Notify confirmation expired. Submit a new explicitly authorized request.');
-  if (record.status !== 'pending') {
-    if (!record.result) throw new Error('Notify confirmation was already completed.');
-    const cloudReport = await reportNotifyResultToCloud(state, record.result);
-    record.cloudReport = cloudReport;
-    record.updatedAt = now();
-    await writeJson(state.paths.pending, pending);
-    return { confirmation: record, result: record.result, cloudReport };
-  }
-  if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
-    record.status = 'expired';
-    record.updatedAt = now();
-    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.' }));
-    await reportConfirmationResults(state, record, results);
-    await writeJson(state.paths.pending, pending);
-    throw new Error('Notify confirmation expired. Submit a new explicitly authorized request.');
-  }
   const approved = decision === 'approve' || decision === 'always' || decision === 'once';
   const personMappings = parsePersonMappings(options.personMappings);
-  if (approved && record.kind === 'people' && !personMappings.length) {
-    throw new Error('People confirmation requires an explicit alias-to-canonical mapping, for example --person-map "三哥=张三".');
-  }
-  if (approved && record.kind === 'group_alias') {
-    const group = state.directory.groups.find((item) => item.id === record.details.candidateGroupId);
-    if (!group) throw new Error('Notify group candidate no longer exists.');
-    group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), record.details.requestedGroup])];
-    group.updatedAt = now();
-    state.directory.updatedAt = now();
-    await writeJson(state.paths.directory, state.directory);
-  }
-  if (approved && record.kind === 'alias_proposals') {
-    const group = state.directory.groups.find((item) => item.id === record.details.groupId);
-    if (record.details.groupAliasProposal && !group) throw new Error('Notify group candidate no longer exists.');
-    const resolvedProposals = safeArray(record.details.personAliasProposals).map((proposal) => {
-      const canonical = normalizeLookup(proposal.canonicalName);
-      const matches = state.directory.people.filter((person) => normalizeLookup(person.name) === canonical);
-      if (matches.length !== 1) throw new Error(`Canonical person "${proposal.canonicalName}" is unavailable or ambiguous.`);
-      return { proposal, person: matches[0] };
+  const started = await withNotifyStateLock(profilePaths, async () => {
+    const lockedState = await ensureNotifyHandlerState(profilePaths);
+    return lockedState.store.transaction(() => {
+      const pending = safeArray(lockedState.store.read('pending', 'state', []));
+      const record = pending.find((item) => item.id === confirmationId);
+      if (!record) throw new Error('Pending Notify confirmation not found.');
+      if (record.status === 'expired') return { state: lockedState, record, expired: true };
+      if (record.status !== 'pending') return { state: lockedState, record, alreadyDecided: true };
+      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
+        record.status = 'expired';
+        record.updatedAt = now();
+        if (!lockedState.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
+          const latest = safeArray(lockedState.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
+          return { state: lockedState, record: latest, alreadyDecided: true };
+        }
+        return { state: lockedState, record, expired: true };
+      }
+      const directory = jsonObject(lockedState.store.read('directory', 'state', lockedState.directory));
+      directory.groups = safeArray(directory.groups);
+      directory.people = safeArray(directory.people);
+      if (approved && record.kind === 'people' && !personMappings.length) {
+        throw new Error('People confirmation requires an explicit alias-to-canonical mapping, for example --person-map "三哥=张三".');
+      }
+      if (approved && record.kind === 'group_alias') {
+        const group = directory.groups.find((item) => item.id === record.details.candidateGroupId);
+        if (!group) throw new Error('Notify group candidate no longer exists.');
+        group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), record.details.requestedGroup])];
+        group.updatedAt = now();
+        directory.updatedAt = now();
+      }
+      if (approved && record.kind === 'alias_proposals') {
+        const group = directory.groups.find((item) => item.id === record.details.groupId);
+        if (record.details.groupAliasProposal && !group) throw new Error('Notify group candidate no longer exists.');
+        const resolvedProposals = safeArray(record.details.personAliasProposals).map((proposal) => {
+          const canonical = normalizeLookup(proposal.canonicalName);
+          const matches = directory.people.filter((person) => normalizeLookup(person.name) === canonical);
+          if (matches.length !== 1) throw new Error(`Canonical person "${proposal.canonicalName}" is unavailable or ambiguous.`);
+          return { proposal, person: matches[0] };
+        });
+        if (group && record.details.groupAliasProposal) {
+          group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), cleanText(record.details.groupAliasProposal, 120)])];
+          group.updatedAt = now();
+        }
+        for (const { proposal, person } of resolvedProposals) {
+          person.confirmedAliases = [...new Set([...safeArray(person.confirmedAliases), cleanText(proposal.alias, 80)])];
+          person.updatedAt = now();
+        }
+        directory.updatedAt = now();
+      }
+      if (approved && record.kind === 'people') {
+        const requested = new Set(safeArray(record.details.requestedNames).map(normalizeLookup));
+        const resolvedMappings = personMappings.map((mapping) => {
+          if (!requested.has(normalizeLookup(mapping.alias))) throw new Error(`Alias "${mapping.alias}" was not requested by this confirmation.`);
+          const matches = directory.people.filter((person) => normalizeLookup(person.name) === normalizeLookup(mapping.canonicalName));
+          if (matches.length !== 1) throw new Error(`Canonical person "${mapping.canonicalName}" is unavailable or ambiguous.`);
+          return { mapping, person: matches[0] };
+        });
+        for (const { mapping, person } of resolvedMappings) {
+          person.confirmedAliases = [...new Set([...safeArray(person.confirmedAliases), mapping.alias])];
+          person.updatedAt = now();
+        }
+        directory.updatedAt = now();
+      }
+      record.status = approved ? 'approved' : 'rejected';
+      record.updatedAt = now();
+      if (!lockedState.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
+        const latest = safeArray(lockedState.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
+        return { state: lockedState, record: latest, alreadyDecided: true };
+      }
+      if (approved && ['group_alias', 'alias_proposals', 'people'].includes(record.kind)) {
+        lockedState.store.write('directory', 'state', directory);
+        lockedState.directory = directory;
+      }
+      return { state: lockedState, record, alreadyDecided: false };
     });
-    if (group && record.details.groupAliasProposal) {
-      group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), cleanText(record.details.groupAliasProposal, 120)])];
-      group.updatedAt = now();
-    }
-    for (const { proposal, person } of resolvedProposals) {
-      person.confirmedAliases = [...new Set([...safeArray(person.confirmedAliases), cleanText(proposal.alias, 80)])];
-      person.updatedAt = now();
-    }
-    state.directory.updatedAt = now();
-    await writeJson(state.paths.directory, state.directory);
+  });
+  const activeState = started.state;
+  const record = started.record;
+  if (started.expired) {
+    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.' }));
+    await reportConfirmationResults(activeState, record, results);
+    await persistPendingRecord(activeState, record);
+    throw new Error('Notify confirmation expired. Submit a new explicitly authorized request.');
   }
-  if (approved && record.kind === 'people') {
-    const requested = new Set(safeArray(record.details.requestedNames).map(normalizeLookup));
-    const resolvedMappings = personMappings.map((mapping) => {
-      if (!requested.has(normalizeLookup(mapping.alias))) throw new Error(`Alias "${mapping.alias}" was not requested by this confirmation.`);
-      const matches = state.directory.people.filter((person) => normalizeLookup(person.name) === normalizeLookup(mapping.canonicalName));
-      if (matches.length !== 1) throw new Error(`Canonical person "${mapping.canonicalName}" is unavailable or ambiguous.`);
-      return { mapping, person: matches[0] };
-    });
-    for (const { mapping, person } of resolvedMappings) {
-      person.confirmedAliases = [...new Set([...safeArray(person.confirmedAliases), mapping.alias])];
-      person.updatedAt = now();
-    }
-    state.directory.updatedAt = now();
-    await writeJson(state.paths.directory, state.directory);
+  if (started.alreadyDecided) {
+    if (!record.result) throw new Error('Notify confirmation was already claimed by another process and is still being completed.');
+    const cloudReport = await reportNotifyResultToCloud(activeState, record.result);
+    record.cloudReport = cloudReport;
+    record.updatedAt = now();
+    await persistPendingRecord(activeState, record);
+    return { confirmation: record, result: record.result, cloudReport, deduped: true };
   }
-  record.status = approved ? 'approved' : 'rejected';
-  record.updatedAt = now();
-  await writeJson(state.paths.pending, pending);
   if (!approved) {
     const result = { requestId: record.requestId, status: 'rejected', publicReason: 'Notify delivery was rejected by the local owner.' };
-    await appendReceipt(state, { ...result, confirmationId: record.id, createdAt: now() });
-    const cloudReport = await reportNotifyResultToCloud(state, result);
+    await appendReceipt(activeState, { ...result, confirmationId: record.id, createdAt: now() });
+    const cloudReport = await reportNotifyResultToCloud(activeState, result);
     record.result = result;
     record.cloudReport = cloudReport;
-    await writeJson(state.paths.pending, pending);
+    await persistPendingRecord(activeState, record);
     return { confirmation: record, result, cloudReport };
   }
-  const storedRequest = await storedNotifyRequest(state, record.requestId);
+  const storedRequest = await storedNotifyRequest(activeState, record.requestId);
   if (!storedRequest) throw new Error('The original Notify request is unavailable.');
   const result = record.kind === 'group_alias'
     ? await handleNotifyDelivery(profilePaths, storedRequest)
     : await processAuthorizedNotifyDelivery(profilePaths, storedRequest);
-  const cloudReport = await reportNotifyResultToCloud(state, result);
+  const cloudReport = await reportNotifyResultToCloud(activeState, result);
   record.result = result;
   record.cloudReport = cloudReport;
-  await persistPendingRecord(state, record);
+  await persistPendingRecord(activeState, record);
   return { confirmation: record, result, cloudReport };
 }
 

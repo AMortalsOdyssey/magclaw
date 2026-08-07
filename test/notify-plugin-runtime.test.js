@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -67,6 +68,12 @@ test('Notify SQLite store migrates legacy JSON once and archives the old source 
   ]);
   assert.equal(concurrentStore, store);
   assert.deepEqual(store.read('pending', 'state', []), [{ id: 'ncf_legacy' }]);
+  store.write('memory', 'state', { value: 'before' });
+  assert.throws(() => store.transaction(() => {
+    store.write('memory', 'state', { value: 'inside' });
+    throw new Error('rollback transaction');
+  }), /rollback transaction/);
+  assert.deepEqual(store.read('memory', 'state', {}), { value: 'before' });
   assert.ok((await readdir(notifyRoot)).some((name) => name.startsWith('pending-confirmations.json.migrated-')));
   assert.ok((await readdir(notifyRoot)).includes('state.db'));
   closeNotifyStateStore(profilePaths);
@@ -119,6 +126,54 @@ function countingFeishu() {
     },
   };
 }
+
+function confirmWorker(args) {
+  const child = spawn(process.execPath, [path.join(import.meta.dirname, 'fixtures', 'notify-confirm-worker.mjs'), ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  let readyResolve;
+  let readyReject;
+  const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  child.stdout.on('data', (chunk) => {
+    stdout += String(chunk);
+    if (stdout.includes('READY\n')) readyResolve();
+  });
+  child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+  const result = new Promise((resolve, reject) => {
+    child.once('error', (error) => { readyReject(error); reject(error); });
+    child.once('close', (code) => {
+      if (!stdout.includes('READY\n')) readyReject(new Error(`Notify confirm worker exited before ready: ${stderr}`));
+      const lines = stdout.trim().split(/\r?\n/).filter((line) => line !== 'READY');
+      let payload = null;
+      try { payload = JSON.parse(lines.at(-1) || '{}'); } catch {}
+      resolve({ code, payload, stderr });
+    });
+  });
+  return { ready, result };
+}
+
+test('Notify confirmation CAS permits exactly one cross-process transport send', async () => {
+  const profilePaths = await configuredProfile('cross-process-cas');
+  const prepared = await prepareNotifyDelivery(profilePaths, notifyRequest('nreq_cross_process'));
+  const gateFile = path.join(profilePaths.dir, 'confirm.gate');
+  const transportFile = path.join(profilePaths.dir, 'transport.jsonl');
+  closeNotifyStateStore(profilePaths);
+
+  const workers = [
+    confirmWorker([profilePaths.dir, prepared.confirmationId, gateFile, transportFile]),
+    confirmWorker([profilePaths.dir, prepared.confirmationId, gateFile, transportFile]),
+  ];
+  await Promise.all(workers.map((worker) => worker.ready));
+  await writeFile(gateFile, 'go\n', { mode: 0o600 });
+  const results = await Promise.all(workers.map((worker) => worker.result));
+  assert.equal(results.filter((result) => result.code === 0 && result.payload?.ok).length, 1, JSON.stringify(results));
+  assert.equal(results.filter((result) => result.payload?.ok === false && /already claimed/i.test(result.payload.error)).length, 1, JSON.stringify(results));
+
+  const sends = (await readFile(transportFile, 'utf8')).trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(sends.filter((send) => send.receiveIdType === 'chat_id').length, 1);
+});
 
 for (const scenario of [
   { name: 'after-intent', hook: 'afterIntentPersisted', expectedBeforeRecovery: 0 },

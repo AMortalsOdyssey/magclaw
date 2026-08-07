@@ -46,6 +46,20 @@ class NotifyStateStore {
       VALUES (?, ?, ?, ?)
       ON CONFLICT(collection, item_key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `);
+    this.readConfirmationsStatement = database.prepare('SELECT value FROM notify_confirmations ORDER BY created_at ASC, id ASC');
+    this.writeConfirmationStatement = database.prepare(`
+      INSERT INTO notify_confirmations (id, status, value, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `);
+    this.compareAndSwapConfirmationStatement = database.prepare(`
+      UPDATE notify_confirmations
+      SET status = ?, value = ?, updated_at = ?
+      WHERE id = ? AND status = ?
+    `);
     this.readIntentByRequestStatement = database.prepare('SELECT * FROM delivery_intents WHERE request_id = ?');
     this.readIntentStatement = database.prepare('SELECT * FROM delivery_intents WHERE id = ?');
     this.listRecoverableStatement = database.prepare("SELECT * FROM delivery_intents WHERE status IN ('pending', 'sending', 'sent_unconfirmed') ORDER BY created_at ASC");
@@ -62,12 +76,65 @@ class NotifyStateStore {
   }
 
   read(collection, key, fallback) {
+    if (collection === 'pending' && key === 'state') {
+      const rows = this.readConfirmationsStatement.all();
+      return rows.length ? rows.map((row) => parse(row.value, null)).filter(Boolean) : fallback;
+    }
     const row = this.readValueStatement.get(collection, key);
     return row ? parse(row.value, fallback) : fallback;
   }
 
   write(collection, key, value) {
+    if (collection === 'pending' && key === 'state') {
+      for (const confirmation of Array.isArray(value) ? value : []) this.writeConfirmation(confirmation);
+      return;
+    }
     this.writeValueStatement.run(collection, key, JSON.stringify(value), now());
+  }
+
+  writeConfirmation(confirmation) {
+    if (!confirmation?.id) throw new Error('Notify confirmation id is required.');
+    const timestamp = now();
+    this.writeConfirmationStatement.run(
+      String(confirmation.id),
+      String(confirmation.status || 'pending'),
+      JSON.stringify(confirmation),
+      String(confirmation.createdAt || timestamp),
+      String(confirmation.updatedAt || timestamp),
+    );
+    return confirmation;
+  }
+
+  compareAndSwapConfirmation(id, expectedStatus, confirmation) {
+    if (!id || confirmation?.id !== id) throw new Error('Notify confirmation CAS requires a matching id.');
+    const result = this.compareAndSwapConfirmationStatement.run(
+      String(confirmation.status || ''),
+      JSON.stringify(confirmation),
+      String(confirmation.updatedAt || now()),
+      String(id),
+      String(expectedStatus),
+    );
+    return Number(result.changes || 0) === 1;
+  }
+
+  transaction(fn) {
+    if (typeof fn !== 'function') throw new Error('Notify state transaction callback is required.');
+    if (this.transactionDepth > 0) return fn(this);
+    this.database.exec('BEGIN IMMEDIATE');
+    this.transactionDepth = 1;
+    try {
+      const result = fn(this);
+      if (result && typeof result.then === 'function') {
+        throw new Error('Notify state transaction callbacks must be synchronous.');
+      }
+      this.database.exec('COMMIT');
+      return result;
+    } catch (error) {
+      try { this.database.exec('ROLLBACK'); } catch {}
+      throw error;
+    } finally {
+      this.transactionDepth = 0;
+    }
   }
 
   createDeliveryIntent({ id, requestId, request, idempotencyKey }) {
@@ -157,6 +224,16 @@ async function migrateLegacyFiles(store) {
   for (const file of archives) await rename(file, `${file}${suffix}`).catch(() => {});
 }
 
+function migratePendingConfirmations(store) {
+  const migrated = store.database.prepare("SELECT value FROM notify_meta WHERE key = 'pending_confirmations_migrated'").get();
+  if (migrated) return;
+  store.transaction(() => {
+    const legacy = store.database.prepare("SELECT value FROM notify_kv WHERE collection = 'pending' AND item_key = 'state'").get();
+    for (const confirmation of parse(legacy?.value || '[]', [])) store.writeConfirmation(confirmation);
+    store.database.prepare("INSERT OR REPLACE INTO notify_meta (key, value) VALUES ('pending_confirmations_migrated', ?)").run(now());
+  });
+}
+
 export async function ensureNotifyStateStore(profilePaths) {
   const root = path.join(path.resolve(profilePaths.dir), 'notify');
   if (stores.has(root)) return stores.get(root);
@@ -191,6 +268,14 @@ export async function ensureNotifyStateStore(profilePaths) {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS notify_confirmations (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS notify_confirmations_status_idx ON notify_confirmations(status, updated_at);
       CREATE INDEX IF NOT EXISTS delivery_intents_status_idx ON delivery_intents(status, updated_at);
     `);
     await chmod(databasePath, 0o600).catch(() => {});
@@ -198,6 +283,7 @@ export async function ensureNotifyStateStore(profilePaths) {
     stores.set(root, store);
     try {
       await migrateLegacyFiles(store);
+      migratePendingConfirmations(store);
       return store;
     } catch (error) {
       store.close();
