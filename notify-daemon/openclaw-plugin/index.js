@@ -7,6 +7,7 @@ import { resolveConfiguredSecretInputString } from 'openclaw/plugin-sdk/secret-i
 
 import { createFeishuRestClient } from '../src/feishu-client.js';
 import { notifyPluginProfile, startNotifyPluginHost } from '../src/plugin-host.js';
+import { getNotifyPluginHost, notifyPluginHostSlotKey, publishNotifyPluginHost } from './host-registry.js';
 import { classifyNotifyApprovalMessage } from './policy.js';
 
 function shortHash(value) {
@@ -17,14 +18,16 @@ function shortHash(value) {
 export default definePluginEntry({
   id: 'magclaw-notify',
   name: 'MagClaw Notify',
-  version: '0.5.0',
+  version: '0.5.1',
   description: 'Hosts the MagClaw Notify Relay, durable state machine, Feishu delivery, and approvals inside OpenClaw.',
   register(api) {
     const config = api.pluginConfig ?? {};
     const targetAccountId = config.accountId ?? 'monkey';
     const home = config.notifyHome ? path.resolve(String(config.notifyHome)) : path.join(os.homedir(), '.magclaw', 'notify');
     const instance = config.instance ?? 'default';
+    const hostSlotKey = notifyPluginHostSlotKey({ home, instance, accountId: targetAccountId });
     let host = null;
+    let unpublishHost = () => {};
 
     api.registerService({
       id: 'magclaw-notify-host',
@@ -60,11 +63,18 @@ export default definePluginEntry({
           relayUrl: config.relayUrl,
           logger: context.logger,
         });
+        // OpenClaw may materialize service and hook registrations from separate
+        // plugin entry instances. Publish the live host through a realm-global
+        // slot so the callback hook never depends on one register() closure.
+        unpublishHost();
+        unpublishHost = publishNotifyPluginHost(hostSlotKey, host);
         context.logger.info(`MagClaw Notify plugin host started: instance=${instance} relayEnabled=${config.relayEnabled === true}`);
       },
       async stop(context) {
         const active = host;
         host = null;
+        unpublishHost();
+        unpublishHost = () => {};
         await active?.stop();
         context.logger.info(`MagClaw Notify plugin host stopped: instance=${instance}`);
       },
@@ -88,8 +98,9 @@ export default definePluginEntry({
           return { handled: true };
         }
         try {
-          if (!host) throw new Error('MagClaw Notify plugin host is not ready.');
-          const result = await host.processApproval(decision, {
+          const activeHost = host || getNotifyPluginHost(hostSlotKey);
+          if (!activeHost) throw new Error('MagClaw Notify plugin host is not ready.');
+          const result = await activeHost.processApproval(decision, {
             // OpenClaw 2026.7.x does not expose Feishu's callback token to
             // before_dispatch. The original approval message id remains
             // available and is the deterministic card-update fallback.

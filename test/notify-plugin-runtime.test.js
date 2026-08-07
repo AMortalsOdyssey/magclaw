@@ -21,6 +21,17 @@ import {
 import { registerNotifyRuntime } from '../notify-daemon/src/runtime-context.js';
 import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-daemon/src/store.js';
 
+test('OpenClaw plugin host registry bridges separate plugin entry module instances', async () => {
+  const publisher = await import(`../notify-daemon/openclaw-plugin/host-registry.js?publisher=${Date.now()}`);
+  const consumer = await import(`../notify-daemon/openclaw-plugin/host-registry.js?consumer=${Date.now()}`);
+  const key = publisher.notifyPluginHostSlotKey({ home: '/notify-test', instance: 'default', accountId: 'monkey' });
+  const host = { processApproval() {} };
+  const unpublish = publisher.publishNotifyPluginHost(key, host);
+  assert.equal(consumer.getNotifyPluginHost(key), host);
+  unpublish();
+  assert.equal(consumer.getNotifyPluginHost(key), null);
+});
+
 function response(payload, status = 200) {
   return new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
 }
