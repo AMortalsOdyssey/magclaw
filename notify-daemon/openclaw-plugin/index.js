@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 
 import { definePluginEntry } from 'openclaw/plugin-sdk/plugin-entry';
+import { resolveConfiguredSecretInputString } from 'openclaw/plugin-sdk/secret-input-runtime';
 
-import { notifyControlSocketPath, notifyPluginHome, submitNotifyDecision } from './control-client.js';
+import { createFeishuRestClient } from '../src/feishu-client.js';
+import { notifyPluginProfile, startNotifyPluginHost } from '../src/plugin-host.js';
 import { classifyNotifyApprovalMessage } from './policy.js';
 
 function shortHash(value) {
@@ -11,13 +15,60 @@ function shortHash(value) {
 }
 
 export default definePluginEntry({
-  id: 'magclaw-notify-approval',
-  name: 'MagClaw Notify Approval',
-  description: 'Routes MagClaw Notify approval card callbacks straight to the owner Daemon, without an Agent turn.',
+  id: 'magclaw-notify',
+  name: 'MagClaw Notify',
+  version: '0.4.0',
+  description: 'Hosts the MagClaw Notify Relay, durable state machine, Feishu delivery, and approvals inside OpenClaw.',
   register(api) {
     const config = api.pluginConfig ?? {};
     const targetAccountId = config.accountId ?? 'monkey';
-    const home = notifyPluginHome(config.notifyHome);
+    const home = config.notifyHome ? path.resolve(String(config.notifyHome)) : path.join(os.homedir(), '.magclaw', 'notify');
+    const instance = config.instance ?? 'default';
+    let host = null;
+
+    api.registerService({
+      id: 'magclaw-notify-host',
+      async start(context) {
+        const feishu = context.config?.channels?.feishu || {};
+        const account = feishu.accounts?.[targetAccountId] || {};
+        const appId = String(account.appId || feishu.appId || '').trim();
+        const secretInput = Object.hasOwn(account, 'appSecret') ? account.appSecret : feishu.appSecret;
+        const secretPath = Object.hasOwn(account, 'appSecret')
+          ? `channels.feishu.accounts.${targetAccountId}.appSecret`
+          : 'channels.feishu.appSecret';
+        const resolved = await resolveConfiguredSecretInputString({
+          config: context.config,
+          env: process.env,
+          value: secretInput,
+          path: secretPath,
+          unresolvedReasonStyle: 'detailed',
+        });
+        if (!appId || !resolved.value) {
+          throw new Error(`Feishu credentials are unavailable for account ${targetAccountId}${resolved.unresolvedRefReason ? `: ${resolved.unresolvedRefReason}` : ''}`);
+        }
+        const feishuClient = createFeishuRestClient({
+          credentialProvider: async () => ({
+            appId,
+            appSecret: resolved.value,
+            domain: account.domain || feishu.domain || 'feishu',
+          }),
+        });
+        host = await startNotifyPluginHost({
+          paths: notifyPluginProfile({ notifyHome: home, instance }),
+          feishuClient,
+          relayEnabled: config.relayEnabled === true,
+          relayUrl: config.relayUrl,
+          logger: context.logger,
+        });
+        context.logger.info(`MagClaw Notify plugin host started: instance=${instance} relayEnabled=${config.relayEnabled === true}`);
+      },
+      async stop(context) {
+        const active = host;
+        host = null;
+        await active?.stop();
+        context.logger.info(`MagClaw Notify plugin host stopped: instance=${instance}`);
+      },
+    });
 
     api.on(
       'before_dispatch',
@@ -37,16 +88,14 @@ export default definePluginEntry({
           return { handled: true };
         }
         try {
-          const result = await submitNotifyDecision(
-            notifyControlSocketPath(home, decision.instance),
-            {
-              action: 'confirm',
-              confirmationId: decision.confirmationId,
-              decision: decision.decision,
-              operatorOpenId: decision.operatorOpenId,
-            },
-          );
-          api.logger.info(`Notify approval accepted: instance=${decision.instance} decision=${decision.decision} accepted=${Boolean(result?.accepted)}`);
+          if (!host) throw new Error('MagClaw Notify plugin host is not ready.');
+          const result = await host.processApproval(decision, {
+            // OpenClaw 2026.7.x does not expose Feishu's callback token to
+            // before_dispatch. The original approval message id remains
+            // available and is the deterministic card-update fallback.
+            messageId: event?.replyToIdFull || event?.replyToId || context?.replyToIdFull || context?.replyToId,
+          });
+          api.logger.info(`Notify approval accepted: instance=${decision.instance} decision=${decision.decision} accepted=${Boolean(result?.handled)}`);
         } catch (error) {
           api.logger.error(`Notify approval submission failed: ${String(error?.message || error)}`);
         }

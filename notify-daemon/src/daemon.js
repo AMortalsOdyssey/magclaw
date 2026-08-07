@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -26,6 +25,7 @@ import {
   addNotifyPerson,
   configureNotifyHandler,
   confirmNotifyMapping,
+  ensureNotifyHandlerState,
   expireNotifyConfirmations,
   handleNotifyCardAction,
   inspectNotifyCardAction,
@@ -60,15 +60,6 @@ function notifyEnvironment(flags = {}) {
   return { ...process.env, MAGCLAW_NOTIFY_HOME: path.resolve(clean(flags.notifyHome, 1000)) };
 }
 
-function notifyControlSocketPath(root) {
-  if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\magclaw-notify-${crypto.createHash('sha256').update(root).digest('hex').slice(0, 20)}`;
-  }
-  const local = path.join(root, 'run', 'control.sock');
-  if (Buffer.byteLength(local) <= 96) return local;
-  return path.join(os.tmpdir(), `magclaw-notify-${process.getuid?.() ?? 'user'}`, `${crypto.createHash('sha256').update(root).digest('hex').slice(0, 24)}.sock`);
-}
-
 export function notifyDaemonPaths(env = process.env, instance = 'default') {
   const root = instance === 'default'
     ? path.join(notifyHome(env), 'daemon')
@@ -79,135 +70,11 @@ export function notifyDaemonPaths(env = process.env, instance = 'default') {
     root,
     config: path.join(root, 'config.json'),
     pid: path.join(root, 'run', 'daemon.pid'),
-    controlSocket: notifyControlSocketPath(root),
     stdout: path.join(root, 'logs', 'daemon.log'),
     stderr: path.join(root, 'logs', 'daemon.error.log'),
     auditDir: path.join(root, 'audit'),
     handler: { dir: root, config: path.join(root, 'config.json'), profile: instance },
   };
-}
-
-export async function startNotifyDaemonControlServer(paths, signal, dependencies = {}) {
-  const processApproval = dependencies.processApproval || processNotifyApprovalEvent;
-  if (process.platform !== 'win32') {
-    await mkdir(path.dirname(paths.controlSocket), { recursive: true, mode: 0o700 });
-    await chmod(path.dirname(paths.controlSocket), 0o700).catch(() => {});
-    await rm(paths.controlSocket, { force: true });
-  }
-  const audit = ownerAudit(paths);
-  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-    socket.setEncoding('utf8');
-    let body = '';
-    // A control client that gives up must never take the Daemon down with it.
-    socket.on('error', () => {});
-    const reply = (payload) => {
-      if (socket.destroyed || socket.writableEnded) return false;
-      try {
-        socket.end(`${JSON.stringify(payload)}\n`);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    socket.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 64 * 1024) socket.destroy(new Error('Notify daemon control request is too large.'));
-    });
-    socket.on('end', async () => {
-      let accepted;
-      try {
-        const request = JSON.parse(body || '{}');
-        if (request.action !== 'confirm') throw new Error('Unsupported Notify daemon control action.');
-        const confirmationId = clean(request.confirmationId || '', 120);
-        const decision = clean(request.decision || '', 20);
-        const operatorOpenId = clean(request.operatorOpenId || '', 220);
-        if (!/^ncf_[a-f0-9]+$/.test(confirmationId)) throw new Error('Invalid Notify confirmation id.');
-        if (!['approve', 'once', 'always', 'reject'].includes(decision)) throw new Error('Invalid Notify confirmation decision.');
-        if (!/^ou_[A-Za-z0-9]+$/.test(operatorOpenId)) throw new Error('A valid Notify owner open id is required.');
-        accepted = { confirmationId, decision, operatorOpenId };
-      } catch (error) {
-        reply({ ok: false, error: clean(error.message, 1000) });
-        return;
-      }
-      // Acknowledge the decision immediately. Agent analysis and Feishu delivery
-      // can take minutes, far longer than any caller should hold this socket open;
-      // the original approval card carries the final outcome.
-      reply({
-        ok: true,
-        result: {
-          accepted: true,
-          confirmationId: accepted.confirmationId,
-          decision: accepted.decision,
-          note: 'Decision accepted. Delivery continues asynchronously; the original approval card carries the final result.',
-        },
-      });
-      try {
-        const result = await processApproval(paths.handler, {
-          action_value: { source: 'magclaw_notify', instance: paths.instance, confirmationId: accepted.confirmationId, decision: accepted.decision },
-          operator_id: accepted.operatorOpenId,
-        });
-        await audit.append({
-          event: 'owner.control.confirm_completed',
-          outcome: result?.result?.status || result?.results?.[0]?.status || 'completed',
-          confirmationId: accepted.confirmationId,
-          metadata: { decision: accepted.decision },
-        });
-      } catch (error) {
-        await audit.append({
-          event: 'owner.control.confirm_completed',
-          outcome: 'failed',
-          severity: 'error',
-          confirmationId: accepted.confirmationId,
-          metadata: { decision: accepted.decision, ...auditError(error) },
-        });
-        process.stderr.write(`[magclaw-notify] control confirm failed: ${clean(error.message, 500)}\n`);
-      }
-    });
-  });
-  server.on('error', (error) => {
-    process.stderr.write(`[magclaw-notify] control socket error: ${clean(error.message, 500)}\n`);
-  });
-  await new Promise((resolve, reject) => {
-    const onError = (error) => { server.off('listening', onListening); reject(error); };
-    const onListening = () => { server.off('error', onError); resolve(); };
-    server.once('error', onError);
-    server.once('listening', onListening);
-    server.listen(paths.controlSocket);
-  });
-  if (process.platform !== 'win32') await chmod(paths.controlSocket, 0o600);
-  const stop = () => {
-    server.close();
-    if (process.platform !== 'win32') rm(paths.controlSocket, { force: true }).catch(() => {});
-  };
-  signal?.addEventListener('abort', stop, { once: true });
-  return { running: true, address: paths.controlSocket, server, stop };
-}
-
-export async function requestNotifyDaemonControl(paths, request, options = {}) {
-  const timeoutMs = Math.max(1000, Number(options.timeoutMs || 30_000));
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection(paths.controlSocket);
-    let response = '';
-    const fail = (error) => {
-      socket.destroy();
-      reject(error);
-    };
-    socket.setEncoding('utf8');
-    socket.setTimeout(timeoutMs, () => fail(new Error('Notify Daemon control request timed out.')));
-    socket.once('error', (error) => fail(new Error(`Notify Daemon is not running or its control socket is unavailable: ${error.message}`)));
-    socket.on('data', (chunk) => { response += chunk; });
-    socket.once('connect', () => socket.end(`${JSON.stringify(request)}\n`));
-    socket.once('close', () => {
-      if (!response.trim()) return;
-      try {
-        const parsed = JSON.parse(response.trim());
-        if (!parsed.ok) reject(new Error(parsed.error || 'Notify Daemon rejected the control request.'));
-        else resolve(parsed.result);
-      } catch (error) {
-        reject(error);
-      }
-    });
-  });
 }
 
 function ownerAudit(paths) {
@@ -420,7 +287,7 @@ function toWebSocketUrl(relayUrl) {
   return url.toString();
 }
 
-async function connectOnce(paths, config, signal) {
+export async function connectOnce(paths, config, signal) {
   const audit = ownerAudit(paths);
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(toWebSocketUrl(config.relayUrl), {
@@ -543,7 +410,7 @@ async function connectOnce(paths, config, signal) {
 }
 
 export async function startNotifyApprovalListener(paths, signal) {
-  const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
+  const handlerConfig = (await ensureNotifyHandlerState(paths.handler)).config;
   const provider = handlerConfig.confirmationProvider || {};
   if (provider.kind !== 'lark-cli-feishu' || !provider.enabled || provider.eventConsumer !== 'standalone' || !provider.account || !(provider.ownerOpenId || provider.target)) {
     return { running: false, stop() {} };
@@ -634,13 +501,12 @@ export async function runNotifyDaemon(flags = {}) {
   await ensureNotifyRuntimeLogs(paths);
   const controller = new AbortController();
   const audit = ownerAudit(paths);
-  await audit.append({ event: 'owner.daemon.started', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid, configPath: paths.config, auditDir: paths.auditDir, eventConsumer: (await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {})).confirmationProvider?.eventConsumer || 'openclaw' } });
+  await audit.append({ event: 'owner.daemon.started', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid, configPath: paths.config, auditDir: paths.auditDir, eventConsumer: (await ensureNotifyHandlerState(paths.handler)).config.confirmationProvider?.eventConsumer || 'openclaw' } });
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   await mkdir(path.dirname(paths.pid), { recursive: true });
   await writeFile(paths.pid, `${process.pid}\n`, { mode: 0o600 });
-  const controlServer = await startNotifyDaemonControlServer(paths, controller.signal);
   const approvalListener = await startNotifyApprovalListener(paths, controller.signal);
   const expiryTimer = setInterval(() => {
     expireNotifyConfirmations(paths.handler).catch((error) => {
@@ -665,7 +531,6 @@ export async function runNotifyDaemon(flags = {}) {
     }
   } finally {
     clearInterval(expiryTimer);
-    controlServer.stop();
     approvalListener.stop();
     const recordedPid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
     if (recordedPid === process.pid) await rm(paths.pid, { force: true });
@@ -684,6 +549,8 @@ export async function notifyDaemonStatus(flags = {}) {
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const config = await readJson(paths.config, {});
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
+  const pluginHost = await readJson(path.join(paths.root, 'run', 'plugin-host.json'), {});
+  const pluginHostRunning = pluginHost.mode === 'plugin-hosted' && await processIsRunning(Number(pluginHost.pid));
   const handler = await notifyHandlerStatus(paths.handler);
   let openclawApproval = null;
   if (handler.approvalEventConsumer === 'openclaw') {
@@ -700,9 +567,11 @@ export async function notifyDaemonStatus(flags = {}) {
   const autostart = await notifyDaemonAutostartStatus(service);
   return {
     instance,
+    mode: pluginHostRunning ? 'plugin-hosted' : 'standalone-daemon',
     configured: Boolean(config.relayUrl && config.relayId && config.token),
-    running: await processIsRunning(pid),
-    pid: await processIsRunning(pid) ? pid : null,
+    running: pluginHostRunning || await processIsRunning(pid),
+    pid: pluginHostRunning ? Number(pluginHost.pid) : await processIsRunning(pid) ? pid : null,
+    pluginHost: pluginHostRunning ? { relayEnabled: Boolean(pluginHost.relayEnabled), startedAt: pluginHost.startedAt || '' } : null,
     relayUrl: config.relayUrl || '',
     relayId: config.relayId || '',
     relayHandle: config.relayHandle || '',
@@ -826,8 +695,9 @@ function openClawApprovalPolicy(snapshot = {}, agentId = '', handlerPath = '') {
  */
 async function runNotifyDaemonDoctor(paths, flags = {}) {
   const daemonConfig = await readJson(paths.config, {});
-  const handlerConfig = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
-  const directory = await readJson(path.join(paths.handler.dir, 'notify', 'directory.json'), {});
+  const handlerState = await ensureNotifyHandlerState(paths.handler);
+  const handlerConfig = handlerState.config;
+  const directory = handlerState.directory;
   const delivery = handlerConfig.deliveryProvider || {};
   const confirmation = handlerConfig.confirmationProvider || {};
   const agent = handlerConfig.agentProvider || {};
@@ -847,7 +717,7 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
     'magclaw-notify daemon login again to refresh the Daemon token');
   add('feishu.delivery_provider', true, Boolean(delivery.enabled && delivery.account),
     delivery.account ? `${delivery.kind} using account/profile ${delivery.account}` : 'No Feishu delivery provider configured.',
-    'magclaw-notify daemon configure --delivery-provider lark-cli-feishu --delivery-account <profile> --delivery-enabled true');
+    'magclaw-notify daemon configure --delivery-provider feishu-rest --delivery-account <account> --feishu-app-id <app-id> --feishu-app-secret-env FEISHU_APP_SECRET --delivery-enabled true');
   add('feishu.owner_dm', true, Boolean(confirmation.enabled && confirmation.account && (confirmation.ownerOpenId || confirmation.target)),
     confirmation.ownerOpenId || confirmation.target ? 'Owner approval DM target configured.' : 'No owner approval DM target configured.',
     'magclaw-notify daemon configure --confirmation-account <profile> --owner-open-id <ou_...> --confirmation-enabled true');
@@ -859,8 +729,8 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
     'magclaw-notify daemon configure --event-consumer standalone');
   if (eventConsumer === 'openclaw') {
     add('agent.approval_forwarder', true, false,
-      `Register the approval plugin so card callbacks reach this Daemon: ${notifyOpenClawApprovalPluginPath()}`,
-      'Add the plugin path to plugins.load.paths and enable magclaw-notify-approval in plugins.entries');
+      `Stop this daemon and enable the complete OpenClaw plugin host: ${notifyOpenClawApprovalPluginPath()}`,
+      'Add the plugin path to plugins.load.paths, enable magclaw-notify with relayEnabled=true, then restart the OpenClaw Gateway');
     checks[checks.length - 1].status = 'verify';
   }
   add('directory.groups', true, groups.some((group) => group && group.chatId && group.enabled !== false),
@@ -894,7 +764,7 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
 
 async function manageOpenClawApproval(paths, positional) {
   const action = positional[1] || 'status';
-  const config = await readJson(path.join(paths.handler.dir, 'notify', 'config.json'), {});
+  const config = (await ensureNotifyHandlerState(paths.handler)).config;
   const agentId = await resolveOpenClawApprovalAgent(config);
   const openclawCommand = clean(config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
   const pluginPath = notifyOpenClawApprovalPluginPath();
@@ -907,7 +777,7 @@ async function manageOpenClawApproval(paths, positional) {
     try {
       const result = await runOpenClawCommand(openclawCommand, ['plugins', 'list', '--json']);
       const snapshot = JSON.parse(result.stdout || '{}');
-      pluginLoaded = JSON.stringify(snapshot).includes('magclaw-notify-approval');
+      pluginLoaded = JSON.stringify(snapshot).includes('magclaw-notify');
     } catch (error) {
       pluginError = clean(error.message, 300);
     }
@@ -995,6 +865,11 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
         ...(flags.deliveryProvider ? { kind: flags.deliveryProvider } : {}),
         ...(flags.deliveryCommand ? { command: flags.deliveryCommand } : {}),
         ...(flags.deliveryAccount !== undefined ? { account: flags.deliveryAccount } : {}),
+        ...(flags.feishuAppId !== undefined ? { appId: flags.feishuAppId } : {}),
+        ...(flags.feishuAppIdEnv !== undefined ? { appIdEnv: flags.feishuAppIdEnv } : {}),
+        ...(flags.feishuAppSecretEnv !== undefined ? { appSecretEnv: flags.feishuAppSecretEnv } : {}),
+        ...(flags.feishuAppSecretFile !== undefined ? { appSecretFile: flags.feishuAppSecretFile } : {}),
+        ...(flags.feishuDomain !== undefined ? { domain: flags.feishuDomain } : {}),
         ...(flags.deliveryEnabled !== undefined ? { enabled: flags.deliveryEnabled !== 'false' } : {}),
         ...(flags.dryRun !== undefined ? { dryRun: flags.dryRun !== 'false' } : {}),
       },
@@ -1002,6 +877,11 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
         ...(flags.confirmationProvider ? { kind: flags.confirmationProvider } : {}),
         ...(flags.confirmationCommand ? { command: flags.confirmationCommand } : {}),
         ...(flags.confirmationAccount !== undefined ? { account: flags.confirmationAccount } : {}),
+        ...(flags.feishuAppId !== undefined ? { appId: flags.feishuAppId } : {}),
+        ...(flags.feishuAppIdEnv !== undefined ? { appIdEnv: flags.feishuAppIdEnv } : {}),
+        ...(flags.feishuAppSecretEnv !== undefined ? { appSecretEnv: flags.feishuAppSecretEnv } : {}),
+        ...(flags.feishuAppSecretFile !== undefined ? { appSecretFile: flags.feishuAppSecretFile } : {}),
+        ...(flags.feishuDomain !== undefined ? { domain: flags.feishuDomain } : {}),
         ...(flags.confirmationTarget !== undefined ? { target: flags.confirmationTarget } : {}),
         ...(flags.ownerOpenId !== undefined ? { ownerOpenId: flags.ownerOpenId } : {}),
         ...(flags.approvalAgentId !== undefined ? { approvalAgentId: flags.approvalAgentId } : {}),
@@ -1023,12 +903,9 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'confirm') {
     const decisions = [['approve', flags.approve], ['once', flags.once], ['always', flags.always], ['reject', flags.reject]].filter(([, enabled]) => enabled === true);
     if (decisions.length !== 1) throw new Error('Choose exactly one of --approve, --once, --always, or --reject.');
-    if (flags.personMap || flags.personMaps) throw new Error('Person mappings are owner-local operations and are not accepted by the daemon control socket.');
-    return requestNotifyDaemonControl(paths, {
-      action: 'confirm',
-      confirmationId: flags.id,
-      decision: decisions[0][0],
-      operatorOpenId: flags.operatorOpenId || '',
+    return confirmNotifyMapping(paths.handler, flags.id, decisions[0][0], {
+      operatorId: flags.operatorOpenId || '',
+      personMappings: commaList(flags.personMap || flags.personMaps || ''),
     });
   }
   throw new Error(`Unknown Notify Daemon command: ${command}`);

@@ -1,103 +1,82 @@
 # Notify Agent runtime contract
 
-This document is for someone who wants to run their own Notify Daemon backed by an
-Agent runtime other than OpenClaw.
+OpenClaw phase one does not use this adapter contract: the `magclaw-notify`
+plugin hosts the complete owner runtime in-process. This document defines the
+fallback boundary for another Agent runtime or a standalone daemon.
 
-## What the Daemon does and does not delegate
+## Stable owner responsibilities
 
-The Daemon is not a pure message relay, and deliberately so. It owns every
-Feishu interaction, because those are a stable public API while Agent runtimes are
-not:
+The owner runtime, whether hosted by the OpenClaw plugin or the daemon, owns:
 
-| Operation | Why the Daemon owns it |
+| Operation | Reason |
 |---|---|
-| Send an interactive card to a group | Card layout, mention tags, and idempotency must be byte-stable |
-| Send the approval card to the owner's DM | Same, plus it must work before any Agent is configured |
-| Update a previously sent card (callback token, then message PATCH fallback) | Only the sender can patch it, and the two-step "处理中 → 终态" update must not depend on a model |
-| Upload an image and embed it by `image_key` | Requires the raw upload API |
-| Read group members to build the local directory | Requires the members API |
+| Send interactive cards | Layout, mentions, and idempotency must be deterministic |
+| Send owner approval cards | Must work without model participation |
+| Update cards | Transport state must not depend on model output |
+| Upload images | Requires the Feishu binary upload API |
+| Read group members | Builds the private owner-local directory |
+| Persist delivery intent | Required for exact recovery after process termination |
 
-An Agent runtime cannot portably provide those five. A runtime like Claude Code
-has no Feishu connection at all, so if delivery lived in the Agent, that owner
-could not use Notify. Keeping delivery in the Daemon means one implementation
-works for every runtime.
+An analysis Agent is optional. Without one, the owner runtime delivers the
+structured summary as submitted.
 
-## The only thing an Agent runtime is required for
+## Another Agent runtime
 
-A Feishu application allows exactly one event-consumer connection. If your Agent
-runtime already holds it (as OpenClaw does for its bot), the Daemon cannot also
-subscribe, so **the runtime must forward approval card callbacks**. That is the
-entire mandatory contract:
+Feishu permits only one long-lived event consumer for an application. If a
+non-OpenClaw Agent runtime owns that connection, its adapter must intercept an
+exact MagClaw approval callback before model dispatch and invoke the owner
+runtime directly.
 
-> When a Feishu **direct** message arrives whose body is exactly a JSON object with
-> `"source":"magclaw_notify"`, do not hand it to a model. Send
-> `{"action":"confirm","confirmationId":…,"decision":…,"operatorOpenId":…}` to the
-> Daemon control socket and stop processing the message.
+The adapter must:
 
-Rules the adapter must honor:
+- accept direct conversations only;
+- require `source=magclaw_notify`;
+- validate `confirmationId` against `^ncf_[a-f0-9]{4,64}$`;
+- accept only `once`, `always`, `approve`, or `reject`;
+- validate `instance` against `^[a-z0-9][a-z0-9_-]{0,47}$`;
+- take `operatorOpenId` from the runtime-resolved sender identity, never from
+  the callback body or model output;
+- swallow accepted and rejected callback payloads so neither reaches a model.
 
-- `confirmationId` matches `^ncf_[a-f0-9]{4,64}$`; `decision` is one of `once`,
-  `always`, `approve`, `reject`; `instance` matches `^[a-z0-9][a-z0-9_-]{0,47}$`.
-- **`operatorOpenId` must be the sender identity your runtime resolved from the
-  inbound event.** Never read it from the message body, a quoted card, or model
-  output. If your runtime cannot resolve a sender, send nothing.
-- Ignore group conversations. Approvals are direct-message only.
-- Swallow the message either way, so a malformed or unauthenticated payload never
-  reaches a model as untrusted instructions.
+There is no local control-socket protocol. A future runtime integration should
+embed the owner host or call an explicitly authenticated adapter API. The
+reference OpenClaw implementation is [`openclaw-plugin/`](openclaw-plugin/):
+`policy.js` is the runtime-independent classifier and `index.js` binds it to
+OpenClaw's lifecycle and inbound hook.
 
-The Daemon independently rejects any decision whose `operatorOpenId` is not the
-configured owner, so a buggy adapter cannot approve on someone else's behalf.
+## No Agent runtime
 
-### Control socket
-
-- Default instance: `<notify-home>/daemon/run/control.sock`
-- Named instance: `<notify-home>/daemons/<instance>/run/control.sock`
-- If that path exceeds 96 bytes, it moves to
-  `$TMPDIR/magclaw-notify-<uid>/<sha256(root) first 24 hex>.sock`
-- Mode `0600`, owner only. Write one JSON line, read one JSON line back.
-- The reply is `{"ok":true,"result":{"accepted":true,…}}` as soon as the decision
-  is validated. Delivery continues asynchronously and the approval card carries
-  the final outcome, so do not hold the socket open waiting for it.
-
-Reference implementation: [`openclaw-plugin/`](openclaw-plugin/) — `policy.js` is the
-payload classifier (runtime-independent, unit-tested), `control-client.js` speaks
-the socket, and `index.js` is the ~55-line OpenClaw `before_dispatch` binding.
-
-## If you have no suitable Agent runtime
-
-Then you do not need one. Let the Daemon consume Feishu events itself:
+Let the daemon consume Feishu events itself only when no other process owns the
+same Feishu application's event connection:
 
 ```sh
-magclaw-notify daemon configure --instance <name> --event-consumer standalone
+magclaw-notify-daemon configure \
+  --instance <name> \
+  --delivery-provider feishu-rest \
+  --feishu-app-id APP_ID \
+  --feishu-app-secret-env MAGCLAW_NOTIFY_FEISHU_APP_SECRET \
+  --event-consumer standalone
 ```
 
-Only do this when **no** other process holds that Feishu app's event connection.
-Running `standalone` alongside OpenClaw on the same app will split events
-unpredictably between the two consumers.
-
-An Agent is otherwise optional: with `--agent-provider` unset, structured
-summaries are delivered exactly as submitted. An Agent only adds mention-alias
-resolution and group context injection.
+Running standalone consumption beside OpenClaw on the same app can split events
+unpredictably and is unsupported.
 
 ## Initialization checklist
 
-Run the preflight instead of guessing:
+Run:
 
 ```sh
-magclaw-notify daemon doctor --instance <name> --all
+magclaw-notify-daemon doctor --instance <name> --all
 ```
 
-Required before anything can be delivered:
+Required before delivery:
 
-1. `relay.login` — `daemon login` against the Relay, confirmed in the browser
-2. `feishu.delivery_provider` — a Feishu app credential the Daemon can send with
-3. `feishu.owner_dm` — your own `open_id`, so approval cards have somewhere to go
-4. `feishu.event_consumer` — `openclaw` (with a forwarder) or `standalone`
-5. `directory.groups` — at least one group name mapped to a Chat ID
+1. Relay login
+2. Feishu REST credentials
+3. Owner DM open ID
+4. Exactly one event consumer
+5. At least one group-to-chat-ID mapping
 
-Optional: `directory.people` (needed only to @-mention), `agent.analysis`,
-and `sender.setup_token` (needed only once you invite senders).
-
-Chat IDs, Open IDs, and app credentials never leave the owner machine. The Relay
-stores only Feishu login identities, token hashes, target labels, and lifecycle
-status.
+People mappings, analysis Agent configuration, and sender Setup Tokens are
+optional. Chat IDs, open IDs, and app credentials stay on the owner machine;
+the Relay stores no Feishu app secret.

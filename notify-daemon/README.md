@@ -1,72 +1,83 @@
-# MagClaw Notify Owner Runtime
+# MagClaw Notify owner runtime
 
-This private repository package contains the owner-side runtime and operational
-documentation for MagClaw Notify. It is intentionally excluded from the public
-NPM release. Install and operate it only on an owner-controlled machine.
+This private package contains the owner-side MagClaw Notify runtime. OpenClaw
+is the phase-one host: the `magclaw-notify` plugin owns the Relay connection,
+durable delivery state, Feishu REST calls, and approvals in the same process as
+OpenClaw's Feishu channel.
 
-The public `@magclaw/notify` package contains sender Skills, MCP tools, sender
-CLI commands, structured summaries, and sender-local audit support. Owner
-configuration, routing, approvals, delivery providers, directories, and service
-management stay in this package.
+The standalone daemon remains available as a rollback and as the compatibility
+host for installations that do not run OpenClaw. Do not run the plugin Relay
+loop and the daemon for the same Notify instance at the same time.
 
-Runtime credentials, local paths, provider accounts, group identifiers, and
-person identifiers must be supplied locally. Never commit them to this
-repository or copy them into public package documentation.
+Runtime credentials, local paths, provider accounts, chat IDs, and open IDs
+must remain local. Never commit them or copy them into public package docs.
 
-## Owner setup
+## OpenClaw plugin (recommended)
 
-Running a Notify Daemon is self-service: anyone with a Feishu-authenticated
-MagClaw login can own one, hand out their own Setup Tokens, and receive requests
-through the Relay. Starting a login only mints an unapproved device code — the
-real gate is the browser confirmation page, which needs that login plus a
-one-time CSRF token.
+Install this directory as a local OpenClaw plugin and enable `magclaw-notify`.
+The plugin configuration accepts:
+
+```json
+{
+  "accountId": "monkey",
+  "notifyHome": "/owner/local/notify-home",
+  "instance": "default",
+  "relayEnabled": true,
+  "relayUrl": "https://notify.example.com"
+}
+```
+
+- `accountId` selects an existing OpenClaw Feishu account. The plugin resolves
+  its app secret through OpenClaw's SecretInput runtime and never copies it into
+  Notify state.
+- `notifyHome` and `instance` select the existing owner profile.
+- `relayEnabled` is the cutover switch. Enable it only after stopping the
+  daemon for that instance. Set it to `false` for a dark launch.
+- `relayUrl` optionally overrides the URL stored during `login`; relay ID and
+  token still come from the local Notify profile.
+
+The plugin starts and stops with the OpenClaw Gateway. It reconnects to the
+Relay with bounded backoff and performs expiry and crash-recovery sweeps without
+another service or local IPC socket.
+
+### Durable state and recovery
+
+Owner state lives in `<instance-root>/notify/state.db`, using SQLite WAL mode.
+On first use, legacy JSON state is imported once and archived next to the
+original file with a `.migrated-<timestamp>` suffix.
+
+Every delivery is persisted before the Feishu API call. Recovery distinguishes:
+
+- `pending` / `sending`: safe to retry with the same idempotency UUID;
+- `sent_unconfirmed`: reconcile the persisted transport result without sending
+  a second card;
+- `done`: terminal and never replayed.
+
+This covers process termination after intent persistence, after Feishu accepts
+the send, and after the decision is persisted.
+
+### Approval callbacks
+
+The plugin intercepts only exact MagClaw approval payloads in direct Feishu
+conversations. It takes the operator open ID from OpenClaw's resolved inbound
+event, validates the payload without a model, calls the state machine directly,
+and prevents the raw callback from reaching an Agent.
+
+OpenClaw 2026.7.x does not expose Feishu's callback token to
+`before_dispatch`. Card updates therefore use the original message ID and the
+Feishu message PATCH API. Callback-token update can be enabled when OpenClaw
+adds that field; the plugin does not fabricate one.
+
+## Profile initialization
+
+Login and owner-local directory administration remain CLI operations:
 
 ```sh
 magclaw-notify-daemon login \
   --instance product-a \
   --relay-url https://notify.example.com \
   --name "Product A"
-```
 
-A private deployment can restrict this by setting
-`MAGCLAW_NOTIFY_DAEMON_BOOTSTRAP_TOKEN` on the Relay; owners then add
-`--bootstrap-token "RUNTIME_BOOTSTRAP_TOKEN"`. Leave it unset for an open Relay.
-
-Check what still needs initializing at any point:
-
-```sh
-magclaw-notify-daemon doctor --instance product-a --all
-```
-
-It reports each requirement as `ok`, `missing`, `optional`, or `verify`, with the
-exact command to fix it. Five things are required — Relay login, a Feishu
-delivery credential, the owner DM target, an event consumer, and one group
-mapped to a Chat ID. Mentions, an analysis Agent, and Setup Tokens are optional.
-
-Backing this with an Agent runtime other than OpenClaw, or with no Agent at all:
-read [AGENT-CONTRACT.md](AGENT-CONTRACT.md).
-
-Configure providers and the dedicated approval Agent separately. The analysis
-Agent is never reused as the approval Agent:
-
-```sh
-magclaw-notify-daemon configure \
-  --instance product-a \
-  --agent-provider openclaw \
-  --agent-id notify-analyzer \
-  --approval-agent-id notify-owner \
-  --delivery-provider lark-cli-feishu \
-  --delivery-account bot-profile \
-  --confirmation-provider lark-cli-feishu \
-  --confirmation-account bot-profile \
-  --owner-open-id OWNER_OPEN_ID \
-  --event-consumer openclaw
-```
-
-Populate the owner-local directory with placeholders or values supplied only at
-runtime:
-
-```sh
 magclaw-notify-daemon add-group \
   --instance product-a \
   --name "研发群" \
@@ -78,36 +89,44 @@ magclaw-notify-daemon add-person \
   --name "张三" \
   --aliases "三哥" \
   --open-id "PERSON_OPEN_ID"
+
+magclaw-notify-daemon doctor --instance product-a --all
 ```
 
-Install the owner handler Skill, then manage only the instance-scoped approval
-handler in the approval Agent's execution allowlist:
+`doctor` reports each requirement as `ok`, `missing`, `optional`, or `verify`
+and prints an actionable fix. Mentions, an analysis Agent, and Setup Tokens are
+optional.
+
+## Standalone daemon (fallback)
+
+For a runtime other than OpenClaw, or no Agent runtime, configure direct Feishu
+REST credentials from an environment variable or a local `0600` file:
 
 ```sh
-magclaw-notify-daemon install-handler-skill --instance product-a --targets openclaw
-magclaw-notify-daemon openclaw-approval status --instance product-a
-magclaw-notify-daemon openclaw-approval enable --instance product-a
-```
+magclaw-notify-daemon configure \
+  --instance product-a \
+  --delivery-provider feishu-rest \
+  --feishu-app-id APP_ID \
+  --feishu-app-secret-env MAGCLAW_NOTIFY_FEISHU_APP_SECRET \
+  --owner-open-id OWNER_OPEN_ID \
+  --event-consumer standalone
 
-`status` reports the approval Agent, whether its exact handler is present in the
-allowlist, and the effective execution security and prompt policy. Treat a
-mismatch as configuration drift.
-
-## Service management
-
-```sh
 magclaw-notify-daemon start --instance product-a
+```
+
+The historical `lark-cli-feishu` provider remains readable for existing daemon
+profiles, but the OpenClaw plugin path never shells out to `lark-cli`.
+
+Service commands are intentionally retained for rollback:
+
+```sh
 magclaw-notify-daemon status --instance product-a
 magclaw-notify-daemon stop --instance product-a
 magclaw-notify-daemon autostart enable --instance product-a
 magclaw-notify-daemon autostart disable --instance product-a
 ```
 
-The daemon owns all state mutations. Approval handler processes submit a small
-validated request over an owner-only local control socket and fail if the daemon
-is not running. Do not invoke owner state modules directly from another process.
-
-## Access and target administration
+## Access administration
 
 ```sh
 magclaw-notify-daemon access list --instance product-a

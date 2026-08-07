@@ -1,7 +1,7 @@
 {
-  "id": "magclaw-notify-approval",
-  "name": "MagClaw Notify Approval",
-  "description": "Routes MagClaw Notify approval card callbacks straight to the owner Daemon, without an Agent turn.",
+  "id": "magclaw-notify",
+  "name": "MagClaw Notify",
+  "description": "Hosts the MagClaw Notify Relay, durable state machine, Feishu delivery, and approvals inside OpenClaw.",
   "activation": {
     "onStartup": true
   },
@@ -16,6 +16,19 @@
       "notifyHome": {
         "type": "string",
         "minLength": 1
+      },
+      "instance": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,47}$"
+      },
+      "relayEnabled": {
+        "type": "boolean",
+        "default": false
+      },
+      "relayUrl": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https?://"
       }
     }
   }

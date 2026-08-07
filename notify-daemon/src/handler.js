@@ -12,6 +12,9 @@ import {
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
 } from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
+import { createEnvFeishuCredentialProvider, createFeishuRestClient } from './feishu-client.js';
+import { notifyRuntime } from './runtime-context.js';
+import { ensureNotifyStateStore, notifyStateStoreForFile } from './store.js';
 import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown } from '../../notify/src/summary.js';
 
 const HANDLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,6 +23,7 @@ const MAX_LOCAL_RECEIPTS = 500;
 export const CONFIRMATION_TTL_MS = 48 * 60 * 60 * 1000;
 const notifyStateLocks = new Map();
 const handlerAuditLogs = new Map();
+const standaloneFeishuClients = new Map();
 
 function now() {
   return new Date().toISOString();
@@ -78,6 +82,8 @@ export function mergeNotifyMentions(...mentionSets) {
 }
 
 async function readJson(file, fallback = {}) {
+  const state = notifyStateStoreForFile(file);
+  if (state) return state.store.read(state.collection, state.key, fallback);
   try {
     return JSON.parse(await readFile(file, 'utf8'));
   } catch {
@@ -86,6 +92,11 @@ async function readJson(file, fallback = {}) {
 }
 
 async function writeJson(file, value, mode = 0o600) {
+  const state = notifyStateStoreForFile(file);
+  if (state) {
+    state.store.write(state.collection, state.key, value);
+    return;
+  }
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode });
   await chmod(file, mode).catch(() => {});
@@ -101,6 +112,7 @@ export function notifyHandlerPaths(profilePaths) {
     grants: path.join(root, 'target-grants.json'),
     pending: path.join(root, 'pending-confirmations.json'),
     receipts: path.join(root, 'receipts.json'),
+    stateDatabase: path.join(root, 'state.db'),
     requestDir: path.join(root, 'requests'),
     tempDir: path.join(root, 'tmp'),
     auditDir: path.join(profilePaths.dir, 'audit'),
@@ -145,16 +157,26 @@ export function defaultNotifyHandlerConfig() {
       groupContextSync: false,
     },
     deliveryProvider: {
-      kind: 'openclaw-feishu',
+      kind: 'feishu-rest',
       command: '',
       account: '',
+      appId: '',
+      appIdEnv: 'FEISHU_APP_ID',
+      appSecretEnv: 'FEISHU_APP_SECRET',
+      appSecretFile: '',
+      domain: 'feishu',
       enabled: false,
       dryRun: false,
     },
     confirmationProvider: {
-      kind: 'lark-cli-feishu',
+      kind: 'feishu-rest',
       command: '',
       account: '',
+      appId: '',
+      appIdEnv: 'FEISHU_APP_ID',
+      appSecretEnv: 'FEISHU_APP_SECRET',
+      appSecretFile: '',
+      domain: 'feishu',
       target: '',
       ownerOpenId: '',
       approvalAgentId: '',
@@ -184,6 +206,7 @@ export function defaultNotifyDirectory() {
 
 export async function ensureNotifyHandlerState(profilePaths) {
   const paths = notifyHandlerPaths(profilePaths);
+  const store = await ensureNotifyStateStore(profilePaths);
   await mkdir(paths.requestDir, { recursive: true });
   await mkdir(paths.tempDir, { recursive: true });
   const config = { ...defaultNotifyHandlerConfig(), ...jsonObject(await readJson(paths.config, {})) };
@@ -205,6 +228,7 @@ export async function ensureNotifyHandlerState(profilePaths) {
     grants,
     profile: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 80),
     profilePaths,
+    store,
     audit: handlerAudit(profilePaths),
   };
 }
@@ -667,6 +691,18 @@ function presentationForNotify(analysis, people, requester) {
   };
 }
 
+function feishuClientFor(state, config) {
+  const injected = notifyRuntime(state.profilePaths).feishuClient;
+  if (injected) return injected;
+  const key = `${state.paths.root}:${config.account || 'default'}`;
+  if (!standaloneFeishuClients.has(key)) {
+    standaloneFeishuClients.set(key, createFeishuRestClient({
+      credentialProvider: createEnvFeishuCredentialProvider(config),
+    }));
+  }
+  return standaloneFeishuClients.get(key);
+}
+
 function messageIdFromOutput(value) {
   const parsed = typeof value === 'string' ? extractJsonCandidate(value) : value;
   return cleanText(
@@ -839,6 +875,42 @@ async function uploadNotifyImages(command, config, analysis, tempDir) {
     }
   }
   return uploaded;
+}
+
+async function uploadNotifyImagesViaRest(client, config, analysis, tempDir) {
+  const images = safeArray(analysis.summary?.images).slice(0, 4);
+  if (!images.length || config.dryRun) return [];
+  await mkdir(tempDir, { recursive: true });
+  const uploaded = [];
+  for (const source of images) {
+    const base = path.join(tempDir, `notify-image-${crypto.randomBytes(8).toString('hex')}`);
+    let file = '';
+    try {
+      file = await downloadNotifyImage(source, base);
+      const extension = path.extname(file).toLowerCase();
+      const contentType = ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' })[extension] || 'application/octet-stream';
+      const result = await client.uploadImage({ bytes: await readFile(file), filename: path.basename(file), contentType });
+      uploaded.push({ imageKey: result.imageKey, alt: source.alt, caption: source.caption || '' });
+    } finally {
+      if (file) await rm(file, { force: true });
+    }
+  }
+  return uploaded;
+}
+
+async function deliverViaFeishuRest({ state, config, group, analysis, people, requester, requestId, tempDir, idempotencyKey }) {
+  const client = feishuClientFor(state, config);
+  const uploadedImages = await uploadNotifyImagesViaRest(client, config, analysis, tempDir || os.tmpdir());
+  const card = larkCardForNotify({ ...analysis, uploadedImages }, people, requester);
+  const stableKey = idempotencyKey || `mcn_${crypto.createHash('sha256').update(JSON.stringify({ requestId, chatId: group.chatId, card })).digest('base64url')}`;
+  if (config.dryRun) return { messageId: '', dryRun: true, idempotencyKey: stableKey };
+  const result = await client.sendInteractive({
+    receiveIdType: 'chat_id',
+    receiveId: group.chatId,
+    card,
+    idempotencyKey: stableKey,
+  });
+  return { messageId: result.messageId, dryRun: false, idempotencyKey: stableKey };
 }
 
 async function deliverViaLarkCli({ config, group, analysis, people, requester, requestId, tempDir }) {
@@ -1044,7 +1116,23 @@ function larkCardForGenericConfirmation(confirmation) {
 
 async function sendConfirmationPrompt(state, confirmation) {
   const provider = state.config.confirmationProvider;
-  if (!provider.enabled || !provider.account || !provider.target) return { sent: false, reason: 'confirmation_provider_unconfigured' };
+  if (!provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) return { sent: false, reason: 'confirmation_provider_unconfigured' };
+  if (provider.kind === 'feishu-rest' || notifyRuntime(state.profilePaths).feishuClient) {
+    const requests = confirmation.kind === 'target_access'
+      ? (await Promise.all(confirmationRequestIds(confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean)
+      : [];
+    const card = confirmation.kind === 'target_access'
+      ? larkCardForTargetApproval(confirmation, requests)
+      : larkCardForGenericConfirmation(confirmation);
+    if (provider.dryRun) return { sent: true, messageId: '', dryRun: true };
+    const result = await feishuClientFor(state, provider).sendInteractive({
+      receiveIdType: 'open_id',
+      receiveId: provider.ownerOpenId || provider.target,
+      card,
+      idempotencyKey: `mcn_confirmation_${confirmation.id}`,
+    });
+    return { sent: true, messageId: result.messageId, dryRun: false };
+  }
   if (provider.kind === 'lark-cli-feishu') {
     const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
     const requests = confirmation.kind === 'target_access'
@@ -1140,6 +1228,7 @@ export async function sendNotifyConfirmationPrompt(profilePaths, confirmationId)
 
 async function appendReceipt(state, receipt) {
   const receipts = safeArray(await readJson(state.paths.receipts, []));
+  if (receipt.deliveryIntentId && receipts.some((item) => item.deliveryIntentId === receipt.deliveryIntentId && item.status === receipt.status)) return;
   receipts.push(receipt);
   await writeJson(state.paths.receipts, receipts.slice(-MAX_LOCAL_RECEIPTS));
 }
@@ -1327,14 +1416,32 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     await appendReceipt(state, { ...result, analysisWarning: analysis.analysisWarning || '', createdAt: now() });
     return auditedDeliveryResult(state, result, { groupName: group.name, provider: delivery.kind, reason: 'provider_unconfigured' });
   }
+  const idempotencyKey = `mcn_${crypto.createHash('sha256').update(String(request.id || '')).digest('base64url')}`;
+  const intentId = `ndi_${crypto.createHash('sha256').update(String(request.id || '')).digest('hex').slice(0, 24)}`;
+  let intent = state.store.createDeliveryIntent({ id: intentId, requestId: request.id, request, idempotencyKey });
+  if (intent.status === 'done' || intent.status === 'failed') {
+    return { ...intent.result, deduped: true, deliveryIntentId: intent.id };
+  }
+  if (intent.status === 'sent_unconfirmed' && intent.result) {
+    const recovered = { ...intent.result, deliveryIntentId: intent.id, recovered: true };
+    await appendReceipt(state, { ...recovered, createdAt: now() });
+    state.store.updateDeliveryIntent(intent.id, 'done', { result: recovered });
+    return auditedDeliveryResult(state, recovered, { recovered: true, reconciliation: 'persisted_transport_result' });
+  }
+  const runtime = notifyRuntime(profilePaths);
+  await runtime.deliveryHooks?.afterIntentPersisted?.({ intent, request });
   try {
-    const provider = delivery.kind === 'lark-cli-feishu'
-      ? deliverViaLarkCli
-      : delivery.kind === 'openclaw-feishu'
-        ? deliverViaOpenClaw
-        : null;
+    intent = state.store.updateDeliveryIntent(intent.id, 'sending');
+    const provider = delivery.kind === 'feishu-rest' || runtime.feishuClient
+      ? deliverViaFeishuRest
+      : delivery.kind === 'lark-cli-feishu'
+        ? deliverViaLarkCli
+        : delivery.kind === 'openclaw-feishu'
+          ? deliverViaOpenClaw
+          : null;
     if (!provider) throw new Error(`Unsupported Notify delivery provider: ${delivery.kind}`);
     const sent = await provider({
+      state,
       config: delivery,
       group,
       analysis,
@@ -1342,7 +1449,19 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
       requester: request.requester,
       requestId: request.id,
       tempDir: state.paths.tempDir,
+      idempotencyKey,
     });
+    const provisionalResult = {
+      requestId: request.id,
+      status: sent.dryRun ? 'awaiting_configuration' : 'sent',
+      publicReason: sent.dryRun ? 'Notify delivery was validated in dry-run mode.' : '',
+      provider: runtime.feishuClient ? 'feishu-rest' : delivery.kind,
+      messageId: sent.messageId,
+      localReceiptId: receiptId,
+      deliveryIntentId: intent.id,
+    };
+    state.store.updateDeliveryIntent(intent.id, 'sent_unconfirmed', { result: provisionalResult });
+    await runtime.deliveryHooks?.afterTransportSent?.({ intent: state.store.deliveryIntent(intent.id), request, result: provisionalResult });
     const groupContextSync = sent.dryRun
       ? { status: 'skipped_dry_run' }
       : await syncNotifyGroupContext(state, {
@@ -1352,21 +1471,55 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
         requester: request.requester,
       });
     const result = {
-      requestId: request.id,
-      status: sent.dryRun ? 'awaiting_configuration' : 'sent',
-      publicReason: sent.dryRun ? 'Notify delivery was validated in dry-run mode.' : '',
-      provider: delivery.kind,
-      messageId: sent.messageId,
-      localReceiptId: receiptId,
+      ...provisionalResult,
       groupContextSync: groupContextSync.status,
     };
     await appendReceipt(state, { ...result, dryRun: sent.dryRun, createdAt: now() });
+    state.store.updateDeliveryIntent(intent.id, 'done', { result });
     return auditedDeliveryResult(state, result, { groupName: group.name, mentionCount: peopleResolution.length, dryRun: Boolean(sent.dryRun) });
   } catch (error) {
-    const result = { requestId: request.id, status: 'failed', publicReason: 'Notify delivery failed.', error: cleanText(redactNotifyPublicText(error.message, 2000), 1000), provider: delivery.kind, localReceiptId: receiptId };
+    if (error?.code === 'MAGCLAW_CRASH_INJECTION') throw error;
+    const result = { requestId: request.id, status: 'failed', publicReason: 'Notify delivery failed.', error: cleanText(redactNotifyPublicText(error.message, 2000), 1000), provider: runtime.feishuClient ? 'feishu-rest' : delivery.kind, localReceiptId: receiptId, deliveryIntentId: intent.id };
     await appendReceipt(state, { ...result, createdAt: now() });
+    state.store.updateDeliveryIntent(intent.id, 'failed', { result, error: result.error });
     return auditedDeliveryResult(state, result, { groupName: group.name, error: cleanText(redactNotifyPublicText(error.message, 1000), 500) });
   }
+}
+
+export async function recoverNotifyDeliveries(profilePaths) {
+  const state = await ensureNotifyHandlerState(profilePaths);
+  const recovered = [];
+  for (const intent of state.store.listRecoverableDeliveryIntents()) {
+    if (intent.status === 'sent_unconfirmed' && intent.result) {
+      const result = { ...intent.result, deliveryIntentId: intent.id, recovered: true };
+      await appendReceipt(state, { ...result, createdAt: now() });
+      result.cloudReport = await reportNotifyResultToCloud(state, result);
+      state.store.updateDeliveryIntent(intent.id, 'done', { result });
+      recovered.push(result);
+      continue;
+    }
+    if (!intent.request) continue;
+    const result = await processAuthorizedNotifyDelivery(profilePaths, intent.request);
+    result.cloudReport = await reportNotifyResultToCloud(state, result);
+    recovered.push(result);
+  }
+  const pending = safeArray(await readJson(state.paths.pending, []));
+  for (const record of pending) {
+    if (!['approved', 'approved_once', 'approved_permanent'].includes(record.status) || record.result || safeArray(record.results).length) continue;
+    const requestIds = confirmationRequestIds(record);
+    const allowedIds = record.status === 'approved_once' ? requestIds.slice(0, 1) : requestIds;
+    const results = [];
+    for (const requestId of allowedIds) {
+      const storedRequest = await storedNotifyRequest(state, requestId);
+      if (storedRequest) results.push(await processAuthorizedNotifyDelivery(profilePaths, storedRequest));
+    }
+    if (results.length) {
+      await reportConfirmationResults(state, record, results);
+      await persistPendingRecord(state, record);
+      recovered.push(...results);
+    }
+  }
+  return recovered;
 }
 
 export async function handleNotifyDelivery(profilePaths, request) {
@@ -1451,7 +1604,48 @@ function directoryEntries(value) {
 export async function syncNotifyDirectory(profilePaths) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const provider = state.config.deliveryProvider;
-  if (!['openclaw-feishu', 'lark-cli-feishu'].includes(provider.kind) || !provider.account) throw new Error('Configure a supported Feishu delivery provider before syncing the local directory.');
+  if (!['feishu-rest', 'openclaw-feishu', 'lark-cli-feishu'].includes(provider.kind) || !provider.account) throw new Error('Configure a supported Feishu delivery provider before syncing the local directory.');
+  if (provider.kind === 'feishu-rest' || notifyRuntime(state.profilePaths).feishuClient) {
+    let discovered = 0;
+    const client = feishuClientFor(state, provider);
+    for (const group of state.directory.groups.filter((item) => item.enabled !== false && item.chatId)) {
+      const entries = await client.listChatMembers({ chatId: group.chatId, pageSize: 100 });
+      for (const entry of entries) {
+        const name = cleanText(entry.name || entry.display_name || entry.member_name || '', 120);
+        const openId = cleanText(entry.member_id || entry.open_id || entry.id || '', 200);
+        if (!name || !openId) continue;
+        const existing = state.directory.people.find((person) => person.openId === openId)
+          || state.directory.people.find((person) => normalizeLookup(person.name) === normalizeLookup(name));
+        if (existing) {
+          existing.name = existing.name || name;
+          existing.openId = existing.openId || openId;
+          existing.groupChatIds = [...new Set([...safeArray(existing.groupChatIds), group.chatId])];
+          existing.source = 'feishu_rest_directory';
+          existing.verifiedAt = now();
+          existing.updatedAt = now();
+        } else {
+          state.directory.people.push({
+            id: `nppl_${crypto.randomBytes(8).toString('hex')}`,
+            name,
+            openId,
+            aliases: [],
+            confirmedAliases: [],
+            groupChatIds: [group.chatId],
+            source: 'feishu_rest_directory',
+            confidence: 1,
+            verifiedAt: now(),
+            enabled: true,
+            createdAt: now(),
+            updatedAt: now(),
+          });
+        }
+        discovered += 1;
+      }
+    }
+    state.directory.updatedAt = now();
+    await writeJson(state.paths.directory, state.directory);
+    return { groups: state.directory.groups.length, people: state.directory.people.length, discovered };
+  }
   const command = provider.kind === 'lark-cli-feishu'
     ? cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500)
     : cleanText(provider.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
@@ -1641,6 +1835,9 @@ async function completeTargetAccessConfirmation(profilePaths, confirmationId, de
     return { state, record, alreadyDecided: false };
   });
   const { state, record } = started;
+  if (!started.expired && !started.alreadyDecided) {
+    await notifyRuntime(profilePaths).deliveryHooks?.afterDecisionPersisted?.({ confirmation: record, decision });
+  }
   if (started.expired) {
     const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.' }));
     if (!started.alreadyReported) {
@@ -1948,11 +2145,10 @@ export async function updateNotifyApprovalCard(profilePaths, event, confirmation
   const provider = state.config.confirmationProvider;
   const confirmationId = confirmationResult?.confirmation?.id || confirmationResult?.action?.confirmationId || '';
   await state.audit.append({ event: 'owner.approval.card_update_started', outcome: 'started', confirmationId });
-  if (provider.kind !== 'lark-cli-feishu' || !provider.account) {
+  if (!provider.account) {
     await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'provider_unconfigured' } });
     return { updated: false };
   }
-  const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
   const decision = confirmationResult?.action?.decision || confirmationResult?.confirmation?.decision || 'approve';
   const requests = (await Promise.all(confirmationRequestIds(confirmationResult.confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean);
   const card = larkCardForApprovalOutcome(confirmationResult.confirmation, decision, confirmationResult.result, {
@@ -1960,6 +2156,35 @@ export async function updateNotifyApprovalCard(profilePaths, event, confirmation
     requests,
     results: confirmationResult.results,
   });
+  if (provider.kind === 'feishu-rest' || notifyRuntime(state.profilePaths).feishuClient) {
+    const client = feishuClientFor(state, provider);
+    const token = cleanText(event?.token, 2000);
+    const targetMessageId = cleanText(event?.message_id || event?.messageId || confirmationResult?.confirmation?.promptMessageId || '', 240);
+    const methods = [];
+    if (token) methods.push({ method: 'callback_token', run: () => client.updateCard({ token, card }) });
+    if (/^om_[A-Za-z0-9_-]+$/.test(targetMessageId)) methods.push({ method: 'message_patch', run: () => client.patchMessage({ messageId: targetMessageId, card }) });
+    if (!methods.length) {
+      await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'no_update_route' } });
+      return { updated: false };
+    }
+    let lastError;
+    for (const method of methods) {
+      try {
+        await method.run();
+        await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'updated', confirmationId, metadata: { method: method.method } });
+        return { updated: true, method: method.method };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'failed', severity: 'error', confirmationId, metadata: { attempts: methods.map((item) => item.method), error: cleanText(lastError?.message, 500) } });
+    throw lastError || new Error('Notify approval card update failed.');
+  }
+  if (provider.kind !== 'lark-cli-feishu') {
+    await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'provider_unsupported' } });
+    return { updated: false };
+  }
+  const command = cleanText(provider.command || process.env.LARK_CLI_PATH || 'lark-cli', 500);
   const attempts = approvalCardUpdateAttempts(provider, event, confirmationResult.confirmation, card);
   if (!attempts.length) {
     await state.audit.append({ event: 'owner.approval.card_update_completed', outcome: 'skipped', confirmationId, metadata: { reason: 'no_update_route' } });
@@ -1988,7 +2213,7 @@ export async function notifyHandlerStatus(profilePaths) {
     agentProvider: state.config.agentProvider.kind,
     deliveryProvider: state.config.deliveryProvider.kind,
     deliveryConfigured: Boolean(state.config.deliveryProvider.enabled && state.config.deliveryProvider.account),
-    confirmationConfigured: Boolean(state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && state.config.confirmationProvider.target),
+    confirmationConfigured: Boolean(state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && (state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target)),
     approvalAgentId: state.config.confirmationProvider.approvalAgentId || '',
     approvalEventConsumer: state.config.confirmationProvider.eventConsumer || 'openclaw',
     approvalListenerConfigured: Boolean(state.config.confirmationProvider.kind === 'lark-cli-feishu' && state.config.confirmationProvider.eventConsumer === 'standalone' && state.config.confirmationProvider.enabled && state.config.confirmationProvider.account && (state.config.confirmationProvider.ownerOpenId || state.config.confirmationProvider.target)),
@@ -1999,6 +2224,7 @@ export async function notifyHandlerStatus(profilePaths) {
     receipts: receipts.length,
     configPath: state.paths.config,
     directoryPath: state.paths.directory,
+    stateDatabasePath: state.paths.stateDatabase,
     auditDir: state.paths.auditDir,
   };
 }

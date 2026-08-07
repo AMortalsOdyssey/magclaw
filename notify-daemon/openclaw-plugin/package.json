@@ -1,6 +1,6 @@
 {
-  "name": "@magclaw/openclaw-notify-approval",
-  "version": "1.0.0",
+  "name": "@magclaw/openclaw-notify",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "openclaw": {

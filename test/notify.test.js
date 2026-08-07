@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -39,10 +38,8 @@ import {
   ensureNotifyRuntimeLogs,
   notifyDaemonPaths,
   processNotifyApprovalEvent,
-  requestNotifyDaemonControl,
   runNotifyDaemonCommand,
   startNotifyApprovalListener,
-  startNotifyDaemonControlServer,
 } from '../notify-daemon/src/daemon.js';
 import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify-daemon/src/executable.js';
 import { normalizeNotifyInstance } from '../notify-daemon/src/instance.js';
@@ -53,6 +50,15 @@ import {
   sanitizeNotifyAuditRecord,
 } from '../notify/src/audit.js';
 import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify-daemon/src/service.js';
+import { ensureNotifyStateStore } from '../notify-daemon/src/store.js';
+
+async function readNotifyState(profilePaths, collection) {
+  return (await ensureNotifyStateStore(profilePaths)).read(collection, 'state', collection === 'pending' || collection === 'receipts' ? [] : {});
+}
+
+async function writeNotifyState(profilePaths, collection, value) {
+  (await ensureNotifyStateStore(profilePaths)).write(collection, 'state', value);
+}
 
 function responseRecorder() {
   return {
@@ -407,79 +413,6 @@ test('Notify approval listener stays off by default when OpenClaw owns Monkey ev
   assert.equal(listener.running, false);
 });
 
-test('Notify approval subprocesses submit validated decisions to the single daemon writer', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-control-'));
-  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'control-test');
-  const received = [];
-  const controller = new AbortController();
-  const control = await startNotifyDaemonControlServer(paths, controller.signal, {
-    processApproval: async (_profilePaths, event) => {
-      received.push(event);
-      return { handled: true, confirmation: { id: event.action_value.confirmationId }, action: event.action_value };
-    },
-  });
-  try {
-    assert.equal(control.running, true);
-    if (process.platform !== 'win32') assert.equal((await stat(paths.controlSocket)).mode & 0o777, 0o600);
-    // The decision is acknowledged immediately; delivery continues asynchronously
-    // because Agent analysis and Feishu delivery far outlast any caller's socket.
-    const result = await requestNotifyDaemonControl(paths, {
-      action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1',
-    });
-    assert.equal(result.accepted, true);
-    assert.equal(result.confirmationId, 'ncf_a12f');
-    assert.equal(result.decision, 'once');
-    for (let attempt = 0; attempt < 100 && !received.length; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.equal(received.length, 1);
-    assert.equal(received[0].operator_id, 'ou_owner1');
-    await assert.rejects(
-      requestNotifyDaemonControl(paths, { action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: '' }),
-      /valid Notify owner open id/i,
-    );
-  } finally {
-    controller.abort();
-  }
-});
-
-test('Notify daemon control server survives a client that disconnects before the decision completes', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-control-epipe-'));
-  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'control-epipe');
-  let released;
-  const processed = new Promise((resolve) => { released = resolve; });
-  const controller = new AbortController();
-  const control = await startNotifyDaemonControlServer(paths, controller.signal, {
-    processApproval: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      released();
-      return { handled: true, confirmation: { id: 'ncf_a12f' }, action: {} };
-    },
-  });
-  try {
-    // Abandon the socket the instant the request is written, so the Daemon's own
-    // reply lands on a dead peer. That must not raise an unhandled error event.
-    await new Promise((resolve, reject) => {
-      const socket = net.createConnection(paths.controlSocket);
-      socket.once('error', reject);
-      socket.once('connect', () => {
-        socket.end(`${JSON.stringify({ action: 'confirm', confirmationId: 'ncf_a12f', decision: 'once', operatorOpenId: 'ou_owner1' })}\n`);
-        socket.destroy();
-        resolve();
-      });
-    });
-    await processed;
-    // Still serving after the dead-peer write.
-    const result = await requestNotifyDaemonControl(paths, {
-      action: 'confirm', confirmationId: 'ncf_b34e', decision: 'reject', operatorOpenId: 'ou_owner1',
-    });
-    assert.equal(result.accepted, true);
-    assert.equal(control.running, true);
-  } finally {
-    controller.abort();
-  }
-});
-
 test('Notify approval status reports plugin mode and refuses to manage an exec allowlist', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-approval-agent-'));
   const instance = 'approval-agent-test';
@@ -488,7 +421,7 @@ test('Notify approval status reports plugin mode and refuses to manage an exec a
   await writeFile(fakeOpenClaw, [
     '#!/usr/bin/env node',
     'const args = process.argv.slice(2);',
-    "if (args[0] === 'plugins') process.stdout.write(JSON.stringify({ plugins: [{ id: 'magclaw-notify-approval', enabled: true }] }));",
+    "if (args[0] === 'plugins') process.stdout.write(JSON.stringify({ plugins: [{ id: 'magclaw-notify', enabled: true }] }));",
     "else if (args[0] === 'approvals') process.stdout.write(JSON.stringify({ file: { agents: { 'monkey-owner': { allowlist: [{ pattern: '/Users/x/.local/share/magclaw-notify/approval-handlers/default' }] } } } }));",
     "else process.stdout.write('{}');",
     '',
@@ -1113,7 +1046,7 @@ test('Notify local directory keeps exact aliases deterministic and fuzzy groups 
   const profilePaths = { dir: root };
   const group = await addNotifyGroup(profilePaths, { name: '研发一群', chatId: 'oc_local_only', aliases: ['技术研发群'] });
   const person = await addNotifyPerson(profilePaths, { name: '张三', openId: 'ou_local_only', aliases: ['Zhang San'], groupChatIds: ['oc_local_only'] });
-  const directory = JSON.parse(await readFile(path.join(root, 'notify', 'directory.json'), 'utf8'));
+  const directory = await readNotifyState(profilePaths, 'directory');
 
   assert.equal(resolveNotifyGroup(directory, '技术研发群').group.id, group.id);
   assert.equal(resolveNotifyGroup(directory, '研发群').status, 'confirmation_required');
@@ -1279,7 +1212,7 @@ test('Notify handler records local context and stops at empty group configuratio
     },
   });
   assert.equal(result.status, 'awaiting_configuration');
-  const memory = JSON.parse(await readFile(path.join(root, 'notify', 'memory.json'), 'utf8'));
+  const memory = await readNotifyState({ dir: root }, 'memory');
   assert.equal(memory.recentContexts[0].sessionId, 'sess_1');
   assert.equal(memory.recentContexts[0].turnId, 'turn_2');
   assert.equal(memory.requesters.hum_remote.name, '李四');
@@ -1328,16 +1261,16 @@ test('Notify owner confirmation persists a fuzzy group alias and resumes the sto
   };
   const awaiting = await handleNotifyDelivery(profilePaths, request);
   assert.equal(awaiting.status, 'awaiting_confirmation');
-  const pending = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
+  const pending = await readNotifyState(profilePaths, 'pending');
   const confirmed = await confirmNotifyMapping(profilePaths, pending[0].id, 'approve');
   assert.equal(confirmed.confirmation.status, 'approved');
   assert.equal(confirmed.result.status, 'awaiting_owner_approval');
   assert.equal(confirmed.cloudReport.reported, false);
-  const pendingAfterAlias = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
+  const pendingAfterAlias = await readNotifyState(profilePaths, 'pending');
   const targetApproval = pendingAfterAlias.find((record) => record.kind === 'target_access' && record.status === 'pending');
   const targetApproved = await confirmNotifyMapping(profilePaths, targetApproval.id, 'once');
   assert.equal(targetApproved.result.status, 'awaiting_configuration');
-  const directory = JSON.parse(await readFile(path.join(root, 'notify', 'directory.json'), 'utf8'));
+  const directory = await readNotifyState(profilePaths, 'directory');
   assert.deepEqual(directory.groups[0].confirmedAliases, ['研发群']);
 });
 
@@ -1368,7 +1301,7 @@ test('Notify target approval batches per user and group with once, permanent, ow
   assert.equal(second.confirmationId, first.confirmationId);
   assert.equal(second.promptNeeded, false);
   assert.equal(third.pendingRequestCount, 3);
-  const pending = JSON.parse(await readFile(path.join(root, 'notify', 'pending-confirmations.json'), 'utf8'));
+  const pending = await readNotifyState(profilePaths, 'pending');
   const batch = pending.find((record) => record.id === first.confirmationId);
   assert.ok(Math.abs((Date.parse(batch.expiresAt) - Date.parse(batch.createdAt)) - 48 * 60 * 60 * 1000) < 1000);
   const card = larkCardForTargetApproval(batch);
@@ -1404,13 +1337,12 @@ test('Notify target approval batches per user and group with once, permanent, ow
   assert.equal(direct.shouldProcess, true);
 
   const expiring = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired', 'usr_other'));
-  const pendingPath = path.join(root, 'notify', 'pending-confirmations.json');
-  const expiringRecords = JSON.parse(await readFile(pendingPath, 'utf8'));
+  const expiringRecords = await readNotifyState(profilePaths, 'pending');
   const expiringRecord = expiringRecords.find((record) => record.id === expiring.confirmationId);
   expiringRecord.expiresAt = new Date(Date.now() - 1000).toISOString();
-  await writeFile(pendingPath, `${JSON.stringify(expiringRecords, null, 2)}\n`);
+  await writeNotifyState(profilePaths, 'pending', expiringRecords);
   await assert.rejects(confirmNotifyMapping(profilePaths, expiring.confirmationId, 'always', { operatorId: 'ou_owner' }), /expired/i);
-  const afterExpiry = JSON.parse(await readFile(pendingPath, 'utf8'));
+  const afterExpiry = await readNotifyState(profilePaths, 'pending');
   assert.equal(afterExpiry.find((record) => record.id === expiring.confirmationId).result.status, 'approval_expired');
   const retry = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired_retry', 'usr_other'));
   assert.notEqual(retry.confirmationId, expiring.confirmationId);

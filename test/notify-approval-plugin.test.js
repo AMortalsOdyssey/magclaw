@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { classifyNotifyApprovalMessage } from '../notify-daemon/openclaw-plugin/policy.js';
-import { submitNotifyDecision } from '../notify-daemon/openclaw-plugin/control-client.js';
 
 const OWNER = 'ou_0b4161117f6805f382ed11657184c84d';
 const CONFIRMATION = 'ncf_edef24221904b3550253';
@@ -52,58 +50,6 @@ test('Notify approval callbacks are confined to direct conversations and exact p
     const result = classifyNotifyApprovalMessage(content, options);
     assert.equal(result.kind, kind, `${content.slice(0, 40)} -> ${result.kind}`);
     assert.equal(result.reason, reason, `${content.slice(0, 40)} -> ${result.reason}`);
-  }
-});
-
-test('Notify approval plugin submits the decision over the daemon control socket', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-plugin-'));
-  const socketPath = path.join(root, 'control.sock');
-  const received = [];
-  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-    let body = '';
-    socket.setEncoding('utf8');
-    socket.on('data', (chunk) => { body += chunk; });
-    socket.on('end', () => {
-      received.push(JSON.parse(body));
-      socket.end(`${JSON.stringify({ ok: true, result: { accepted: true } })}\n`);
-    });
-  });
-  await new Promise((resolve) => server.listen(socketPath, resolve));
-  try {
-    const result = await submitNotifyDecision(socketPath, {
-      action: 'confirm', confirmationId: CONFIRMATION, decision: 'once', operatorOpenId: OWNER,
-    });
-    assert.equal(result.accepted, true);
-    assert.deepEqual(received[0], {
-      action: 'confirm', confirmationId: CONFIRMATION, decision: 'once', operatorOpenId: OWNER,
-    });
-  } finally {
-    server.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('Notify approval plugin surfaces a daemon rejection instead of silently succeeding', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-plugin-reject-'));
-  const socketPath = path.join(root, 'control.sock');
-  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-    socket.setEncoding('utf8');
-    socket.on('data', () => {});
-    socket.on('end', () => socket.end(`${JSON.stringify({ ok: false, error: 'Only the configured Notify owner can approve this request.' })}\n`));
-  });
-  await new Promise((resolve) => server.listen(socketPath, resolve));
-  try {
-    await assert.rejects(
-      submitNotifyDecision(socketPath, { action: 'confirm', confirmationId: CONFIRMATION, decision: 'once', operatorOpenId: OWNER }),
-      /Only the configured Notify owner/,
-    );
-    await assert.rejects(
-      submitNotifyDecision(path.join(root, 'missing.sock'), { action: 'confirm' }),
-      /control socket unavailable/i,
-    );
-  } finally {
-    server.close();
-    await rm(root, { recursive: true, force: true });
   }
 });
 
