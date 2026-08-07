@@ -131,6 +131,9 @@ magclaw-notify-daemon autostart disable --instance product-a
 ```sh
 magclaw-notify-daemon access list --instance product-a
 magclaw-notify-daemon access revoke --instance product-a --access-id ACCESS_ID
+magclaw-notify-daemon access kick --instance product-a --user-id USER_ID
+# Or through the public wrapper:
+magclaw-notify daemon access kick --instance product-a --user-id USER_ID
 magclaw-notify-daemon grants list --instance product-a
 magclaw-notify-daemon grants revoke --instance product-a --grant-id GRANT_ID
 magclaw-notify-daemon setup-token rotate --instance product-a --revoke-existing

@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtemp } from 'node:fs/promises';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import WebSocket from 'ws';
 import { hashNotifySecret } from '../server/notify.js';
 import { createNotifyRelay } from '../server/notify-relay.js';
+import { connectOnce, notifyDaemonPaths } from '../notify-daemon/src/daemon.js';
+import { listNotifyTargetGrants } from '../notify-daemon/src/handler.js';
+import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-daemon/src/store.js';
 
 function daemonToken(id, relayId, rawToken) {
   return {
@@ -77,4 +83,58 @@ test('independent Notify Relay routes each request to only the token-bound Daemo
   relay.beginDrain();
   server.close();
   await once(server, 'close');
+});
+
+test('Notify Relay sends notify:grants:revoke and the connected daemon revokes local grants', async () => {
+  const state = { notifyRecords: [daemonToken('nat_local', 'nrl_local', 'daemon-token-local')] };
+  const relayAudit = [];
+  const relay = createNotifyRelay({
+    getState: () => state,
+    persistState: async () => {},
+    audit: async (event) => { relayAudit.push(event); },
+    ackTimeoutMs: 2_000,
+  });
+  const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
+  server.on('upgrade', (req, socket, head) => {
+    relay.handleUpgrade(req, socket, head).then((handled) => {
+      if (!handled) socket.destroy();
+    }).catch(() => socket.destroy());
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-grants-revoke-'));
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'default');
+  const store = await ensureNotifyStateStore(paths.handler);
+  store.write('grants', 'state', {
+    version: 1,
+    grants: [
+      { id: 'ntg_1', status: 'active', userId: 'usr_sender', userName: 'Sender', groupId: 'grp_1', groupName: '研发群' },
+      { id: 'ntg_2', status: 'active', userId: 'usr_other', userName: 'Other', groupId: 'grp_1', groupName: '研发群' },
+    ],
+  });
+  closeNotifyStateStore(paths.handler);
+  const abort = new AbortController();
+  const connected = connectOnce(paths, {
+    relayUrl: `http://127.0.0.1:${server.address().port}`,
+    relayId: 'nrl_local',
+    token: 'daemon-token-local',
+    machineFingerprint: '',
+  }, abort.signal);
+  for (let attempt = 0; attempt < 100 && !relay.status('nrl_local').connected; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(relay.status('nrl_local').connected, true);
+  const result = await relay.revokeNotifyGrants('nrl_local', 'usr_sender');
+  assert.deepEqual(result, { available: true, revoked: 1, status: 'succeeded' });
+  assert.equal((await listNotifyTargetGrants(paths.handler, { userId: 'usr_sender' })).length, 0);
+  assert.equal((await listNotifyTargetGrants(paths.handler, { userId: 'usr_other' })).length, 1);
+  assert.ok(relayAudit.some((event) => event.event === 'relay.command.acknowledged' && event.metadata.commandType === 'notify:grants:revoke'));
+  assert.ok(relayAudit.some((event) => event.event === 'relay.grants.revoke_completed' && event.metadata.revokedCount === 1));
+
+  abort.abort();
+  await connected;
+  relay.beginDrain();
+  server.close();
+  await once(server, 'close');
+  closeNotifyStateStore(paths.handler);
 });

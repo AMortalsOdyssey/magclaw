@@ -179,6 +179,22 @@ async function revokeNotifyAccess(paths, flags = {}) {
   return result;
 }
 
+async function kickNotifyAccess(paths, flags = {}) {
+  const userId = clean(flags.userId || '', 160);
+  if (!userId) throw new Error('access kick requires --user-id ID.');
+  const { result } = await daemonOwnerRequest(paths, '/api/notify/daemon/access/kick', {
+    method: 'POST',
+    body: { userId },
+  });
+  return {
+    ok: result.ok === true,
+    userId,
+    cloudLoginsRevoked: Math.max(0, Number(result.cloudLoginsRevoked || 0)),
+    localGroupGrantsRevoked: Math.max(0, Number(result.localGroupGrantsRevoked || 0)),
+    localDaemonAvailable: result.localDaemonAvailable === true,
+  };
+}
+
 async function rotateNotifySetupToken(paths, flags = {}) {
   const { config, result } = await daemonOwnerRequest(paths, '/api/notify/daemon/setup-token/rotate', {
     method: 'POST',
@@ -326,6 +342,28 @@ export async function connectOnce(paths, config, signal) {
           event: 'owner.targets.query_completed', outcome: 'succeeded', relayId: config.relayId, commandId: message.commandId || '',
           metadata: { requesterPresent: Boolean(message.requester?.id), targetCount: grants.length },
         });
+        return;
+      }
+      if (message.type === 'notify:grants:revoke') {
+        try {
+          const result = await revokeNotifyTargetGrant(paths.handler, { userId: message.userId || '' });
+          socket.send(JSON.stringify({
+            type: 'notify:grants:result',
+            commandId: message.commandId,
+            status: 'succeeded',
+            revoked: result.revoked,
+          }));
+          await audit.append({
+            event: 'owner.grants.revoke_completed', outcome: 'succeeded', relayId: config.relayId, commandId: message.commandId || '',
+            metadata: { userIdPresent: Boolean(message.userId), revokedCount: result.revoked },
+          });
+        } catch (error) {
+          socket.send(JSON.stringify({ type: 'notify:grants:result', commandId: message.commandId, status: 'failed', revoked: 0 }));
+          await audit.append({
+            event: 'owner.grants.revoke_completed', outcome: 'failed', severity: 'error', relayId: config.relayId, commandId: message.commandId || '',
+            metadata: { userIdPresent: Boolean(message.userId), ...auditError(error) },
+          });
+        }
         return;
       }
       if (message.type !== 'notify:deliver') return;
@@ -819,6 +857,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
     const action = positional[1] || 'list';
     if (action === 'list') return listNotifyAccess(paths, flags);
     if (action === 'revoke') return revokeNotifyAccess(paths, flags);
+    if (action === 'kick') return kickNotifyAccess(paths, flags);
     throw new Error(`Unknown Notify access command: ${action}`);
   }
   if (command === 'grants') {
@@ -942,6 +981,8 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
         ...metadata,
         resultStatus: result?.status || result?.result?.status || '',
         changedCount: result?.revoked ?? result?.count ?? '',
+        cloudLoginsRevoked: result?.cloudLoginsRevoked,
+        localGroupGrantsRevoked: result?.localGroupGrantsRevoked,
         enabled: result?.enabled,
       },
     });

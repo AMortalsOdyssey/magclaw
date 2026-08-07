@@ -39,7 +39,7 @@ export function createNotifyRelay(options = {}) {
       return;
     }
     connection.lastSeenAt = now();
-    if (message.type === 'notify:deliver:ack' || message.type === 'notify:targets:result') {
+    if (message.type === 'notify:deliver:ack' || message.type === 'notify:targets:result' || message.type === 'notify:grants:result') {
       const pending = pendingAcks.get(String(message.commandId || ''));
       if (!pending || pending.connection !== connection) return;
       clearTimeout(pending.timer);
@@ -188,6 +188,39 @@ export function createNotifyRelay(options = {}) {
     return result;
   }
 
+  async function revokeNotifyGrants(relayId, userId) {
+    const connection = connectionFor(relayId);
+    if (!connection) {
+      await record('relay.grants.revoke_completed', { outcome: 'daemon_offline', relayId, metadata: { userIdPresent: Boolean(userId), revokedCount: 0 } });
+      return { available: false, reason: 'notify_daemon_offline', revoked: 0 };
+    }
+    const id = commandId();
+    await record('relay.grants.revoke_started', { outcome: 'started', relayId, commandId: id, metadata: { userIdPresent: Boolean(userId) } });
+    const response = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingAcks.delete(id);
+        resolve(null);
+      }, Math.max(250, Number(options.ackTimeoutMs || 5_000)));
+      pendingAcks.set(id, { connection, resolve, timer, commandType: 'notify:grants:revoke' });
+      connection.socket.send(JSON.stringify({ type: 'notify:grants:revoke', commandId: id, userId }), (error) => {
+        if (!error) return;
+        const pending = pendingAcks.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        pendingAcks.delete(id);
+        resolve(null);
+      });
+    });
+    const result = response
+      ? { available: true, revoked: Math.max(0, Number(response.revoked || 0)), status: response.status || 'succeeded' }
+      : { available: false, reason: 'notify_daemon_ack_timeout', revoked: 0 };
+    await record('relay.grants.revoke_completed', {
+      outcome: response ? result.status : 'ack_timeout', severity: response ? 'info' : 'warning', relayId, commandId: id,
+      metadata: { userIdPresent: Boolean(userId), revokedCount: result.revoked },
+    });
+    return result;
+  }
+
   function setResultHandler(handler) {
     onResult = typeof handler === 'function' ? handler : async () => {};
   }
@@ -219,5 +252,5 @@ export function createNotifyRelay(options = {}) {
   }, 25_000);
   heartbeat.unref?.();
 
-  return { beginDrain, deliverNotifyRequest, handleUpgrade, listNotifyTargets, setResultHandler, status };
+  return { beginDrain, deliverNotifyRequest, handleUpgrade, listNotifyTargets, revokeNotifyGrants, setResultHandler, status };
 }

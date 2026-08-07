@@ -625,6 +625,43 @@ export async function handleNotifyApi(req, res, url, deps) {
     return true;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/notify/daemon/access/kick') {
+    const owner = daemonOwnerToken(state, req);
+    if (!owner) {
+      sendError(res, 401, 'Notify owner authorization is required.');
+      return true;
+    }
+    const body = await readJson(req);
+    const userId = compactNotifyText(body.userId || body.user_id || '', 160);
+    if (!userId) {
+      sendError(res, 400, 'userId is required.');
+      return true;
+    }
+    const selected = notifyRecordsForRelay(state, owner.token.relayId).filter((record) => (
+      record.type === 'auth_token' && record.authMode === 'client' && record.user?.id === userId
+    ));
+    let cloudLoginsRevoked = 0;
+    for (const record of selected) {
+      if (record.revokedAt) continue;
+      record.revokedAt = now();
+      record.revokedBy = owner.token.user;
+      record.updatedAt = now();
+      cloudLoginsRevoked += 1;
+    }
+    if (cloudLoginsRevoked) await persistState({ workspaceId: owner.token.workspaceId, reason: 'notify_owner_access_kick' });
+    const local = await notifyRelay.revokeNotifyGrants(owner.token.relayId, userId);
+    const localGroupGrantsRevoked = Math.max(0, Number(local?.revoked || 0));
+    console.info(`[notify] owner access kicked relay=${owner.installation.handle} user=${userId} cloud=${cloudLoginsRevoked} local=${localGroupGrantsRevoked}`);
+    sendJson(res, 200, {
+      ok: true,
+      userId,
+      cloudLoginsRevoked,
+      localGroupGrantsRevoked,
+      localDaemonAvailable: local?.available === true,
+    });
+    return true;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/notify/daemon/setup-token/rotate') {
     const owner = daemonOwnerToken(state, req);
     if (!owner) {

@@ -105,6 +105,7 @@ function routeDeps(state, overrides = {}) {
     notifyRelay: {
       deliverNotifyRequest: async (request) => ({ queued: true, delivery: { id: `ndl_${request.id}` } }),
       listNotifyTargets: async () => ({ available: true, targets: [] }),
+      revokeNotifyGrants: async () => ({ available: true, revoked: 0 }),
     },
     getState: () => state,
     makeId: (prefix) => `${prefix}_${++id}`,
@@ -969,6 +970,76 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
   const audit = await callRoute(deps, 'GET', '/api/notify/daemon/access?include_revoked=1', { headers: daemonHeaders });
   assert.equal(audit.res.body.counts.revoked, 2);
   assert.equal(audit.res.body.access.every((record) => record.status === 'revoked'), true);
+});
+
+test('Notify owner access kick reports cloud login and local group grant revocation separately', async () => {
+  const daemonToken = 'mcn_daemon_owner_kick';
+  const state = {
+    connection: { workspaceId: 'ws_1' },
+    cloud: { workspaces: [{ id: 'ws_1' }] },
+    notifyRecords: [
+      { id: 'nrl_kick', type: 'installation', workspaceId: 'ws_1', ownerUserId: 'usr_owner', handle: 'monkey-kick', enabled: true },
+      {
+        id: 'nat_owner', type: 'auth_token', authMode: 'daemon', workspaceId: 'ws_1', relayId: 'nrl_kick',
+        tokenHash: hashNotifySecret(daemonToken), scopes: ['notify:daemon'], user: { id: 'usr_owner', name: 'Owner' },
+      },
+      { id: 'nat_sender_1', type: 'auth_token', authMode: 'client', workspaceId: 'ws_1', relayId: 'nrl_kick', user: { id: 'usr_sender' } },
+      { id: 'nat_sender_2', type: 'auth_token', authMode: 'client', workspaceId: 'ws_1', relayId: 'nrl_kick', user: { id: 'usr_sender' }, revokedAt: '2026-08-01T00:00:00.000Z' },
+      { id: 'nat_other', type: 'auth_token', authMode: 'client', workspaceId: 'ws_1', relayId: 'nrl_kick', user: { id: 'usr_other' } },
+    ],
+  };
+  const relayCalls = [];
+  const deps = routeDeps(state, {
+    notifyRelay: {
+      revokeNotifyGrants: async (relayId, userId) => {
+        relayCalls.push({ relayId, userId });
+        return { available: true, revoked: 3 };
+      },
+    },
+  });
+  const kicked = await callRoute(deps, 'POST', '/api/notify/daemon/access/kick', {
+    headers: { authorization: `Bearer ${daemonToken}` },
+    body: { userId: 'usr_sender' },
+  });
+  assert.equal(kicked.res.status, 200);
+  assert.deepEqual(kicked.res.body, {
+    ok: true,
+    userId: 'usr_sender',
+    cloudLoginsRevoked: 1,
+    localGroupGrantsRevoked: 3,
+    localDaemonAvailable: true,
+  });
+  assert.deepEqual(relayCalls, [{ relayId: 'nrl_kick', userId: 'usr_sender' }]);
+  assert.ok(state.notifyRecords.find((record) => record.id === 'nat_sender_1').revokedAt);
+  assert.equal(state.notifyRecords.find((record) => record.id === 'nat_other').revokedAt, undefined);
+});
+
+test('Notify daemon access kick CLI preserves explicit cloud and local revoke counts', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-kick-cli-'));
+  const instance = 'kick-cli';
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
+  await mkdir(path.dirname(paths.config), { recursive: true });
+  await writeFile(paths.config, `${JSON.stringify({
+    relayUrl: 'http://127.0.0.1:7443', relayId: 'nrl_kick', token: 'owner-token', machineFingerprint: 'mfp_test',
+  })}\n`, { mode: 0o600 });
+  const originalFetch = globalThis.fetch;
+  let request = null;
+  globalThis.fetch = async (url, options) => {
+    request = { url: String(url), body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({
+      ok: true, cloudLoginsRevoked: 2, localGroupGrantsRevoked: 4, localDaemonAvailable: true,
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  try {
+    const result = await runNotifyDaemonCommand(['access', 'kick'], { instance, notifyHome: root, userId: 'usr_sender' });
+    assert.deepEqual(result, {
+      ok: true, userId: 'usr_sender', cloudLoginsRevoked: 2, localGroupGrantsRevoked: 4, localDaemonAvailable: true,
+    });
+    assert.equal(new URL(request.url).pathname, '/api/notify/daemon/access/kick');
+    assert.deepEqual(request.body, { userId: 'usr_sender' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('Setup token routes an authenticated client request to exactly one independent Notify Relay', async () => {
