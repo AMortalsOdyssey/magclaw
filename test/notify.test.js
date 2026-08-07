@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { handleNotifyApi } from '../server/api/notify-routes.js';
 import {
+  NOTIFY_DEVICE_TTL_MS,
   NOTIFY_TOKEN_TTL_MS,
   hashNotifySecret,
   normalizeNotifySubmission,
@@ -49,7 +50,8 @@ import {
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
   sanitizeNotifyAuditRecord,
 } from '../notify/src/audit.js';
-import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec } from '../notify-daemon/src/service.js';
+import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec, stableNotifyNodePath } from '../notify-daemon/src/service.js';
+import { registerNotifyRuntime } from '../notify-daemon/src/runtime-context.js';
 import { ensureNotifyStateStore } from '../notify-daemon/src/store.js';
 
 async function readNotifyState(profilePaths, collection) {
@@ -440,7 +442,7 @@ test('Notify approval status reports plugin mode and refuses to manage an exec a
   assert.equal(status.mode, 'plugin');
   assert.equal(status.pluginLoaded, true);
   assert.equal(status.agentShellApprovalRequired, false);
-  assert.match(status.pluginPath, /notify-daemon\/openclaw-plugin$/);
+  assert.match(status.pluginPath, /\.openclaw\/plugins\/magclaw-notify$/);
   // A leftover exec allowlist entry from the old shell handler must be surfaced.
   assert.equal(status.staleAllowlistEntries.length, 1);
   assert.equal(status.staleAllowlistEntries[0].agentId, 'monkey-owner');
@@ -492,6 +494,7 @@ test('Notify instances isolate local state and generate platform autostart servi
   assert.match(mac.content, /<string>--notify-home<\/string>/);
   assert.match(mac.content, /<string>\/home\/owner\/\.magclaw\/notify-product-a<\/string>/);
   assert.match(mac.content, /<key>RunAtLoad<\/key>/);
+  assert.match(mac.content, /<key>ThrottleInterval<\/key>\s*<integer>3<\/integer>/);
   assert.match(mac.content, /<key>EnvironmentVariables<\/key>/);
   assert.match(mac.content, /\/opt\/node\/bin/);
   const linux = notifyDaemonServiceSpec({ ...common, platform: 'linux', xdgConfigHome: '/home/owner/.config' });
@@ -501,6 +504,7 @@ test('Notify instances isolate local state and generate platform autostart servi
   const windows = notifyDaemonServiceSpec({ ...common, platform: 'win32' });
   assert.equal(windows.enable[0], 'schtasks.exe');
   assert.match(windows.enable[1].join(' '), /ONLOGON/);
+  assert.equal(stableNotifyNodePath({ platform: 'darwin', pathExists: (candidate) => candidate === '/opt/homebrew/bin/node' }), '/opt/homebrew/bin/node');
 });
 
 test('Notify daemon runtime logs are preserved with owner-only permissions', async () => {
@@ -808,7 +812,9 @@ test('Notify sender authorization lasts 90 days and is limited to the owner Feis
     notifyRecords: [],
   };
   let currentUser = feishuUser('usr_owner', 'Owner', 'tenant_owner');
+  const clock = Date.now();
   const deps = routeDeps(state, {
+    now: () => new Date(clock).toISOString(),
     currentUser: () => currentUser,
     currentActor: () => ({ user: currentUser, member: { workspaceId: 'ws_1', humanId: 'hum_owner', role: 'owner' } }),
   });
@@ -819,6 +825,8 @@ test('Notify sender authorization lasts 90 days and is limited to the owner Feis
   const daemonAuth = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: daemonStart.res.body.deviceCode, machineFingerprint: daemonFingerprint },
   });
+  const daemonTokenRecord = notifyRecords(state).find((record) => record.type === 'auth_token' && record.authMode === 'daemon');
+  assert.equal(Date.parse(daemonTokenRecord.expiresAt) - Date.parse(daemonTokenRecord.createdAt), NOTIFY_TOKEN_TTL_MS);
 
   currentUser = feishuUser('usr_outside', 'Outside', 'tenant_outside');
   const denied = await callRoute(deps, 'POST', '/api/notify/auth/start', {
@@ -828,16 +836,33 @@ test('Notify sender authorization lasts 90 days and is limited to the owner Feis
   assert.match(denied.res.body.error, /owner's Feishu tenant/i);
 
   currentUser = feishuUser('usr_sender', 'Sender', 'tenant_owner');
-  const before = Date.now();
+  const before = clock;
   const clientStart = await callRoute(deps, 'POST', '/api/notify/auth/start', {
     body: { inviteToken: daemonAuth.res.body.inviteToken, machineFingerprint: `mfp_${'3'.repeat(64)}` },
   });
+  assert.equal(Date.parse(clientStart.res.body.expiresAt) - clock, NOTIFY_DEVICE_TTL_MS);
   await approveNotifyDevice(deps, clientStart.res.body.verificationUri);
   const clientAuth = await callRoute(deps, 'POST', '/api/notify/auth/token', {
     body: { deviceCode: clientStart.res.body.deviceCode, machineFingerprint: `mfp_${'3'.repeat(64)}` },
   });
   const lifetime = Date.parse(clientAuth.res.body.tokenExpiresAt) - before;
-  assert.ok(lifetime >= NOTIFY_TOKEN_TTL_MS && lifetime <= NOTIFY_TOKEN_TTL_MS + 2000);
+  assert.equal(lifetime, NOTIFY_TOKEN_TTL_MS);
+});
+
+test('Notify device authorization expiration follows the injected 10-minute clock', async () => {
+  assert.equal(NOTIFY_DEVICE_TTL_MS, 10 * 60 * 1000);
+  let clock = Date.parse('2026-08-07T02:00:00.000Z');
+  const state = { connection: { workspaceId: 'ws_1' }, cloud: { workspaces: [{ id: 'ws_1' }] }, notifyRecords: [] };
+  const deps = routeDeps(state, { now: () => new Date(clock).toISOString() });
+  const started = await callRoute(deps, 'POST', '/api/notify/daemon/auth/start', {
+    body: { relayName: 'Clock', machineFingerprint: `mfp_${'c'.repeat(64)}` },
+  });
+  assert.equal(Date.parse(started.res.body.expiresAt) - clock, NOTIFY_DEVICE_TTL_MS);
+  clock += NOTIFY_DEVICE_TTL_MS + 1;
+  const expired = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
+    body: { deviceCode: started.res.body.deviceCode, machineFingerprint: `mfp_${'c'.repeat(64)}` },
+  });
+  assert.equal(expired.res.body.status, 'expired');
 });
 
 test('Notify owner can list and revoke sender access and rotate a leaked Setup Token', async () => {
@@ -1392,6 +1417,8 @@ test('Notify owner confirmation persists a fuzzy group alias and resumes the sto
 test('Notify target approval batches per user and group with once, permanent, owner-only, and 48-hour semantics', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-target-access-'));
   const profilePaths = { dir: root, profile: 'target-access', config: path.join(root, 'daemon-config.json') };
+  let clock = Date.parse('2026-08-07T03:00:00.000Z');
+  const unregisterClock = registerNotifyRuntime(profilePaths, { now: () => new Date(clock).toISOString() });
   await configureNotifyHandler(profilePaths, {
     agentProvider: { command: path.join(root, 'missing-agent') },
     confirmationProvider: { ownerOpenId: 'ou_owner' },
@@ -1418,7 +1445,7 @@ test('Notify target approval batches per user and group with once, permanent, ow
   assert.equal(third.pendingRequestCount, 3);
   const pending = await readNotifyState(profilePaths, 'pending');
   const batch = pending.find((record) => record.id === first.confirmationId);
-  assert.ok(Math.abs((Date.parse(batch.expiresAt) - Date.parse(batch.createdAt)) - 48 * 60 * 60 * 1000) < 1000);
+  assert.equal(Date.parse(batch.expiresAt) - Date.parse(batch.createdAt), 48 * 60 * 60 * 1000);
   const card = larkCardForTargetApproval(batch);
   assert.deepEqual(card.body.elements.filter((element) => element.tag === 'button').map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
 
@@ -1454,13 +1481,13 @@ test('Notify target approval batches per user and group with once, permanent, ow
   const expiring = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired', 'usr_other'));
   const expiringRecords = await readNotifyState(profilePaths, 'pending');
   const expiringRecord = expiringRecords.find((record) => record.id === expiring.confirmationId);
-  expiringRecord.expiresAt = new Date(Date.now() - 1000).toISOString();
-  await writeNotifyState(profilePaths, 'pending', expiringRecords);
+  clock = Date.parse(expiringRecord.expiresAt) + 1;
   await assert.rejects(confirmNotifyMapping(profilePaths, expiring.confirmationId, 'always', { operatorId: 'ou_owner' }), /expired/i);
   const afterExpiry = await readNotifyState(profilePaths, 'pending');
   assert.equal(afterExpiry.find((record) => record.id === expiring.confirmationId).result.status, 'approval_expired');
   const retry = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired_retry', 'usr_other'));
   assert.notEqual(retry.confirmationId, expiring.confirmationId);
+  unregisterClock();
 });
 
 test('Notify Daemon result reporting updates only its own Relay request', async () => {

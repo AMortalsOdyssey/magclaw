@@ -17,7 +17,7 @@ function shortHash(value) {
 export default definePluginEntry({
   id: 'magclaw-notify',
   name: 'MagClaw Notify',
-  version: '0.4.0',
+  version: '0.5.0',
   description: 'Hosts the MagClaw Notify Relay, durable state machine, Feishu delivery, and approvals inside OpenClaw.',
   register(api) {
     const config = api.pluginConfig ?? {};

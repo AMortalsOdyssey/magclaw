@@ -33,6 +33,7 @@
     "computer:pack": "npm pack --dry-run --json ./computer",
     "team-sharing:pack": "npm pack --dry-run --json ./team-sharing",
     "notify:pack": "npm pack --dry-run --json ./notify",
+    "notify:plugin:install": "node scripts/install-notify-openclaw-plugin.mjs",
     "notify:smoke:openclaw": "node scripts/notify-openclaw-smoke.mjs"
   },
   "engines": {

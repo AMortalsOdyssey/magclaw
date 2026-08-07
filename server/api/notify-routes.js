@@ -261,7 +261,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     audit = async () => {},
   } = deps;
   const state = getState();
-  pruneNotifyRecords(state);
+  pruneNotifyRecords(state, Date.parse(now()));
   const actor = currentActor(req);
   const browserUser = currentUser(req) || actor?.user || null;
   const actorWorkspaceId = workspaceIdFromActor(actor, state);
@@ -344,6 +344,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const deviceCode = randomNotifySecret('mcn_daemon_dev');
     const rawUserCode = crypto.randomBytes(5).toString('hex').toUpperCase();
     const userCode = `${rawUserCode.slice(0, 5)}-${rawUserCode.slice(5)}`;
+    const createdAt = now();
     const request = {
       id: makeId('nau'),
       type: 'auth_device',
@@ -361,9 +362,9 @@ export async function handleNotifyApi(req, res, url, deps) {
         arch: compactNotifyText(body.client?.arch || '', 40),
       },
       status: 'pending',
-      createdAt: now(),
-      updatedAt: now(),
-      expiresAt: new Date(Date.now() + NOTIFY_DEVICE_TTL_MS).toISOString(),
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + NOTIFY_DEVICE_TTL_MS).toISOString(),
     };
     notifyRecords(state).push(request);
     await persistState(storageWorkspaceId ? { workspaceId: storageWorkspaceId, reason: 'notify_daemon_auth_start' } : undefined);
@@ -381,7 +382,7 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/notify/daemon/auth/approve') {
     const request = findDeviceRequest(state, '', url.searchParams.get('user_code'), 'daemon');
-    if (!request || Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (!request || Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       sendError(res, 404, 'Notify Daemon login request not found or expired.');
       return true;
     }
@@ -405,7 +406,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const csrfToken = randomNotifySecret('mcn_csrf');
     request.approvalCsrfHash = hashNotifySecret(csrfToken);
     request.approvalActorId = browserUser.id;
-    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.now() + 5 * 60_000)).toISOString();
+    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.parse(now()) + 5 * 60_000)).toISOString();
     request.updatedAt = now();
     await persistState(request.workspaceId ? { workspaceId: request.workspaceId, reason: 'notify_daemon_auth_review' } : undefined);
     emitAudit(200, { relayId: request.relayId, status: 'confirmation_required' }, 'confirmation_required');
@@ -417,7 +418,7 @@ export async function handleNotifyApi(req, res, url, deps) {
   if (req.method === 'POST' && url.pathname === '/notify/daemon/auth/approve') {
     const body = await readApprovalBody(req, readJson);
     const request = findDeviceRequest(state, '', body.user_code || body.userCode, 'daemon');
-    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       sendError(res, 404, 'Notify Daemon login request not found, already used, or expired.');
       return true;
     }
@@ -432,7 +433,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const csrfToken = compactNotifyText(body.csrf_token || body.csrfToken || '', 500);
     if (
       request.approvalActorId !== browserUser.id
-      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.now()
+      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.parse(now())
       || !safeSecretEqual(csrfToken, request.approvalCsrfHash)
     ) {
       sendError(res, 403, 'Notify approval confirmation is invalid or expired. Reload the approval page.');
@@ -493,7 +494,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, status: 'pending' });
       return true;
     }
-    if (Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       request.status = 'expired';
       sendJson(res, 200, { ok: true, status: 'expired' });
       return true;
@@ -521,6 +522,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       installation.inviteTokenRotatedAt = now();
       installation.updatedAt = now();
     }
+    const createdAt = now();
     const tokenRecord = {
       id: makeId('nat'),
       type: 'auth_token',
@@ -532,9 +534,9 @@ export async function handleNotifyApi(req, res, url, deps) {
       user: request.approvedUser,
       client: request.client || {},
       scopes: ['notify:daemon'],
-      createdAt: now(),
-      updatedAt: now(),
-      expiresAt: new Date(Date.now() + NOTIFY_TOKEN_TTL_MS).toISOString(),
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + NOTIFY_TOKEN_TTL_MS).toISOString(),
     };
     notifyRecords(state).push(tokenRecord);
     notifyRecords(state).splice(notifyRecords(state).indexOf(request), 1);
@@ -563,7 +565,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const includeRevoked = ['1', 'true', 'yes'].includes(String(url.searchParams.get('include_revoked') || '').toLowerCase());
     const access = notifyRecordsForRelay(state, owner.token.relayId)
       .filter((record) => record.type === 'auth_token' && record.authMode === 'client')
-      .map((record) => publicSenderAccess(record))
+      .map((record) => publicSenderAccess(record, Date.parse(now())))
       .filter((record) => includeRevoked || record.status === 'active')
       .sort((left, right) => Date.parse(right.createdAt || '') - Date.parse(left.createdAt || ''));
     console.info(`[notify] owner access list relay=${owner.installation.handle} active=${access.filter((item) => item.status === 'active').length} total=${access.length}`);
@@ -620,7 +622,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     sendJson(res, 200, {
       ok: true,
       revoked,
-      access: selected.map((record) => publicSenderAccess(record)),
+      access: selected.map((record) => publicSenderAccess(record, Date.parse(now()))),
     });
     return true;
   }
@@ -775,6 +777,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const deviceCode = randomNotifySecret('mcn_dev');
     const rawUserCode = crypto.randomBytes(5).toString('hex').toUpperCase();
     const userCode = `${rawUserCode.slice(0, 5)}-${rawUserCode.slice(5)}`;
+    const createdAt = now();
     const request = {
       id: makeId('nau'),
       type: 'auth_device',
@@ -793,9 +796,9 @@ export async function handleNotifyApi(req, res, url, deps) {
       },
       status: 'pending',
       approvedUser: null,
-      createdAt: now(),
-      updatedAt: now(),
-      expiresAt: new Date(Date.now() + NOTIFY_DEVICE_TTL_MS).toISOString(),
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + NOTIFY_DEVICE_TTL_MS).toISOString(),
     };
     notifyRecords(state).push(request);
     await persistState({ workspaceId: installation.workspaceId, reason: 'notify_auth_start' });
@@ -813,7 +816,7 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'GET' && url.pathname === '/notify/auth/approve') {
     const request = findDeviceRequest(state, '', url.searchParams.get('user_code'), 'client');
-    if (!request || Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (!request || Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       sendError(res, 404, 'Notify login request not found or expired.');
       return true;
     }
@@ -840,7 +843,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const csrfToken = randomNotifySecret('mcn_csrf');
     request.approvalCsrfHash = hashNotifySecret(csrfToken);
     request.approvalActorId = browserUser.id;
-    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.now() + 5 * 60_000)).toISOString();
+    request.approvalCsrfExpiresAt = new Date(Math.min(Date.parse(request.expiresAt), Date.parse(now()) + 5 * 60_000)).toISOString();
     request.updatedAt = now();
     await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_review' });
     emitAudit(200, { relayId: request.relayId, status: 'confirmation_required' }, 'confirmation_required');
@@ -852,7 +855,7 @@ export async function handleNotifyApi(req, res, url, deps) {
   if (req.method === 'POST' && url.pathname === '/notify/auth/approve') {
     const body = await readApprovalBody(req, readJson);
     const request = findDeviceRequest(state, '', body.user_code || body.userCode, 'client');
-    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (!request || request.status !== 'pending' || Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       sendError(res, 404, 'Notify login request not found, already used, or expired.');
       return true;
     }
@@ -867,7 +870,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     const csrfToken = compactNotifyText(body.csrf_token || body.csrfToken || '', 500);
     if (
       request.approvalActorId !== browserUser.id
-      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.now()
+      || Date.parse(request.approvalCsrfExpiresAt || '') <= Date.parse(now())
       || !safeSecretEqual(csrfToken, request.approvalCsrfHash)
     ) {
       sendError(res, 403, 'Notify approval confirmation is invalid or expired. Reload the approval page.');
@@ -906,7 +909,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, status: 'pending' });
       return true;
     }
-    if (Date.parse(request.expiresAt || '') <= Date.now()) {
+    if (Date.parse(request.expiresAt || '') <= Date.parse(now())) {
       request.status = 'expired';
       sendJson(res, 200, { ok: true, status: 'expired' });
       return true;
@@ -929,6 +932,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       return true;
     }
     const token = randomNotifySecret('mcn');
+    const createdAt = now();
     const tokenRecord = {
       id: makeId('nat'),
       type: 'auth_token',
@@ -942,9 +946,9 @@ export async function handleNotifyApi(req, res, url, deps) {
       user: request.approvedUser,
       client: request.client || {},
       scopes: ['notify:submit', 'notify:status'],
-      createdAt: now(),
-      updatedAt: now(),
-      expiresAt: new Date(Date.now() + NOTIFY_TOKEN_TTL_MS).toISOString(),
+      createdAt,
+      updatedAt: createdAt,
+      expiresAt: new Date(Date.parse(createdAt) + NOTIFY_TOKEN_TTL_MS).toISOString(),
     };
     notifyRecords(state).push(tokenRecord);
     notifyRecords(state).splice(notifyRecords(state).indexOf(request), 1);

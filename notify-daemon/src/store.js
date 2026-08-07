@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { chmod, mkdir, readFile, readdir, rename } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const STATE_FILES = new Map([
@@ -12,6 +12,8 @@ const STATE_FILES = new Map([
 ]);
 const stores = new Map();
 const storePromises = new Map();
+
+const LEGACY_STATE_FILES = new Map([...STATE_FILES].map(([filename, collection]) => [collection, filename]));
 
 function now() {
   return new Date().toISOString();
@@ -164,6 +166,44 @@ class NotifyStateStore {
     return this.listRecoverableStatement.all().map((row) => this.normalizeIntent(row));
   }
 
+  dump(options = {}) {
+    const redact = options.includeSecrets === true ? (value) => value : redactStateSecrets;
+    const values = {};
+    for (const row of this.database.prepare('SELECT collection, item_key, value FROM notify_kv ORDER BY collection, item_key').all()) {
+      values[row.collection] ||= {};
+      values[row.collection][row.item_key] = redact(parse(row.value, null));
+    }
+    values.pending ||= {};
+    values.pending.state = this.read('pending', 'state', []).map(redact);
+    const meta = Object.fromEntries(this.database.prepare('SELECT key, value FROM notify_meta ORDER BY key').all().map((row) => [row.key, row.value]));
+    const deliveryIntents = this.database.prepare('SELECT * FROM delivery_intents ORDER BY created_at, id').all().map((row) => redact(this.normalizeIntent(row)));
+    return {
+      schemaVersion: 1,
+      databasePath: this.databasePath,
+      meta,
+      state: values,
+      deliveryIntents,
+    };
+  }
+
+  async exportLegacyJson(targetDir) {
+    const output = path.resolve(targetDir);
+    await mkdir(path.join(output, 'requests'), { recursive: true, mode: 0o700 });
+    const files = [];
+    for (const [collection, filename] of LEGACY_STATE_FILES) {
+      const value = this.read(collection, 'state', collection === 'pending' || collection === 'receipts' ? [] : {});
+      const file = path.join(output, filename);
+      await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      files.push(file);
+    }
+    for (const row of this.database.prepare("SELECT item_key, value FROM notify_kv WHERE collection = 'requests' ORDER BY item_key").all()) {
+      const file = path.join(output, 'requests', `${row.item_key}.json`);
+      await writeFile(file, `${JSON.stringify(parse(row.value, {}), null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+      files.push(file);
+    }
+    return { output, files };
+  }
+
   normalizeIntent(row) {
     if (!row) return null;
     return {
@@ -183,6 +223,16 @@ class NotifyStateStore {
     this.database.close();
     stores.delete(this.root);
   }
+}
+
+function redactStateSecrets(value) {
+  if (Array.isArray(value)) return value.map(redactStateSecrets);
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    result[key] = /(?:authorization|password|secret|token)$/i.test(key) && item ? '[redacted]' : redactStateSecrets(item);
+  }
+  return result;
 }
 
 async function rawJson(file, fallback) {

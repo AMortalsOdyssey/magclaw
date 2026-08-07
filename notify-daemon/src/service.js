@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ export function notifyDaemonServiceSpec(options = {}) {
   const platform = options.platform || process.platform;
   const homeDir = options.homeDir || os.homedir();
   const instance = options.instance || 'default';
-  const nodePath = options.nodePath || process.execPath;
+  const nodePath = options.nodePath || stableNotifyNodePath({ platform, homeDir, pathExists: options.pathExists });
   const binPath = options.binPath;
   const logPath = options.logPath;
   const errorLogPath = options.errorLogPath;
@@ -46,7 +47,7 @@ export function notifyDaemonServiceSpec(options = {}) {
       serviceName,
       label,
       file,
-      content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argumentsXml}\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ProcessType</key>\n  <string>Background</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>${xml(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(errorLogPath)}</string>\n</dict>\n</plist>\n`,
+      content: `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>${xml(label)}</string>\n  <key>ProgramArguments</key>\n  <array>\n${argumentsXml}\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ThrottleInterval</key>\n  <integer>3</integer>\n  <key>ProcessType</key>\n  <string>Background</string>\n  <key>EnvironmentVariables</key>\n  <dict>\n    <key>PATH</key>\n    <string>${xml(servicePath)}</string>\n  </dict>\n  <key>StandardOutPath</key>\n  <string>${xml(logPath)}</string>\n  <key>StandardErrorPath</key>\n  <string>${xml(errorLogPath)}</string>\n</dict>\n</plist>\n`,
       enable: ['launchctl', ['bootstrap', `gui/${process.getuid?.() ?? 0}`, file]],
       start: ['launchctl', ['kickstart', '-k', `gui/${process.getuid?.() ?? 0}/${label}`]],
       stop: ['launchctl', ['bootout', `gui/${process.getuid?.() ?? 0}`, file]],
@@ -80,6 +81,20 @@ export function notifyDaemonServiceSpec(options = {}) {
     disable: ['systemctl', ['--user', 'disable', '--now', `${serviceName}.service`]],
     reload: ['systemctl', ['--user', 'daemon-reload']],
   };
+}
+
+export function stableNotifyNodePath(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === 'win32') return process.execPath;
+  const homeDir = options.homeDir || os.homedir();
+  const pathExists = options.pathExists || existsSync;
+  const candidates = platform === 'darwin'
+    ? ['/opt/homebrew/bin/node', '/usr/local/bin/node', path.join(homeDir, '.local', 'bin', 'node')]
+    : ['/usr/local/bin/node', '/usr/bin/node', path.join(homeDir, '.local', 'bin', 'node')];
+  for (const candidate of candidates) {
+    if (pathExists(candidate)) return candidate;
+  }
+  return process.execPath;
 }
 
 function runCommand(command, args = [], options = {}) {

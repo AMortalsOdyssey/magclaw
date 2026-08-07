@@ -26,8 +26,16 @@ const notifyStateLocks = new Map();
 const handlerAuditLogs = new Map();
 const standaloneFeishuClients = new Map();
 
-function now() {
-  return new Date().toISOString();
+function now(context = null) {
+  const profilePaths = context?.profilePaths || context;
+  const injected = profilePaths?.dir ? notifyRuntime(profilePaths)?.now : null;
+  const value = typeof injected === 'function' ? injected() : Date.now();
+  const timestamp = value instanceof Date ? value.getTime() : (typeof value === 'number' ? value : Date.parse(String(value)));
+  return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
+}
+
+function nowMs(context = null) {
+  return Date.parse(now(context));
 }
 
 function cleanText(value = '', max = 4000) {
@@ -244,8 +252,9 @@ async function copyTree(source, target) {
   }
 }
 
-export function notifyOpenClawApprovalPluginPath() {
-  return path.join(HANDLER_ROOT, 'openclaw-plugin');
+export function notifyOpenClawApprovalPluginPath(options = {}) {
+  const homeDir = options.homeDir || os.homedir();
+  return path.resolve(options.pluginPath || path.join(homeDir, '.openclaw', 'plugins', 'magclaw-notify'));
 }
 
 export async function installNotifyHandlerSkill(options = {}) {
@@ -854,6 +863,7 @@ async function deliverViaLarkCli({ config, group, analysis, people, requester, r
 }
 
 async function recordPendingConfirmation(state, request, kind, details) {
+  const timestamp = now(state);
   const record = {
     id: `ncf_${crypto.randomBytes(10).toString('hex')}`,
     requestId: request.id,
@@ -861,9 +871,9 @@ async function recordPendingConfirmation(state, request, kind, details) {
     kind,
     status: 'pending',
     details: { instance: state.profile || 'default', ...jsonObject(details) },
-    createdAt: now(),
-    updatedAt: now(),
-    expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    expiresAt: new Date(Date.parse(timestamp) + CONFIRMATION_TTL_MS).toISOString(),
   };
   state.store.writeConfirmation(record);
   return record;
@@ -880,16 +890,17 @@ async function recordTargetAccessConfirmation(state, request, group) {
         && record.details?.userId === userId
         && record.details?.groupId === targetId
         && Number.isFinite(Date.parse(record.expiresAt || ''))
-        && Date.parse(record.expiresAt) > Date.now()
+        && Date.parse(record.expiresAt) > nowMs(state)
     ));
     if (existing) {
       existing.requestIds = [...new Set([...safeArray(existing.requestIds), request.id])];
-      existing.updatedAt = now();
+      existing.updatedAt = now(state);
       if (!state.store.compareAndSwapConfirmation(existing.id, 'pending', existing)) {
         throw new Error('Notify target approval changed while batching the request. Retry delivery preparation.');
       }
       return { confirmation: existing, created: false, promptNeeded: Boolean(existing.promptError) && !existing.promptSentAt && !existing.promptDispatchingAt };
     }
+    const timestamp = now(state);
     const confirmation = {
       id: `ncf_${crypto.randomBytes(10).toString('hex')}`,
       requestId: request.id,
@@ -904,9 +915,9 @@ async function recordTargetAccessConfirmation(state, request, group) {
         groupName: cleanText(group.name || request.payload?.target?.group || '', 120),
         requestedGroup: cleanText(request.payload?.target?.group || '', 120),
       },
-      createdAt: now(),
-      updatedAt: now(),
-      expiresAt: new Date(Date.now() + CONFIRMATION_TTL_MS).toISOString(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      expiresAt: new Date(Date.parse(timestamp) + CONFIRMATION_TTL_MS).toISOString(),
     };
     state.store.writeConfirmation(confirmation);
     return { confirmation, created: true, promptNeeded: true };
@@ -1701,9 +1712,9 @@ async function completeTargetAccessConfirmation(profilePaths, confirmationId, de
       if (!record) throw new Error('Pending Notify confirmation not found.');
       if (record.status === 'expired') return { state, record, expired: true, alreadyReported: Boolean(record.result) };
       if (record.status !== 'pending') return { state, record, alreadyDecided: true };
-      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
+      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= nowMs(state)) {
         record.status = 'expired';
-        record.updatedAt = now();
+        record.updatedAt = now(state);
         if (!state.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
           const latest = safeArray(state.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
           return { state, record: latest, alreadyDecided: true };
@@ -1808,9 +1819,9 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
       if (!record) throw new Error('Pending Notify confirmation not found.');
       if (record.status === 'expired') return { state: lockedState, record, expired: true };
       if (record.status !== 'pending') return { state: lockedState, record, alreadyDecided: true };
-      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= Date.now()) {
+      if (!Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) <= nowMs(lockedState)) {
         record.status = 'expired';
-        record.updatedAt = now();
+        record.updatedAt = now(lockedState);
         if (!lockedState.store.compareAndSwapConfirmation(record.id, 'pending', record)) {
           const latest = safeArray(lockedState.store.read('pending', 'state', [])).find((item) => item.id === confirmationId) || record;
           return { state: lockedState, record: latest, alreadyDecided: true };
@@ -1918,9 +1929,9 @@ export async function expireNotifyConfirmations(profilePaths) {
   const pending = safeArray(await readJson(state.paths.pending, []));
   const expiredResults = [];
   for (const record of pending) {
-    if (record.status !== 'pending' || !Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) > Date.now()) continue;
+    if (record.status !== 'pending' || !Number.isFinite(Date.parse(record.expiresAt || '')) || Date.parse(record.expiresAt) > nowMs(state)) continue;
     record.status = 'expired';
-    record.updatedAt = now();
+    record.updatedAt = now(state);
     const results = confirmationRequestIds(record).map((requestId) => ({
       requestId,
       status: 'approval_expired',

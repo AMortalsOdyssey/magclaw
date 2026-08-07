@@ -13,6 +13,7 @@ import {
 } from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
+import { ensureNotifyStateStore } from './store.js';
 import {
   disableNotifyDaemonAutostart,
   enableNotifyDaemonAutostart,
@@ -193,6 +194,21 @@ async function kickNotifyAccess(paths, flags = {}) {
     localGroupGrantsRevoked: Math.max(0, Number(result.localGroupGrantsRevoked || 0)),
     localDaemonAvailable: result.localDaemonAvailable === true,
   };
+}
+
+async function dumpNotifyState(paths, flags = {}) {
+  const store = await ensureNotifyStateStore(paths.handler);
+  if (flags.legacyDir) {
+    const exported = await store.exportLegacyJson(path.resolve(clean(flags.legacyDir, 1000)));
+    return { format: 'legacy-json', output: exported.output, fileCount: exported.files.length };
+  }
+  const dump = store.dump();
+  if (flags.output) {
+    const output = path.resolve(clean(flags.output, 1000));
+    await writeJson(output, dump);
+    return { format: 'readable-json', output };
+  }
+  return dump;
 }
 
 async function rotateNotifySetupToken(paths, flags = {}) {
@@ -802,12 +818,12 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
   };
 }
 
-async function manageOpenClawApproval(paths, positional) {
+async function manageOpenClawApproval(paths, positional, flags = {}) {
   const action = positional[1] || 'status';
   const config = (await ensureNotifyHandlerState(paths.handler)).config;
   const agentId = await resolveOpenClawApprovalAgent(config);
   const openclawCommand = clean(config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
-  const pluginPath = notifyOpenClawApprovalPluginPath();
+  const pluginPath = notifyOpenClawApprovalPluginPath({ pluginPath: flags.pluginPath });
   if (action === 'status') {
     // Approvals no longer run through an Agent-invocable shell command, so the
     // only thing to report is whether the deterministic plugin is loaded and
@@ -872,6 +888,11 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
     if (action === 'disable') return disableNotifySetupToken(paths, flags);
     throw new Error(`Unknown Notify setup-token command: ${action || '[missing]'}`);
   }
+  if (command === 'state') {
+    const action = positional[1] || 'dump';
+    if (action === 'dump') return dumpNotifyState(paths, flags);
+    throw new Error(`Unknown Notify state command: ${action}`);
+  }
   if (command === 'login' || command === 'setup') return loginNotifyDaemon(flags);
   if (command === 'run') return runNotifyDaemon(flags);
   if (command === 'start') return startNotifyDaemonBackground(flags);
@@ -882,7 +903,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'stop') return stopNotifyDaemon(flags);
   if (command === 'status') return notifyDaemonStatus(flags);
   if (command === 'autostart') return manageNotifyDaemonAutostart(paths, positional, flags);
-  if (command === 'openclaw-approval') return manageOpenClawApproval(paths, positional);
+  if (command === 'openclaw-approval') return manageOpenClawApproval(paths, positional, flags);
   if (command === 'doctor') return runNotifyDaemonDoctor(paths, flags);
   if (command === 'audit') {
     const action = positional[1] || 'status';
@@ -933,7 +954,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
     const installedHandlerSkills = config.confirmationProvider.eventConsumer === 'openclaw'
       ? await installNotifyHandlerSkill({ targets: ['openclaw'] })
       : [];
-    return { ...config, installedHandlerSkills, approvalPluginPath: notifyOpenClawApprovalPluginPath() };
+    return { ...config, installedHandlerSkills, approvalPluginPath: notifyOpenClawApprovalPluginPath({ pluginPath: flags.pluginPath }) };
   }
   if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });

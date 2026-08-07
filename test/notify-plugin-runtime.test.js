@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { createFeishuRestClient } from '../notify-daemon/src/feishu-client.js';
+import { notifyDaemonPaths, runNotifyDaemonCommand } from '../notify-daemon/src/daemon.js';
 import {
   addNotifyGroup,
   confirmNotifyMapping,
@@ -58,6 +59,56 @@ test('Feishu REST client shares token refresh and covers deterministic message, 
   assert.equal((await client.patchMessage({ messageId: 'om_test', card: {} })).updated, true);
   assert.equal((await client.uploadImage({ bytes: Buffer.from('png'), filename: 'test.png', contentType: 'image/png' })).imageKey, 'img_test');
   assert.deepEqual(await client.listChatMembers({ chatId: 'oc_test' }), [{ member_id: 'ou_test', name: '测试用户' }]);
+});
+
+test('OpenClaw plugin manifest id matches definePluginEntry and installs as a fixed bundled copy', async () => {
+  const source = path.join(process.cwd(), 'notify-daemon', 'openclaw-plugin');
+  const manifest = JSON.parse(await readFile(path.join(source, 'openclaw.plugin.json'), 'utf8'));
+  const entry = await readFile(path.join(source, 'index.js'), 'utf8');
+  const entryId = entry.match(/definePluginEntry\s*\(\s*\{[\s\S]*?\bid:\s*['"]([^'"]+)['"]/)?.[1] || '';
+  assert.equal(entryId, manifest.id);
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-plugin-install-'));
+  const target = path.join(root, '.openclaw', 'plugins', 'magclaw-notify');
+  const installed = spawnSync(process.execPath, [path.join(process.cwd(), 'scripts', 'install-notify-openclaw-plugin.mjs'), '--target', target], {
+    cwd: process.cwd(), encoding: 'utf8',
+  });
+  assert.equal(installed.status, 0, installed.stderr);
+  assert.equal(JSON.parse(installed.stdout).pluginPath, target);
+  assert.equal(JSON.parse(await readFile(path.join(target, 'openclaw.plugin.json'), 'utf8')).id, manifest.id);
+  const bundle = await readFile(path.join(target, 'index.js'), 'utf8');
+  assert.equal(bundle.includes(process.cwd()), false);
+  assert.doesNotMatch(bundle, /\/private\/tmp\/magclaw-notify-remediation/);
+  assert.match(bundle, /definePluginEntry/);
+});
+
+test('Notify state dump is readable and legacy export can be migrated for rollback', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-state-dump-'));
+  const instance = 'state-dump';
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
+  const store = await ensureNotifyStateStore(paths.handler);
+  store.write('config', 'state', { relayId: 'nrl_dump', token: 'must-not-print', enabled: true });
+  store.write('directory', 'state', { groups: [{ id: 'grp_1', name: '测试群' }], people: [] });
+  store.write('requests', 'nreq_dump', { id: 'nreq_dump', status: 'processing' });
+  store.createDeliveryIntent({ id: 'ndi_dump', requestId: 'nreq_dump', request: { id: 'nreq_dump' }, idempotencyKey: 'safe-key' });
+  const dump = await runNotifyDaemonCommand(['state', 'dump'], { instance, notifyHome: root });
+  assert.equal(dump.state.config.state.token, '[redacted]');
+  assert.equal(dump.state.directory.state.groups[0].name, '测试群');
+  assert.equal(dump.state.requests.nreq_dump.id, 'nreq_dump');
+  assert.equal(dump.deliveryIntents[0].status, 'pending');
+
+  const rollbackProfile = path.join(root, 'rollback-profile');
+  const legacyDir = path.join(rollbackProfile, 'notify');
+  const exported = await runNotifyDaemonCommand(['state', 'dump'], { instance, notifyHome: root, legacyDir });
+  assert.equal(exported.format, 'legacy-json');
+  assert.ok(exported.fileCount >= 7);
+  const rollbackStore = await ensureNotifyStateStore({ dir: rollbackProfile, profile: 'rollback' });
+  assert.equal(rollbackStore.read('config', 'state', {}).token, 'must-not-print');
+  assert.equal(rollbackStore.read('requests', 'nreq_dump', {}).status, 'processing');
+  const archived = await readdir(legacyDir);
+  assert.ok(archived.some((name) => name.startsWith('config.json.migrated-')));
+  closeNotifyStateStore(paths.handler);
+  closeNotifyStateStore({ dir: rollbackProfile });
 });
 
 test('Notify image DNS validation pins the approved address into the undici Agent lookup', async () => {

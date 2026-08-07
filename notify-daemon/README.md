@@ -14,8 +14,16 @@ must remain local. Never commit them or copy them into public package docs.
 
 ## OpenClaw plugin (recommended)
 
-Install this directory as a local OpenClaw plugin and enable `magclaw-notify`.
-The plugin configuration accepts:
+Build and atomically install a fixed, bundled copy, then enable
+`magclaw-notify`. Do not point `plugins.load.paths` at a Git working tree.
+
+```sh
+npm run notify:plugin:install
+```
+
+The command installs under `~/.openclaw/plugins/magclaw-notify` by default and
+records the version and bundle hash in `installation.json`. The plugin
+configuration accepts:
 
 ```json
 {
@@ -39,6 +47,15 @@ The plugin configuration accepts:
 The plugin starts and stops with the OpenClaw Gateway. It reconnects to the
 Relay with bounded backoff and performs expiry and crash-recovery sweeps without
 another service or local IPC socket.
+
+Inspect SQLite state as redacted readable JSON, or create owner-only legacy JSON
+files for a rollback drill:
+
+```sh
+magclaw-notify daemon state dump --instance product-a
+magclaw-notify daemon state dump --instance product-a --output ./state-dump.json
+magclaw-notify daemon state dump --instance product-a --legacy-dir ./rollback/notify
+```
 
 ### Durable state and recovery
 
