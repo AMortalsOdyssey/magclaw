@@ -16,6 +16,7 @@ import {
 import {
   addNotifyGroup,
   addNotifyPerson,
+  applyNotifyDirectory,
   approvalCardUpdateAttempts,
   confirmNotifyMapping,
   configureNotifyHandler,
@@ -24,12 +25,15 @@ import {
   installNotifyHandlerSkill,
   larkCardForApprovalOutcome,
   larkCardForTargetApproval,
+  listNotifyDirectory,
   listNotifyTargetGrants,
   larkCardForNotify,
   isPrivateNotifyAddress,
   mergeNotifyMentions,
   resolveNotifyGroup,
   resolveNotifyPeople,
+  removeNotifyDirectoryEntry,
+  updateNotifyDirectoryAlias,
   prepareNotifyDelivery,
 } from '../notify-daemon/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey } from '../notify/src/cli.js';
@@ -232,6 +236,30 @@ test('Notify local audit retention is 10x larger and tail reads the latest recor
   }).status();
   assert.equal(relayStatus.maxFileBytes, 2 * 1024 * 1024);
   assert.equal(relayStatus.maxFiles, 30);
+});
+
+test('Notify audit retention prunes by age and per-day shard count', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-audit-retention-'));
+  const dir = path.join(root, 'audit');
+  await mkdir(dir, { recursive: true });
+  for (const name of [
+    'notify-audit-2026-08-01.jsonl',
+    'notify-audit-2026-08-07.jsonl',
+    'notify-audit-2026-08-07-001.jsonl',
+    'notify-audit-2026-08-07-002.jsonl',
+  ]) await writeFile(path.join(dir, name), '{}\n');
+  const audit = createNotifyAuditLog({
+    dir,
+    now: () => '2026-08-07T12:00:00.000Z',
+    maxDays: 2,
+    maxFilesPerDay: 2,
+    maxFiles: 10,
+  });
+  await audit.append({ event: 'retention.check' });
+  const names = await readdir(dir);
+  assert.equal(names.includes('notify-audit-2026-08-01.jsonl'), false);
+  assert.equal(names.includes('notify-audit-2026-08-07.jsonl'), false);
+  assert.deepEqual(names.sort(), ['notify-audit-2026-08-07-001.jsonl', 'notify-audit-2026-08-07-002.jsonl']);
 });
 
 test('Notify HTTP routes emit sanitized correlation metadata without request content', async () => {
@@ -1152,6 +1180,33 @@ test('Notify local directory keeps exact aliases deterministic and fuzzy groups 
   assert.equal(resolveNotifyGroup(directory, '研发群').status, 'confirmation_required');
   assert.equal(resolveNotifyGroup(directory, '运营群').status, 'unavailable');
   assert.equal(resolveNotifyPeople(directory, ['Zhang San'], group)[0].person.id, person.id);
+  const proposed = resolveNotifyPeople(directory, ['张总'], group)[0];
+  assert.equal(proposed.status, 'confirmation_required');
+  assert.equal(proposed.candidates[0].person.id, person.id);
+});
+
+test('Notify managed directory supports direct file edits, alias management, apply, and removal', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-managed-directory-'));
+  const profilePaths = { dir: root, profile: 'managed-directory' };
+  await addNotifyGroup(profilePaths, { name: '某某研发部门', chatId: 'oc_research', aliases: ['研发部'] });
+  await addNotifyPerson(profilePaths, { name: '张三', openId: 'ou_zhangsan', groupChatIds: ['oc_research'] });
+  const listed = await listNotifyDirectory(profilePaths);
+  const snapshot = JSON.parse(await readFile(listed.file, 'utf8'));
+  snapshot.groups[0].aliases.push('研发群');
+  await writeFile(listed.file, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+  const reloaded = await listNotifyDirectory(profilePaths);
+  assert.equal(resolveNotifyGroup(reloaded.directory, '研发群').status, 'resolved');
+  await updateNotifyDirectoryAlias(profilePaths, { action: 'add', kind: 'person', name: '张三', alias: '三哥' });
+  assert.equal(resolveNotifyPeople((await listNotifyDirectory(profilePaths)).directory, ['三哥'])[0].status, 'resolved');
+  await updateNotifyDirectoryAlias(profilePaths, { action: 'remove', kind: 'person', name: '张三', alias: '三哥' });
+  assert.equal(resolveNotifyPeople((await listNotifyDirectory(profilePaths)).directory, ['三哥'])[0].status, 'unavailable');
+  const imported = { ...snapshot, groups: [{ ...snapshot.groups[0], aliases: ['技术群'] }], people: snapshot.people };
+  const importFile = path.join(root, 'directory-import.json');
+  await writeFile(importFile, JSON.stringify(imported));
+  await writeFile(listed.file, '{broken-json');
+  assert.equal((await applyNotifyDirectory(profilePaths, { file: importFile })).groups, 1);
+  assert.equal(resolveNotifyGroup((await listNotifyDirectory(profilePaths)).directory, '技术群').status, 'resolved');
+  assert.equal((await removeNotifyDirectoryEntry(profilePaths, { kind: 'group', name: '某某研发部门' })).removed, 1);
 });
 
 test('Notify lark-cli card injects only locally resolved Feishu mentions', () => {
@@ -1414,7 +1469,7 @@ test('Notify owner confirmation persists a fuzzy group alias and resumes the sto
   assert.deepEqual(directory.groups[0].confirmedAliases, ['研发群']);
 });
 
-test('Notify target approval batches per user and group with once, permanent, owner-only, and 48-hour semantics', async () => {
+test('Notify target approval batches per user and group with once, long-lived, owner-only, and 24-hour semantics', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-target-access-'));
   const profilePaths = { dir: root, profile: 'target-access', config: path.join(root, 'daemon-config.json') };
   let clock = Date.parse('2026-08-07T03:00:00.000Z');
@@ -1445,7 +1500,7 @@ test('Notify target approval batches per user and group with once, permanent, ow
   assert.equal(third.pendingRequestCount, 3);
   const pending = await readNotifyState(profilePaths, 'pending');
   const batch = pending.find((record) => record.id === first.confirmationId);
-  assert.equal(Date.parse(batch.expiresAt) - Date.parse(batch.createdAt), 48 * 60 * 60 * 1000);
+  assert.equal(Date.parse(batch.expiresAt) - Date.parse(batch.createdAt), 24 * 60 * 60 * 1000);
   const card = larkCardForTargetApproval(batch);
   assert.deepEqual(card.body.elements.filter((element) => element.tag === 'button').map((element) => element.behaviors[0].value.decision), ['once', 'always', 'reject']);
 
@@ -1474,9 +1529,15 @@ test('Notify target approval batches per user and group with once, permanent, ow
   const grants = await listNotifyTargetGrants(profilePaths, { userId: 'usr_sender' });
   assert.equal(grants.length, 1);
   assert.equal(grants[0].target.group, '测试monkey');
+  assert.equal(Date.parse(grants[0].expiresAt) - Date.parse(grants[0].createdAt), 90 * 24 * 60 * 60 * 1000);
   const direct = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_6'));
   assert.equal(direct.status, 'processing');
   assert.equal(direct.shouldProcess, true);
+  for (let index = 7; index <= 15; index += 1) {
+    assert.equal((await prepareNotifyDelivery(profilePaths, makeRequest(`nreq_batch_${index}`))).status, 'processing');
+  }
+  const overLimit = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_16'));
+  assert.equal(overLimit.status, 'awaiting_owner_approval');
 
   const expiring = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired', 'usr_other'));
   const expiringRecords = await readNotifyState(profilePaths, 'pending');

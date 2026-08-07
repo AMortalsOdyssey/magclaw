@@ -8,6 +8,7 @@ import { resolveConfiguredSecretInputString } from 'openclaw/plugin-sdk/secret-i
 import { createFeishuRestClient } from '../src/feishu-client.js';
 import { notifyPluginProfile, startNotifyPluginHost } from '../src/plugin-host.js';
 import { getNotifyPluginHost, notifyPluginHostSlotKey, publishNotifyPluginHost } from './host-registry.js';
+import { memberAgentRunDecision, memberPolicySystemPrompt, memberToolDecision, sanitizeMemberReply } from './member-policy.js';
 import { classifyNotifyApprovalMessage } from './policy.js';
 
 function shortHash(value) {
@@ -18,7 +19,7 @@ function shortHash(value) {
 export default definePluginEntry({
   id: 'magclaw-notify',
   name: 'MagClaw Notify',
-  version: '0.5.1',
+  version: '0.6.0',
   description: 'Hosts the MagClaw Notify Relay, durable state machine, Feishu delivery, and approvals inside OpenClaw.',
   register(api) {
     const config = api.pluginConfig ?? {};
@@ -28,6 +29,28 @@ export default definePluginEntry({
     const hostSlotKey = notifyPluginHostSlotKey({ home, instance, accountId: targetAccountId });
     let host = null;
     let unpublishHost = () => {};
+    const activeHost = () => host || getNotifyPluginHost(hostSlotKey);
+    const memberConfig = {
+      memberAgentId: String(config.memberAgentId || '').trim(),
+      projectName: String(config.projectName || '').trim(),
+      memberReadTools: Array.isArray(config.memberReadTools) ? config.memberReadTools.map(String) : [],
+    };
+    const memberSession = (context = {}) => Boolean(
+      memberConfig.memberAgentId
+        && (context.agentId === memberConfig.memberAgentId || String(context.sessionKey || '').includes(`agent:${memberConfig.memberAgentId}:`)),
+    );
+    const auditMember = async (event, outcome, context = {}, metadata = {}) => {
+      const current = activeHost();
+      if (!current) return;
+      const policy = await current.memberPolicyContext();
+      await policy.audit.append({
+        event,
+        outcome,
+        severity: outcome === 'blocked' ? 'warning' : 'info',
+        actorId: shortHash(context.senderId || ''),
+        metadata: { chatHash: shortHash(context.chatId || context.channelId || context.channel || ''), ...metadata },
+      });
+    };
 
     api.registerService({
       id: 'magclaw-notify-host',
@@ -98,9 +121,9 @@ export default definePluginEntry({
           return { handled: true };
         }
         try {
-          const activeHost = host || getNotifyPluginHost(hostSlotKey);
-          if (!activeHost) throw new Error('MagClaw Notify plugin host is not ready.');
-          const result = await activeHost.processApproval(decision, {
+          const currentHost = activeHost();
+          if (!currentHost) throw new Error('MagClaw Notify plugin host is not ready.');
+          const result = await currentHost.processApproval(decision, {
             // OpenClaw 2026.7.x does not expose Feishu's callback token to
             // before_dispatch. The original approval message id remains
             // available and is the deterministic card-update fallback.
@@ -115,5 +138,32 @@ export default definePluginEntry({
       },
       { priority: 900, timeoutMs: 15_000 },
     );
+
+    api.on('before_prompt_build', async (_event, context) => {
+      if (!memberSession(context)) return;
+      return { appendSystemContext: memberPolicySystemPrompt(memberConfig) };
+    }, { priority: 950, timeoutMs: 5_000 });
+
+    api.on('before_agent_run', async (event, context) => {
+      if (!memberSession(context)) return { outcome: 'pass' };
+      const current = activeHost();
+      const policy = current ? await current.memberPolicyContext() : { configuredChatIds: [] };
+      const decision = memberAgentRunDecision(event, context, memberConfig, policy.configuredChatIds);
+      if (decision.outcome === 'block') await auditMember('owner.member_bot.input_blocked', 'blocked', context, { category: decision.category || 'policy' });
+      return decision;
+    }, { priority: 950, timeoutMs: 5_000 });
+
+    api.on('before_tool_call', async (event, context) => {
+      const decision = memberToolDecision(event, context, memberConfig);
+      if (decision?.block) await auditMember('owner.member_bot.tool_blocked', 'blocked', context, { toolName: String(event.toolName || '').slice(0, 120) });
+      return decision;
+    }, { priority: 950, timeoutMs: 5_000 });
+
+    api.on('message_sending', async (event, context) => {
+      if (!memberSession(context)) return;
+      const content = sanitizeMemberReply(event.content, memberConfig);
+      if (content !== event.content) await auditMember('owner.member_bot.output_sanitized', 'sanitized', context);
+      return { content };
+    }, { priority: 950, timeoutMs: 5_000 });
   },
 });

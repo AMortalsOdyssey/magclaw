@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { connectOnce, processNotifyApprovalEvent } from './daemon.js';
-import { expireNotifyConfirmations, recoverNotifyDeliveries } from './handler.js';
+import { ensureNotifyHandlerState, expireNotifyConfirmations, recoverNotifyDeliveries } from './handler.js';
 import { registerNotifyRuntime } from './runtime-context.js';
 import { closeNotifyStateStore } from './store.js';
 
@@ -103,6 +103,15 @@ export async function startNotifyPluginHost(options = {}) {
         token: clean(event.token, 2000),
         message_id: clean(event.messageId, 240),
       });
+    },
+    async memberPolicyContext() {
+      const state = await ensureNotifyHandlerState(paths.handler);
+      return {
+        configuredChatIds: state.directory.groups
+          .filter((group) => group?.enabled !== false && group?.chatId)
+          .map((group) => String(group.chatId)),
+        audit: state.audit,
+      };
     },
     async stop() {
       controller.abort();

@@ -4,8 +4,12 @@ import path from 'node:path';
 
 const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_FILES = 30;
+const DEFAULT_MAX_DAYS = 30;
+const DEFAULT_MAX_FILES_PER_DAY = 8;
 export const LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES = 20 * 1024 * 1024;
 export const LOCAL_NOTIFY_AUDIT_MAX_FILES = 30;
+export const LOCAL_NOTIFY_AUDIT_MAX_DAYS = 30;
+export const LOCAL_NOTIFY_AUDIT_MAX_FILES_PER_DAY = 8;
 const TAIL_READ_CHUNK_BYTES = 64 * 1024;
 const SENSITIVE_KEY = /(authorization|bearer|token|secret|password|cookie|app.?id|chat.?id|open.?id|union.?id|user.?id|content|markdown|instruction|image.?key)/i;
 
@@ -87,6 +91,8 @@ export function createNotifyAuditLog(options = {}) {
   const now = options.now || (() => new Date().toISOString());
   const maxFileBytes = limit(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES, 100 * 1024 * 1024);
   const maxFiles = limit(options.maxFiles, DEFAULT_MAX_FILES, 365);
+  const maxDays = limit(options.maxDays, DEFAULT_MAX_DAYS, 3650);
+  const maxFilesPerDay = limit(options.maxFilesPerDay, DEFAULT_MAX_FILES_PER_DAY, 1000);
   const warn = options.warn || ((message) => process.stderr.write(`${message}\n`));
   let chain = Promise.resolve();
   let activeDate = '';
@@ -146,7 +152,23 @@ export function createNotifyAuditLog(options = {}) {
 
   async function prune() {
     const names = await fileNames();
-    for (const name of names.slice(0, Math.max(0, names.length - maxFiles))) {
+    const cutoff = new Date(Date.parse(`${dateKey(now())}T00:00:00.000Z`) - ((maxDays - 1) * 24 * 60 * 60 * 1000)).toISOString().slice(0, 10);
+    const keep = new Set();
+    const byDay = new Map();
+    for (const name of names) {
+      const date = auditFileOrder(name).date;
+      if (date < cutoff) continue;
+      const day = byDay.get(date) || [];
+      day.push(name);
+      byDay.set(date, day);
+    }
+    for (const day of byDay.values()) {
+      for (const name of day.slice(-maxFilesPerDay)) keep.add(name);
+    }
+    const globallyLimited = [...keep].sort(compareAuditFiles).slice(-maxFiles);
+    const finalKeep = new Set(globallyLimited);
+    for (const name of names) {
+      if (finalKeep.has(name)) continue;
       await unlink(path.join(dir, name)).catch(() => {});
     }
   }
@@ -212,6 +234,8 @@ export function createNotifyAuditLog(options = {}) {
       files: (await files()).map((item) => ({ name: item.name, size: item.size })),
       maxFileBytes,
       maxFiles,
+      maxDays,
+      maxFilesPerDay,
       maxTotalBytes: maxFileBytes * maxFiles,
     }),
   };

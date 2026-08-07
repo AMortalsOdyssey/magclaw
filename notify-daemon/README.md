@@ -48,6 +48,27 @@ The plugin starts and stops with the OpenClaw Gateway. It reconnects to the
 Relay with bounded backoff and performs expiry and crash-recovery sweeps without
 another service or local IPC socket.
 
+After the fixed copy is installed, use the Notify lifecycle commands instead
+of editing OpenClaw JSON by hand:
+
+```sh
+magclaw-notify-daemon plugin start \
+  --instance product-a \
+  --account-id monkey \
+  --member-agent-id project-member \
+  --project-name "Product A" \
+  --member-read-tools "project_read,project_search"
+
+magclaw-notify-daemon plugin status --instance product-a
+magclaw-notify-daemon plugin restart --instance product-a
+magclaw-notify-daemon plugin stop --instance product-a
+```
+
+`plugin start` enables the fixed plugin, writes only the plugin's OpenClaw
+configuration, enables the two required trusted hook permissions, and restarts
+the Gateway. `plugin stop` disables the plugin and restarts the Gateway. These
+commands do not restore or depend on a control socket.
+
 Inspect SQLite state as redacted readable JSON, or create owner-only legacy JSON
 files for a rollback drill:
 
@@ -110,9 +131,51 @@ magclaw-notify-daemon add-person \
 magclaw-notify-daemon doctor --instance product-a --all
 ```
 
+`login --name` creates the named Relay installation and prints its one-time
+Setup Token. A sender uses that value with `npx --yes @magclaw/notify@latest
+login ...`; the token itself must be passed privately and is never written to
+project files.
+
+The owner-editable directory is
+`<instance-root>/notify/directory.manage.json`. It is owner-only (`0600`) and
+is reloaded before each request, so an owner or local Agent may edit aliases
+without touching SQLite directly. Equivalent checked commands are:
+
+```sh
+magclaw-notify-daemon directory list --instance product-a
+magclaw-notify-daemon directory apply --instance product-a --file ./directory.json
+magclaw-notify-daemon directory alias add --instance product-a --kind group --name "某某研发部门" --alias "研发群"
+magclaw-notify-daemon directory alias remove --instance product-a --kind person --name "张三" --alias "张总"
+magclaw-notify-daemon directory remove --instance product-a --kind person --name "张三"
+```
+
+Exact canonical names and confirmed aliases resolve automatically. Similar
+group names and person titles such as `张总` produce an owner confirmation;
+only the confirmed mapping is remembered. Ambiguous candidates remain blocked
+until the owner supplies an explicit mapping.
+
 `doctor` reports each requirement as `ok`, `missing`, `optional`, or `verify`
 and prints an actionable fix. Mentions, an analysis Agent, and Setup Tokens are
 optional.
+
+## Authorization and group Bot boundary
+
+- Relay requests must carry a Feishu-authenticated identity. The local plugin
+  rejects a missing or non-Feishu identity even if a caller forges a display
+  name.
+- Approval cards explicitly show both the verified requester identity state
+  and whether the target matched an owner-configured group.
+- Pending approval cards expire after 24 hours. A long-lived user × group
+  grant expires after 90 days, is capped at 10 deliveries per day, and can be
+  revoked at any time. The owner receives a content-free daily usage summary.
+- When `memberAgentId` is configured, that Agent is restricted to configured
+  Feishu groups. It receives a project-only system policy, may call only the
+  exact `memberReadTools` allowlist, and has replies re-sanitized before send.
+  Requests for model details, host configuration, private paths, credentials,
+  or project-external information fail closed and are audited without storing
+  the prompt body.
+- Audit retention is bounded by age, total files, and shards per day. Audit
+  records contain correlation metadata, not message content or secrets.
 
 ## Standalone daemon (fallback)
 

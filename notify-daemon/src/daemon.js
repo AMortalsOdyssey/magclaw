@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
 import {
   createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_DAYS,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES_PER_DAY,
 } from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
@@ -24,6 +26,7 @@ import {
 import {
   addNotifyGroup,
   addNotifyPerson,
+  applyNotifyDirectory,
   configureNotifyHandler,
   confirmNotifyMapping,
   ensureNotifyHandlerState,
@@ -31,14 +34,17 @@ import {
   handleNotifyCardAction,
   inspectNotifyCardAction,
   installNotifyHandlerSkill,
+  listNotifyDirectory,
   listNotifyTargetGrants,
   notifyHandlerStatus,
   notifyOpenClawApprovalPluginPath,
   prepareNotifyDelivery,
   processAuthorizedNotifyDelivery,
+  removeNotifyDirectoryEntry,
   revokeNotifyTargetGrant,
   sendNotifyConfirmationPrompt,
   syncNotifyDirectory,
+  updateNotifyDirectoryAlias,
   updateNotifyApprovalCard,
 } from './handler.js';
 
@@ -50,6 +56,12 @@ const ownerAuditLogs = new Map();
 
 function clean(value = '', max = 2000) {
   return String(value || '').replace(/\u0000/g, '').trim().slice(0, max);
+}
+
+export function verifiedFeishuRequester(requester = {}) {
+  const identity = requester?.identity && typeof requester.identity === 'object' ? requester.identity : {};
+  return identity.provider === 'feishu'
+    && Boolean(identity.providerAccountId || identity.openId || identity.userId || identity.unionId);
 }
 
 function notifyHome(env = process.env) {
@@ -86,6 +98,8 @@ function ownerAudit(paths) {
       base: { instance: paths.instance },
       maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
       maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
+      maxDays: LOCAL_NOTIFY_AUDIT_MAX_DAYS,
+      maxFilesPerDay: LOCAL_NOTIFY_AUDIT_MAX_FILES_PER_DAY,
     }));
   }
   return ownerAuditLogs.get(paths.auditDir);
@@ -392,6 +406,21 @@ export async function connectOnce(paths, config, signal) {
         metadata: { targetGroup: message.request?.payload?.target?.group || '', requesterName: message.request?.requester?.name || '' },
       });
       try {
+        if (!verifiedFeishuRequester(message.request?.requester)) {
+          socket.send(JSON.stringify({
+            type: 'notify:deliver:ack',
+            commandId: message.commandId,
+            requestId: message.request?.id || '',
+            status: 'rejected',
+            publicReason: 'A verified Feishu requester identity is required.',
+          }));
+          await audit.append({
+            event: 'owner.request.identity_rejected', outcome: 'rejected', severity: 'warning',
+            requestId: message.request?.id || '', commandId: message.commandId || '',
+            metadata: { requesterPresent: Boolean(message.request?.requester?.id) },
+          });
+          return;
+        }
         const prepared = await prepareNotifyDelivery(paths.handler, message.request || {});
         socket.send(JSON.stringify({
           type: 'notify:deliver:ack',
@@ -706,9 +735,61 @@ function runOpenClawCommand(command, args = []) {
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`OpenClaw approvals command failed: ${clean(stderr || stdout, 1000)}`));
+      else reject(new Error(`OpenClaw command failed: ${clean(stderr || stdout, 1000)}`));
     });
   });
+}
+
+async function manageOpenClawNotifyPlugin(paths, positional, flags = {}) {
+  const action = positional[1] || 'status';
+  const handlerState = await ensureNotifyHandlerState(paths.handler);
+  const openclawCommand = clean(handlerState.config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
+  const pluginPath = notifyOpenClawApprovalPluginPath({ pluginPath: flags.pluginPath });
+  const status = async () => {
+    let plugins = {};
+    let gateway = {};
+    try { plugins = JSON.parse((await runOpenClawCommand(openclawCommand, ['plugins', 'list', '--json'])).stdout || '{}'); } catch (error) { plugins = { error: clean(error.message, 500) }; }
+    try { gateway = JSON.parse((await runOpenClawCommand(openclawCommand, ['gateway', 'status', '--json'])).stdout || '{}'); } catch (error) { gateway = { error: clean(error.message, 500) }; }
+    const pluginEntries = Array.isArray(plugins?.plugins) ? plugins.plugins : Array.isArray(plugins) ? plugins : [];
+    const notifyPlugin = pluginEntries.find((entry) => entry?.id === 'magclaw-notify' || entry?.name === 'magclaw-notify');
+    return {
+      instance: paths.instance,
+      pluginPath,
+      installed: await readFile(path.join(pluginPath, 'installation.json'), 'utf8').then(() => true).catch(() => false),
+      enabled: notifyPlugin?.enabled === true || notifyPlugin?.status === 'enabled' || notifyPlugin?.state === 'enabled',
+      running: (await notifyDaemonStatus({ ...flags, instance: paths.instance })).mode === 'plugin-hosted',
+      gateway,
+    };
+  };
+  if (action === 'status') return status();
+  if (!['start', 'stop', 'restart'].includes(action)) throw new Error(`Unknown Notify plugin command: ${action}`);
+  if (action === 'restart') {
+    await runOpenClawCommand(openclawCommand, ['gateway', 'restart']);
+    return status();
+  }
+  if (action === 'stop') {
+    await runOpenClawCommand(openclawCommand, ['plugins', 'disable', 'magclaw-notify']);
+    await runOpenClawCommand(openclawCommand, ['gateway', 'restart']);
+    return status();
+  }
+  const installed = await readFile(path.join(pluginPath, 'installation.json'), 'utf8').then(() => true).catch(() => false);
+  if (!installed) throw new Error(`Install the fixed MagClaw Notify plugin copy first: npm run notify:plugin:install -- --target ${pluginPath}`);
+  const pluginConfig = {
+    accountId: clean(flags.accountId || handlerState.config.deliveryProvider?.account || handlerState.config.confirmationProvider?.account || 'monkey', 120),
+    notifyHome: paths.home,
+    instance: paths.instance,
+    relayEnabled: flags.relayEnabled !== 'false',
+    ...(flags.relayUrl ? { relayUrl: clean(flags.relayUrl, 1000) } : {}),
+    ...(flags.memberAgentId ? { memberAgentId: clean(flags.memberAgentId, 120) } : {}),
+    ...(flags.projectName ? { projectName: clean(flags.projectName, 120) } : {}),
+    ...(flags.memberReadTools ? { memberReadTools: commaList(flags.memberReadTools) } : {}),
+  };
+  await runOpenClawCommand(openclawCommand, ['plugins', 'enable', 'magclaw-notify']);
+  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.config', JSON.stringify(pluginConfig), '--strict-json']);
+  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowPromptInjection', 'true', '--strict-json']);
+  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowConversationAccess', 'true', '--strict-json']);
+  await runOpenClawCommand(openclawCommand, ['gateway', 'restart']);
+  return status();
 }
 
 async function resolveOpenClawApprovalAgent(config = {}) {
@@ -903,6 +984,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   if (command === 'stop') return stopNotifyDaemon(flags);
   if (command === 'status') return notifyDaemonStatus(flags);
   if (command === 'autostart') return manageNotifyDaemonAutostart(paths, positional, flags);
+  if (command === 'plugin') return manageOpenClawNotifyPlugin(paths, positional, flags);
   if (command === 'openclaw-approval') return manageOpenClawApproval(paths, positional, flags);
   if (command === 'doctor') return runNotifyDaemonDoctor(paths, flags);
   if (command === 'audit') {
@@ -958,6 +1040,19 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   }
   if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });
+  if (command === 'directory') {
+    const action = positional[1] || 'list';
+    if (action === 'list' || action === 'export') return listNotifyDirectory(paths.handler);
+    if (action === 'apply') return applyNotifyDirectory(paths.handler, { file: flags.file });
+    if (action === 'remove') return removeNotifyDirectoryEntry(paths.handler, { kind: flags.kind, id: flags.id, name: flags.name });
+    if (action === 'alias') return updateNotifyDirectoryAlias(paths.handler, {
+      action: positional[2] || flags.action,
+      kind: flags.kind,
+      name: flags.name,
+      alias: flags.alias,
+    });
+    throw new Error(`Unknown Notify directory command: ${action}`);
+  }
   if (command === 'sync-directory') return syncNotifyDirectory(paths.handler);
   if (command === 'install-handler-skill') return installNotifyHandlerSkill({
     targets: commaList(flags.targets || flags.target || 'openclaw'),

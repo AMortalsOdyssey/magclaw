@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { Agent, fetch as undiciFetch } from 'undici';
 import {
   createNotifyAuditLog,
+  LOCAL_NOTIFY_AUDIT_MAX_DAYS,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
+  LOCAL_NOTIFY_AUDIT_MAX_FILES_PER_DAY,
 } from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { createEnvFeishuCredentialProvider, createFeishuRestClient } from './feishu-client.js';
@@ -21,7 +23,9 @@ import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMark
 const HANDLER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HANDLER_SKILL_SOURCE = path.join(HANDLER_ROOT, 'skills', 'magclaw-notify-handler');
 const MAX_LOCAL_RECEIPTS = 500;
-export const CONFIRMATION_TTL_MS = 48 * 60 * 60 * 1000;
+export const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
+export const TARGET_GRANT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+export const TARGET_GRANT_DAILY_LIMIT = 10;
 const notifyStateLocks = new Map();
 const handlerAuditLogs = new Map();
 const standaloneFeishuClients = new Map();
@@ -117,6 +121,7 @@ export function notifyHandlerPaths(profilePaths) {
     root,
     config: path.join(root, 'config.json'),
     directory: path.join(root, 'directory.json'),
+    managedDirectory: path.join(root, 'directory.manage.json'),
     memory: path.join(root, 'memory.json'),
     grants: path.join(root, 'target-grants.json'),
     pending: path.join(root, 'pending-confirmations.json'),
@@ -137,6 +142,8 @@ function handlerAudit(profilePaths) {
       base: { instance: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 48) },
       maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
       maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
+      maxDays: LOCAL_NOTIFY_AUDIT_MAX_DAYS,
+      maxFilesPerDay: LOCAL_NOTIFY_AUDIT_MAX_FILES_PER_DAY,
     }));
   }
   return handlerAuditLogs.get(paths.auditDir);
@@ -213,6 +220,62 @@ export function defaultNotifyDirectory() {
   };
 }
 
+function normalizeManagedDirectory(value) {
+  const directory = { ...defaultNotifyDirectory(), ...jsonObject(value) };
+  directory.groups = safeArray(directory.groups).map((group) => ({
+    ...jsonObject(group),
+    name: cleanText(group?.name, 120),
+    chatId: cleanText(group?.chatId, 200),
+    aliases: [...new Set(safeArray(group?.aliases).map((item) => cleanText(item, 120)).filter(Boolean))],
+    confirmedAliases: [...new Set(safeArray(group?.confirmedAliases).map((item) => cleanText(item, 120)).filter(Boolean))],
+  }));
+  directory.people = safeArray(directory.people).map((person) => ({
+    ...jsonObject(person),
+    name: cleanText(person?.name, 120),
+    openId: cleanText(person?.openId, 200),
+    aliases: [...new Set(safeArray(person?.aliases).map((item) => cleanText(item, 80)).filter(Boolean))],
+    confirmedAliases: [...new Set(safeArray(person?.confirmedAliases).map((item) => cleanText(item, 80)).filter(Boolean))],
+    groupChatIds: [...new Set(safeArray(person?.groupChatIds).map((item) => cleanText(item, 200)).filter(Boolean))],
+  }));
+  const invalidGroup = directory.groups.find((group) => !group.name || !group.chatId);
+  if (invalidGroup) throw new Error('Managed Notify directory groups require non-empty name and chatId fields.');
+  const invalidPerson = directory.people.find((person) => !person.name || !person.openId);
+  if (invalidPerson) throw new Error('Managed Notify directory people require non-empty name and openId fields.');
+  for (const entries of [directory.groups, directory.people]) {
+    const keys = new Map();
+    for (const entry of entries) {
+      for (const label of [entry.name, ...entry.aliases, ...entry.confirmedAliases]) {
+        const key = normalizeLookup(label);
+        if (!key) continue;
+        const owner = keys.get(key);
+        if (owner && owner !== entry) throw new Error(`Managed Notify directory name or alias is ambiguous: ${label}`);
+        keys.set(key, entry);
+      }
+    }
+  }
+  return directory;
+}
+
+async function readManagedDirectory(paths, fallback) {
+  try {
+    return normalizeManagedDirectory(JSON.parse(await readFile(paths.managedDirectory, 'utf8')));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw new Error(`Managed Notify directory is invalid: ${cleanText(error.message, 500)}`);
+  }
+}
+
+async function saveNotifyDirectory(state, directory = state.directory) {
+  const normalized = normalizeManagedDirectory(directory);
+  normalized.updatedAt ||= now(state);
+  state.store.write('directory', 'state', normalized);
+  state.directory = normalized;
+  await mkdir(path.dirname(state.paths.managedDirectory), { recursive: true, mode: 0o700 });
+  await writeFile(state.paths.managedDirectory, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+  await chmod(state.paths.managedDirectory, 0o600).catch(() => {});
+  return normalized;
+}
+
 export async function ensureNotifyHandlerState(profilePaths) {
   const paths = notifyHandlerPaths(profilePaths);
   const store = await ensureNotifyStateStore(profilePaths);
@@ -222,13 +285,27 @@ export async function ensureNotifyHandlerState(profilePaths) {
   config.agentProvider = { ...defaultNotifyHandlerConfig().agentProvider, ...jsonObject(config.agentProvider) };
   config.deliveryProvider = { ...defaultNotifyHandlerConfig().deliveryProvider, ...jsonObject(config.deliveryProvider) };
   config.confirmationProvider = { ...defaultNotifyHandlerConfig().confirmationProvider, ...jsonObject(config.confirmationProvider) };
-  const directory = { ...defaultNotifyDirectory(), ...jsonObject(await readJson(paths.directory, {})) };
-  directory.groups = safeArray(directory.groups);
-  directory.people = safeArray(directory.people);
+  const storedDirectory = normalizeManagedDirectory(await readJson(paths.directory, {}));
+  const directory = await readManagedDirectory(paths, storedDirectory) || storedDirectory;
   const grants = { ...defaultNotifyGrants(), ...jsonObject(await readJson(paths.grants, {})) };
   grants.grants = safeArray(grants.grants);
+  let grantsMigrated = false;
+  for (const grant of grants.grants) {
+    if (grant?.status !== 'active' || grant.expiresAt) continue;
+    const createdAt = Number.isFinite(Date.parse(grant.createdAt || '')) ? grant.createdAt : now(profilePaths);
+    grant.expiresAt = new Date(Date.parse(createdAt) + TARGET_GRANT_TTL_MS).toISOString();
+    grant.dailyWindow ||= '';
+    grant.dailyCount = Number(grant.dailyCount || 0);
+    grant.updatedAt = now(profilePaths);
+    grantsMigrated = true;
+  }
+  if (grantsMigrated) grants.updatedAt = now(profilePaths);
   await writeJson(paths.config, config);
-  await writeJson(paths.directory, directory);
+  store.write('directory', 'state', directory);
+  if (!await readManagedDirectory(paths, directory)) {
+    await writeFile(paths.managedDirectory, `${JSON.stringify(directory, null, 2)}\n`, { mode: 0o600 });
+    await chmod(paths.managedDirectory, 0o600).catch(() => {});
+  }
   await writeJson(paths.grants, grants);
   return {
     paths,
@@ -334,13 +411,38 @@ export function resolveNotifyPeople(directory, requestedNames = [], group = null
   const people = safeArray(directory?.people).filter((person) => person && person.enabled !== false);
   return safeArray(requestedNames).map((requestedName) => {
     const query = normalizeLookup(requestedName);
-    const exact = people.filter((person) => (
+    const eligible = people.filter((person) => (
+      !group?.chatId || !safeArray(person.groupChatIds).length || safeArray(person.groupChatIds).includes(group.chatId)
+    ));
+    const exact = eligible.filter((person) => (
       [person.name, ...safeArray(person.aliases), ...safeArray(person.confirmedAliases)]
         .some((name) => normalizeLookup(name) === query)
-        && (!group?.chatId || !safeArray(person.groupChatIds).length || safeArray(person.groupChatIds).includes(group.chatId))
     ));
     if (exact.length === 1) return { requestedName, status: 'resolved', person: exact[0] };
-    return { requestedName, status: exact.length > 1 ? 'ambiguous' : 'unavailable', candidates: exact };
+    if (exact.length > 1) return { requestedName, status: 'ambiguous', candidates: exact };
+    const honorificSuffix = ['老师', '总', '哥', '姐', '工'].find((suffix) => query.endsWith(suffix));
+    const honorific = honorificSuffix ? query.slice(0, -honorificSuffix.length) : '';
+    if (honorific) {
+      const titled = eligible
+        .filter((person) => normalizeLookup(person.name).startsWith(honorific))
+        .map((person) => ({ person, confidence: 0.75 }));
+      if (titled.length === 1) return { requestedName, status: 'confirmation_required', candidates: titled };
+      if (titled.length > 1) return { requestedName, status: 'ambiguous', candidates: titled.slice(0, 3) };
+    }
+    const candidates = eligible
+      .map((person) => {
+        const nameScores = [person.name, ...safeArray(person.aliases), ...safeArray(person.confirmedAliases)]
+          .map((name) => similarity(query, normalizeLookup(name)));
+        const honorificScore = honorific && normalizeLookup(person.name).startsWith(honorific) ? 0.75 : 0;
+        return { person, confidence: Math.max(honorificScore, ...nameScores) };
+      })
+      .filter((item) => item.confidence >= 0.58)
+      .sort((left, right) => right.confidence - left.confidence)
+      .slice(0, 3);
+    if (candidates.length === 1 || (candidates[0]?.confidence - (candidates[1]?.confidence || 0)) >= 0.15) {
+      return { requestedName, status: 'confirmation_required', candidates };
+    }
+    return { requestedName, status: candidates.length ? 'ambiguous' : 'unavailable', candidates };
   });
 }
 
@@ -363,16 +465,76 @@ function activeTargetGrant(state, request, group) {
   const userId = requesterKey(request.requester);
   const targetId = groupKey(group);
   if (!userId || !targetId) return null;
-  return state.grants.grants.find((grant) => (
-    grant.status === 'active'
-      && grant.userId === userId
-      && grant.groupId === targetId
+  const grant = state.grants.grants.find((item) => (
+    item.status === 'active'
+      && item.userId === userId
+      && item.groupId === targetId
   )) || null;
+  if (!grant) return null;
+  const timestamp = nowMs(state);
+  if (!Number.isFinite(Date.parse(grant.expiresAt || '')) || Date.parse(grant.expiresAt) <= timestamp) {
+    grant.status = 'expired';
+    grant.expiredAt = now(state);
+    grant.updatedAt = grant.expiredAt;
+    return null;
+  }
+  const day = now(state).slice(0, 10);
+  if (grant.dailyWindow !== day) {
+    grant.dailyWindow = day;
+    grant.dailyCount = 0;
+  }
+  if (Number(grant.dailyCount || 0) >= TARGET_GRANT_DAILY_LIMIT) return null;
+  return grant;
 }
 
 async function saveTargetGrants(state) {
   state.grants.updatedAt = now();
   await writeJson(state.paths.grants, state.grants);
+}
+
+async function sendTargetGrantUsageSummary(state, request, group) {
+  const userId = requesterKey(request.requester);
+  const targetId = groupKey(group);
+  const day = now(state).slice(0, 10);
+  const provider = state.config.confirmationProvider;
+  if (!provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) return { sent: false, reason: 'confirmation_provider_unconfigured' };
+  const claimed = state.store.transaction(() => {
+    const grants = jsonObject(state.store.read('grants', 'state', state.grants));
+    grants.grants = safeArray(grants.grants);
+    const grant = grants.grants.find((item) => item.status === 'active' && item.userId === userId && item.groupId === targetId);
+    if (!grant || grant.summaryWindow === day) return null;
+    grant.summaryWindow = day;
+    grant.summarySentAt = now(state);
+    grant.updatedAt = grant.summarySentAt;
+    state.store.write('grants', 'state', grants);
+    state.grants = grants;
+    return { ...grant };
+  });
+  if (!claimed) return { sent: false, deduped: true };
+  try {
+    const client = feishuClientFor(state, provider);
+    await client.sendInteractive({
+      receiveIdType: 'open_id',
+      receiveId: provider.ownerOpenId || provider.target,
+      idempotencyKey: `mcn_grant_summary_${claimed.id}_${day}`,
+      card: {
+        schema: '2.0',
+        header: { title: { tag: 'plain_text', content: 'MagClaw Notify 长期授权使用摘要' }, template: 'blue' },
+        body: { elements: [{ tag: 'markdown', content: [
+          `**用户**：${cleanText(claimed.userName || '未知用户', 120).replace(/[<>]/g, '')}`,
+          `**群聊**：${cleanText(claimed.groupName || '未知群聊', 120).replace(/[<>]/g, '')}`,
+          `**今日已使用**：${Number(claimed.dailyCount || 0)} / ${TARGET_GRANT_DAILY_LIMIT}`,
+          `**授权到期**：${formatNotifyTime(claimed.expiresAt)}`,
+          '此摘要不包含消息正文；可随时用 daemon access kick 撤销云端登录和本地群授权。',
+        ].join('\n') }] },
+      },
+    });
+    await state.audit.append({ event: 'owner.grant.usage_summary_sent', outcome: 'sent', metadata: { grantId: claimed.id, dailyCount: Number(claimed.dailyCount || 0) } });
+    return { sent: true };
+  } catch (error) {
+    await state.audit.append({ event: 'owner.grant.usage_summary_sent', outcome: 'failed', severity: 'warning', metadata: { grantId: claimed.id, error: cleanText(error.message, 300) } });
+    return { sent: false, reason: 'send_failed' };
+  }
 }
 
 function publicTargetGrant(grant = {}) {
@@ -384,6 +546,9 @@ function publicTargetGrant(grant = {}) {
     createdAt: grant.createdAt || null,
     updatedAt: grant.updatedAt || null,
     lastUsedAt: grant.lastUsedAt || null,
+    expiresAt: grant.expiresAt || null,
+    dailyWindow: grant.dailyWindow || null,
+    dailyCount: Number(grant.dailyCount || 0),
     revokedAt: grant.revokedAt || null,
   };
 }
@@ -914,6 +1079,8 @@ async function recordTargetAccessConfirmation(state, request, group) {
         groupId: targetId,
         groupName: cleanText(group.name || request.payload?.target?.group || '', 120),
         requestedGroup: cleanText(request.payload?.target?.group || '', 120),
+        requesterIdentityVerified: request.requester?.identity?.provider === 'feishu',
+        configuredGroupVerified: Boolean(group.chatId),
       },
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -951,6 +1118,8 @@ export function larkCardForTargetApproval(confirmation, requests = []) {
         { tag: 'markdown', content: [
           `**申请人**：${requester}`,
           `**目标群**：${target}`,
+          `**身份校验**：${confirmation.details?.requesterIdentityVerified ? '飞书实名身份已验证' : '本地/兼容请求（未验证）'}`,
+          `**群配置校验**：${confirmation.details?.configuredGroupVerified ? '已命中后台配置群' : '未命中'}`,
           `**本批次**：${count} 条消息`,
           `**审批截止**：${formatNotifyTime(confirmation.expiresAt)}`,
         ].join('\n') },
@@ -1030,7 +1199,12 @@ function approvalDecisionLabel(decision = '') {
 function larkCardForGenericConfirmation(confirmation) {
   const description = confirmation.kind === 'group_alias'
     ? `是否把“${confirmation.details.requestedGroup}”映射为“${confirmation.details.candidateName}”？`
-    : '需要确认 Notify 中的人员或别名映射。';
+    : safeArray(confirmation.details?.candidateMappings).length
+      ? `请确认人员别名映射：\n${safeArray(confirmation.details.candidateMappings).map((mapping) => {
+        const names = safeArray(mapping.candidates).map((candidate) => candidate.canonicalName).filter(Boolean);
+        return `- “${cleanText(mapping.alias, 80)}” → ${names.length ? names.map((name) => `“${cleanText(name, 80)}”`).join(' / ') : '无可信候选'}`;
+      }).join('\n')}`
+      : '需要确认 Notify 中的人员或别名映射。';
   const action = (label, decision, type = 'default') => ({
     tag: 'button', text: { tag: 'plain_text', content: label }, type,
     behaviors: [{ type: 'callback', value: { source: 'magclaw_notify', instance: confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision } }],
@@ -1039,7 +1213,7 @@ function larkCardForGenericConfirmation(confirmation) {
     schema: '2.0',
     header: { title: { tag: 'plain_text', content: 'MagClaw Notify 需要确认' }, template: 'orange' },
     body: { elements: [
-      { tag: 'markdown', content: `${description}\n\n有效期：48 小时。` },
+      { tag: 'markdown', content: `${description}\n\n有效期：24 小时。` },
       action('确认', 'approve', 'primary'),
       action('拒绝', 'reject', 'danger'),
     ] },
@@ -1241,11 +1415,14 @@ export async function prepareNotifyDelivery(profilePaths, request) {
     const lockedState = await ensureNotifyHandlerState(profilePaths);
     const grant = activeTargetGrant(lockedState, request, group);
     if (grant) {
-      grant.lastUsedAt = now();
+      grant.lastUsedAt = now(lockedState);
+      grant.dailyCount = Number(grant.dailyCount || 0) + 1;
       grant.updatedAt = grant.lastUsedAt;
       await saveTargetGrants(lockedState);
       return { grant };
     }
+    // Persist expiry/day-window normalization before creating a fresh approval.
+    await saveTargetGrants(lockedState);
     return recordTargetAccessConfirmation(lockedState, request, group);
   });
   if (targetAccess.grant) {
@@ -1296,6 +1473,14 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     const confirmation = await recordPendingConfirmation(state, request, 'people', {
       requestedNames: unresolved.map((item) => item.requestedName),
       groupId: group.id || '',
+      candidateMappings: unresolved.map((item) => ({
+        alias: item.requestedName,
+        candidates: safeArray(item.candidates).map((candidate) => ({
+          canonicalName: candidate.person?.name || candidate.name || '',
+          personId: candidate.person?.id || candidate.id || '',
+          confidence: candidate.confidence || 0,
+        })).filter((candidate) => candidate.canonicalName),
+      })),
     });
     const result = { requestId: request.id, status: 'awaiting_confirmation', publicReason: 'One or more mentioned people require owner confirmation.', localReceiptId: receiptId };
     await appendReceipt(state, { ...result, confirmationId: confirmation.id, createdAt: now() });
@@ -1373,6 +1558,7 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     };
     await appendReceipt(state, { ...result, dryRun: sent.dryRun, createdAt: now() });
     state.store.updateDeliveryIntent(intent.id, 'done', { result });
+    if (!sent.dryRun) await sendTargetGrantUsageSummary(state, request, group);
     return auditedDeliveryResult(state, result, { groupName: group.name, mentionCount: peopleResolution.length, dryRun: Boolean(sent.dryRun) });
   } catch (error) {
     if (error?.code === 'MAGCLAW_CRASH_INJECTION') throw error;
@@ -1457,7 +1643,7 @@ export async function addNotifyGroup(profilePaths, group = {}) {
   });
   if (!existing) state.directory.groups.push(record);
   state.directory.updatedAt = now();
-  await writeJson(state.paths.directory, state.directory);
+  await saveNotifyDirectory(state);
   return record;
 }
 
@@ -1481,8 +1667,74 @@ export async function addNotifyPerson(profilePaths, person = {}) {
   });
   if (!existing) state.directory.people.push(record);
   state.directory.updatedAt = now();
-  await writeJson(state.paths.directory, state.directory);
+  await saveNotifyDirectory(state);
   return record;
+}
+
+export async function listNotifyDirectory(profilePaths) {
+  const state = await ensureNotifyHandlerState(profilePaths);
+  return { file: state.paths.managedDirectory, directory: state.directory };
+}
+
+export async function applyNotifyDirectory(profilePaths, options = {}) {
+  const paths = notifyHandlerPaths(profilePaths);
+  const file = path.resolve(cleanText(options.file || paths.managedDirectory, 1000));
+  const parsed = JSON.parse(await readFile(file, 'utf8'));
+  const directory = normalizeManagedDirectory(parsed);
+  const store = await ensureNotifyStateStore(profilePaths);
+  const state = {
+    paths,
+    store,
+    directory,
+    profilePaths,
+    audit: handlerAudit(profilePaths),
+  };
+  directory.updatedAt = now(state);
+  await saveNotifyDirectory(state, directory);
+  await state.audit.append({
+    event: 'owner.directory.applied', outcome: 'succeeded',
+    metadata: { groupCount: directory.groups.length, personCount: directory.people.length },
+  });
+  return { file: state.paths.managedDirectory, groups: directory.groups.length, people: directory.people.length };
+}
+
+export async function removeNotifyDirectoryEntry(profilePaths, options = {}) {
+  const state = await ensureNotifyHandlerState(profilePaths);
+  const kind = options.kind === 'person' ? 'person' : options.kind === 'group' ? 'group' : '';
+  const label = cleanText(options.id || options.name, 200);
+  if (!kind || !label) throw new Error('Directory remove requires --kind group|person and --id or --name.');
+  const key = kind === 'group' ? 'groups' : 'people';
+  const before = state.directory[key].length;
+  state.directory[key] = state.directory[key].filter((entry) => entry.id !== label && normalizeLookup(entry.name) !== normalizeLookup(label));
+  const removed = before - state.directory[key].length;
+  if (removed) {
+    state.directory.updatedAt = now(state);
+    await saveNotifyDirectory(state);
+  }
+  await state.audit.append({ event: 'owner.directory.removed', outcome: removed ? 'removed' : 'not_found', metadata: { kind, removed } });
+  return { removed, file: state.paths.managedDirectory };
+}
+
+export async function updateNotifyDirectoryAlias(profilePaths, options = {}) {
+  const state = await ensureNotifyHandlerState(profilePaths);
+  const kind = options.kind === 'person' ? 'person' : options.kind === 'group' ? 'group' : '';
+  const canonical = cleanText(options.name, 120);
+  const alias = cleanText(options.alias, 120);
+  const action = options.action === 'remove' ? 'remove' : options.action === 'add' ? 'add' : '';
+  if (!kind || !canonical || !alias || !action) throw new Error('Directory alias requires add|remove, --kind group|person, --name and --alias.');
+  const entries = kind === 'group' ? state.directory.groups : state.directory.people;
+  const entry = entries.find((item) => normalizeLookup(item.name) === normalizeLookup(canonical));
+  if (!entry) throw new Error(`Notify ${kind} was not found: ${canonical}`);
+  const aliases = new Set([...safeArray(entry.aliases), ...safeArray(entry.confirmedAliases)]);
+  if (action === 'add') aliases.add(alias);
+  else aliases.delete(alias);
+  entry.aliases = [...aliases];
+  entry.confirmedAliases = safeArray(entry.confirmedAliases).filter((item) => normalizeLookup(item) !== normalizeLookup(alias));
+  entry.updatedAt = now(state);
+  state.directory.updatedAt = entry.updatedAt;
+  await saveNotifyDirectory(state);
+  await state.audit.append({ event: 'owner.directory.alias_updated', outcome: action === 'add' ? 'added' : 'removed', metadata: { kind } });
+  return { action, kind, name: entry.name, aliases: entry.aliases, file: state.paths.managedDirectory };
 }
 
 function directoryEntries(value) {
@@ -1540,7 +1792,7 @@ export async function syncNotifyDirectory(profilePaths) {
       }
     }
     state.directory.updatedAt = now();
-    await writeJson(state.paths.directory, state.directory);
+    await saveNotifyDirectory(state);
     return { groups: state.directory.groups.length, people: state.directory.people.length, discovered };
   }
   const command = provider.kind === 'lark-cli-feishu'
@@ -1602,7 +1854,7 @@ export async function syncNotifyDirectory(profilePaths) {
     }
   }
   state.directory.updatedAt = now();
-  await writeJson(state.paths.directory, state.directory);
+  await saveNotifyDirectory(state);
   return { groups: state.directory.groups.length, people: state.directory.people.length, discovered };
 }
 
@@ -1695,6 +1947,9 @@ function grantTargetAccessInTransaction(state, record) {
     groupId: record.details.groupId,
     groupName: record.details.groupName,
     sourceConfirmationId: record.id,
+    expiresAt: new Date(Date.parse(timestamp) + TARGET_GRANT_TTL_MS).toISOString(),
+    dailyWindow: timestamp.slice(0, 10),
+    dailyCount: 0,
     revokedAt: null,
     updatedAt: timestamp,
   });
@@ -1749,7 +2004,7 @@ async function completeTargetAccessConfirmation(profilePaths, confirmationId, de
     await notifyRuntime(profilePaths).deliveryHooks?.afterDecisionPersisted?.({ confirmation: record, decision });
   }
   if (started.expired) {
-    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.' }));
+    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 24 hours. Submit a new explicitly authorized request.' }));
     if (!started.alreadyReported) {
       await reportConfirmationResults(state, record, results);
       await persistPendingRecord(state, record);
@@ -1810,7 +2065,7 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
     return completeTargetAccessConfirmation(profilePaths, confirmationId, targetDecision);
   }
   const approved = decision === 'approve' || decision === 'always' || decision === 'once';
-  const personMappings = parsePersonMappings(options.personMappings);
+  let personMappings = parsePersonMappings(options.personMappings);
   const started = await withNotifyStateLock(profilePaths, async () => {
     const lockedState = await ensureNotifyHandlerState(profilePaths);
     return lockedState.store.transaction(() => {
@@ -1832,7 +2087,12 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
       directory.groups = safeArray(directory.groups);
       directory.people = safeArray(directory.people);
       if (approved && record.kind === 'people' && !personMappings.length) {
-        throw new Error('People confirmation requires an explicit alias-to-canonical mapping, for example --person-map "三哥=张三".');
+        const proposed = safeArray(record.details.candidateMappings).map((mapping) => {
+          const candidates = safeArray(mapping.candidates);
+          return candidates.length === 1 ? { alias: mapping.alias, canonicalName: candidates[0].canonicalName } : null;
+        });
+        if (proposed.length && proposed.every(Boolean)) personMappings = proposed;
+        else throw new Error('People confirmation requires an explicit alias-to-canonical mapping, for example --person-map "三哥=张三".');
       }
       if (approved && record.kind === 'group_alias') {
         const group = directory.groups.find((item) => item.id === record.details.candidateGroupId);
@@ -1887,10 +2147,13 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
       return { state: lockedState, record, alreadyDecided: false };
     });
   });
+  if (approved && !started.alreadyDecided && ['group_alias', 'alias_proposals', 'people'].includes(started.record.kind)) {
+    await saveNotifyDirectory(started.state);
+  }
   const activeState = started.state;
   const record = started.record;
   if (started.expired) {
-    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.' }));
+    const results = confirmationRequestIds(record).map((requestId) => ({ requestId, status: 'approval_expired', publicReason: 'Owner approval expired after 24 hours. Submit a new explicitly authorized request.' }));
     await reportConfirmationResults(activeState, record, results);
     await persistPendingRecord(activeState, record);
     throw new Error('Notify confirmation expired. Submit a new explicitly authorized request.');
@@ -1935,7 +2198,7 @@ export async function expireNotifyConfirmations(profilePaths) {
     const results = confirmationRequestIds(record).map((requestId) => ({
       requestId,
       status: 'approval_expired',
-      publicReason: 'Owner approval expired after 48 hours. Submit a new explicitly authorized request.',
+      publicReason: 'Owner approval expired after 24 hours. Submit a new explicitly authorized request.',
     }));
     await reportConfirmationResults(state, record, results);
     expiredResults.push(...results);
@@ -1989,7 +2252,7 @@ export async function handleNotifyCardAction(profilePaths, event = {}, options =
       handled: true,
       action: { ...action, decision: 'expired' },
       confirmation: pending.find((item) => item.id === action.confirmationId) || { id: action.confirmationId, requestIds: [] },
-      result: { status: 'approval_expired', publicReason: 'This approval expired after 48 hours. A new explicit request is required.' },
+      result: { status: 'approval_expired', publicReason: 'This approval expired after 24 hours. A new explicit request is required.' },
     };
   }
 }
@@ -2161,7 +2424,7 @@ export async function notifyHandlerStatus(profilePaths) {
     pendingConfirmations: pending.filter((item) => item.status === 'pending').length,
     receipts: receipts.length,
     configPath: state.paths.config,
-    directoryPath: state.paths.directory,
+    directoryPath: state.paths.managedDirectory,
     stateDatabasePath: state.paths.stateDatabase,
     auditDir: state.paths.auditDir,
   };

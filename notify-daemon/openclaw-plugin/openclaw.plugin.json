@@ -29,6 +29,20 @@
         "type": "string",
         "format": "uri",
         "pattern": "^https?://"
+      },
+      "memberAgentId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "projectName": {
+        "type": "string",
+        "minLength": 1
+      },
+      "memberReadTools": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "uniqueItems": true,
+        "default": []
       }
     }
   }
