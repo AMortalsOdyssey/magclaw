@@ -8,9 +8,9 @@ import test from 'node:test';
 import WebSocket from 'ws';
 import { hashNotifySecret } from '../server/notify.js';
 import { createNotifyRelay } from '../server/notify-relay.js';
-import { connectOnce, notifyDaemonPaths, verifiedFeishuRequester } from '../notify-daemon/src/daemon.js';
-import { addNotifyGroup, configureNotifyHandler, listNotifyTargetGrants } from '../notify-daemon/src/handler.js';
-import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-daemon/src/store.js';
+import { connectOnce, notifyDaemonPaths, verifiedFeishuRequester } from '../notify-owner/src/owner.js';
+import { addNotifyGroup, configureNotifyHandler, listNotifyTargetGrants } from '../notify-owner/src/handler.js';
+import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-owner/src/store.js';
 
 function daemonToken(id, relayId, rawToken) {
   return {

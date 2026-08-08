@@ -33,7 +33,8 @@
     "computer:pack": "npm pack --dry-run --json ./computer",
     "team-sharing:pack": "npm pack --dry-run --json ./team-sharing",
     "notify:pack": "npm pack --dry-run --json ./notify",
-    "notify:plugin:install": "node scripts/install-notify-openclaw-plugin.mjs",
+    "notify-owner:pack": "npm pack --dry-run --json ./notify-owner",
+    "notify:plugin:install": "npm --prefix notify-owner run build && node notify-owner/bin/magclaw-notify-owner.js install",
     "notify:smoke:openclaw": "node scripts/notify-openclaw-smoke.mjs"
   },
   "engines": {

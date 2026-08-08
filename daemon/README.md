@@ -87,8 +87,8 @@ Notify is no longer part of this package. The one-way notification path is a
 separate, self-contained pair of packages:
 
 - senders install the public `@magclaw/notify`;
-- the owner runs the private `@magclaw/notify-daemon`, which keeps its own
-  Relay connection, local directory, approvals, and delivery providers under
+- the owner installs `@magclaw/notify-owner`, whose CLI installs and controls
+  the in-process OpenClaw plugin. Owner state remains under
   `~/.magclaw/notify/`.
 
 The Daemon in this package no longer accepts `notify:deliver` frames and no

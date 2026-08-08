@@ -25,7 +25,7 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY notify/src/summary.js ./notify/src/summary.js
 COPY notify/src/audit.js ./notify/src/audit.js
-COPY notify-daemon/src/instance.js ./notify-daemon/src/instance.js
+COPY notify-owner/src/instance.js ./notify-owner/src/instance.js
 COPY public ./public
 COPY shared ./shared
 COPY scripts ./scripts

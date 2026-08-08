@@ -1,0 +1,37 @@
+{
+  "name": "@magclaw/notify-owner",
+  "version": "0.7.0",
+  "description": "Owner CLI and OpenClaw plugin installer for MagClaw Notify.",
+  "type": "module",
+  "bin": {
+    "magclaw-notify-owner": "bin/magclaw-notify-owner.js",
+    "magclaw-notify-daemon": "bin/magclaw-notify-daemon.js"
+  },
+  "exports": {
+    ".": "./dist/owner.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "README.md",
+    "RELEASE_NOTES.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build-package.mjs",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "undici": "^7.29.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT"
+}

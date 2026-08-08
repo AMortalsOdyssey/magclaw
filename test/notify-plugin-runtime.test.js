@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createFeishuRestClient } from '../notify-daemon/src/feishu-client.js';
-import { notifyDaemonPaths, runNotifyDaemonCommand } from '../notify-daemon/src/daemon.js';
+import { createFeishuRestClient } from '../notify-owner/src/feishu-client.js';
+import { notifyDaemonPaths, runNotifyOwnerCommand } from '../notify-owner/src/owner.js';
 import {
   addNotifyGroup,
   confirmNotifyMapping,
@@ -17,14 +17,14 @@ import {
   prepareNotifyDelivery,
   recoverNotifyDeliveries,
   resolvePublicNotifyImage,
-} from '../notify-daemon/src/handler.js';
-import { registerNotifyRuntime } from '../notify-daemon/src/runtime-context.js';
-import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-daemon/src/store.js';
-import { memberAgentRunDecision, memberPolicySystemPrompt, memberToolDecision, sanitizeMemberReply } from '../notify-daemon/openclaw-plugin/member-policy.js';
+} from '../notify-owner/src/handler.js';
+import { registerNotifyRuntime } from '../notify-owner/src/runtime-context.js';
+import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-owner/src/store.js';
+import { memberAgentRunDecision, memberPolicySystemPrompt, memberToolDecision, sanitizeMemberReply } from '../notify-owner/openclaw-plugin/member-policy.js';
 
 test('OpenClaw plugin host registry bridges separate plugin entry module instances', async () => {
-  const publisher = await import(`../notify-daemon/openclaw-plugin/host-registry.js?publisher=${Date.now()}`);
-  const consumer = await import(`../notify-daemon/openclaw-plugin/host-registry.js?consumer=${Date.now()}`);
+  const publisher = await import(`../notify-owner/openclaw-plugin/host-registry.js?publisher=${Date.now()}`);
+  const consumer = await import(`../notify-owner/openclaw-plugin/host-registry.js?consumer=${Date.now()}`);
   const key = publisher.notifyPluginHostSlotKey({ home: '/notify-test', instance: 'default', accountId: 'monkey' });
   const host = { processApproval() {} };
   const unpublish = publisher.publishNotifyPluginHost(key, host);
@@ -90,9 +90,9 @@ test('Notify plugin lifecycle explicitly enables, configures, restarts, reports,
   const paths = notifyDaemonPaths({ ...process.env, MAGCLAW_NOTIFY_HOME: notifyHome }, 'default');
   await configureNotifyHandler(paths.handler, { agentProvider: { command: openclaw } });
   const common = { notifyHome, pluginPath, memberAgentId: 'monkey-member', projectName: 'Kizuna', memberReadTools: 'kizuna_read,kizuna_search' };
-  const started = await runNotifyDaemonCommand(['plugin', 'start'], common);
+  const started = await runNotifyOwnerCommand(['plugin', 'start'], common);
   assert.equal(started.installed, true);
-  const stopped = await runNotifyDaemonCommand(['plugin', 'stop'], common);
+  const stopped = await runNotifyOwnerCommand(['plugin', 'stop'], common);
   assert.equal(stopped.installed, true);
   const calls = (await readFile(commandLog, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(calls.some((args) => args.join(' ') === 'plugins enable magclaw-notify'));
@@ -142,7 +142,7 @@ test('Feishu REST client shares token refresh and covers deterministic message, 
 });
 
 test('OpenClaw plugin manifest id matches definePluginEntry and installs as a fixed bundled copy', async () => {
-  const source = path.join(process.cwd(), 'notify-daemon', 'openclaw-plugin');
+  const source = path.join(process.cwd(), 'notify-owner', 'openclaw-plugin');
   const manifest = JSON.parse(await readFile(path.join(source, 'openclaw.plugin.json'), 'utf8'));
   const entry = await readFile(path.join(source, 'index.js'), 'utf8');
   const entryId = entry.match(/definePluginEntry\s*\(\s*\{[\s\S]*?\bid:\s*['"]([^'"]+)['"]/)?.[1] || '';
@@ -150,7 +150,12 @@ test('OpenClaw plugin manifest id matches definePluginEntry and installs as a fi
 
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-plugin-install-'));
   const target = path.join(root, '.openclaw', 'plugins', 'magclaw-notify');
-  const installed = spawnSync(process.execPath, [path.join(process.cwd(), 'scripts', 'install-notify-openclaw-plugin.mjs'), '--target', target], {
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const built = spawnSync(npm, ['--prefix', 'notify-owner', 'run', 'build'], {
+    cwd: process.cwd(), encoding: 'utf8',
+  });
+  assert.equal(built.status, 0, built.stderr || built.stdout);
+  const installed = spawnSync(process.execPath, [path.join(process.cwd(), 'notify-owner', 'bin', 'magclaw-notify-owner.js'), 'install', '--target', target], {
     cwd: process.cwd(), encoding: 'utf8',
   });
   assert.equal(installed.status, 0, installed.stderr);
@@ -171,7 +176,7 @@ test('Notify state dump is readable and legacy export can be migrated for rollba
   store.write('directory', 'state', { groups: [{ id: 'grp_1', name: '测试群' }], people: [] });
   store.write('requests', 'nreq_dump', { id: 'nreq_dump', status: 'processing' });
   store.createDeliveryIntent({ id: 'ndi_dump', requestId: 'nreq_dump', request: { id: 'nreq_dump' }, idempotencyKey: 'safe-key' });
-  const dump = await runNotifyDaemonCommand(['state', 'dump'], { instance, notifyHome: root });
+  const dump = await runNotifyOwnerCommand(['state', 'dump'], { instance, notifyHome: root });
   assert.equal(dump.state.config.state.token, '[redacted]');
   assert.equal(dump.state.directory.state.groups[0].name, '测试群');
   assert.equal(dump.state.requests.nreq_dump.id, 'nreq_dump');
@@ -179,7 +184,7 @@ test('Notify state dump is readable and legacy export can be migrated for rollba
 
   const rollbackProfile = path.join(root, 'rollback-profile');
   const legacyDir = path.join(rollbackProfile, 'notify');
-  const exported = await runNotifyDaemonCommand(['state', 'dump'], { instance, notifyHome: root, legacyDir });
+  const exported = await runNotifyOwnerCommand(['state', 'dump'], { instance, notifyHome: root, legacyDir });
   assert.equal(exported.format, 'legacy-json');
   assert.ok(exported.fileCount >= 7);
   const rollbackStore = await ensureNotifyStateStore({ dir: rollbackProfile, profile: 'rollback' });

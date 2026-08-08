@@ -2,7 +2,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { connectOnce, processNotifyApprovalEvent } from './daemon.js';
+import { connectOnce, processNotifyApprovalEvent } from './owner.js';
 import { ensureNotifyHandlerState, expireNotifyConfirmations, recoverNotifyDeliveries } from './handler.js';
 import { registerNotifyRuntime } from './runtime-context.js';
 import { closeNotifyStateStore } from './store.js';

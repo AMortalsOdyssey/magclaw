@@ -16,6 +16,7 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   assert.equal(rootPackage.scripts['web:docker:build'], 'docker build -f web/Dockerfile -t magclaw-web .');
   assert.equal(rootPackage.scripts['daemon:pack'], 'npm pack --dry-run --json ./daemon');
   assert.equal(rootPackage.scripts['notify:pack'], 'npm pack --dry-run --json ./notify');
+  assert.equal(rootPackage.scripts['notify-owner:pack'], 'npm pack --dry-run --json ./notify-owner');
 
   const webPackage = await readJson('web/package.json');
   assert.equal(webPackage.name, '@magclaw/web');
@@ -34,12 +35,13 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   assert.equal(notifyPackage.publishConfig.access, 'public');
   assert.deepEqual(notifyPackage.files, ['bin/', 'src/audit.js', 'src/cli.js', 'src/mcp.js', 'src/summary.js', 'skills/magclaw-notify/', 'RELEASE_NOTES.md', 'README.md']);
 
-  const notifyDaemonPackage = await readJson('notify-daemon/package.json');
-  assert.equal(notifyDaemonPackage.name, '@magclaw/notify-daemon');
-  assert.equal(notifyDaemonPackage.private, true);
-  const notifyDaemonSource = await readFile(path.join(ROOT, 'notify-daemon/src/daemon.js'), 'utf8');
-  assert.match(notifyDaemonSource, /bin', 'magclaw-notify-daemon\.js'/);
-  assert.equal(notifyDaemonPackage.bin['magclaw-notify-daemon'], 'bin/magclaw-notify-daemon.js');
+  const notifyOwnerPackage = await readJson('notify-owner/package.json');
+  assert.equal(notifyOwnerPackage.name, '@magclaw/notify-owner');
+  assert.equal(notifyOwnerPackage.publishConfig.access, 'public');
+  assert.equal(notifyOwnerPackage.bin['magclaw-notify-owner'], 'bin/magclaw-notify-owner.js');
+  assert.equal(notifyOwnerPackage.exports['.'], './dist/owner.js');
+  const notifyOwnerSource = await readFile(path.join(ROOT, 'notify-owner/src/owner.js'), 'utf8');
+  assert.match(notifyOwnerSource, /bin', 'magclaw-notify-owner\.js'/);
 });
 
 test('web Dockerfile builds the cloud service boundary and upload mount target', async () => {
@@ -67,6 +69,7 @@ test('top-level daemon package is a thin npm artifact over CLI core', () => {
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './daemon'], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/magclaw-delivery-boundaries-cache', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const packed = JSON.parse(result.stdout)[0];
@@ -100,7 +103,29 @@ test('Notify package includes sender CLI, MCP tools, structured protocol, and ex
   assert.equal(files.some((file) => file.includes('config.json')), false);
 });
 
-test('No public package other than the owner Notify Daemon ships owner-side Notify implementation or Skills', () => {
+test('Notify Owner package ships an installable CLI and fixed OpenClaw bundle without repository source or runtime state', () => {
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', './notify-owner'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/magclaw-delivery-boundaries-cache', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const packed = JSON.parse(result.stdout)[0];
+  const files = packed.files.map((file) => file.path);
+  for (const required of [
+    'bin/magclaw-notify-owner.js',
+    'dist/owner.js',
+    'dist/plugin-installer.js',
+    'dist/openclaw-plugin/index.js',
+    'dist/openclaw-plugin/openclaw.plugin.json',
+    'dist/openclaw-plugin/installation.json',
+  ]) assert.ok(files.includes(required), `missing ${required}`);
+  assert.equal(files.some((file) => file.startsWith('src/')), false);
+  assert.equal(files.some((file) => file.startsWith('openclaw-plugin/')), false);
+  assert.equal(files.some((file) => /(?:config|state|audit)\.(?:json|jsonl|db)$/.test(file)), false);
+});
+
+test('No sender or unrelated public package ships owner-side Notify implementation or Skills', () => {
   for (const pkg of ['./cli-core', './daemon', './computer', './team-sharing', './notify']) {
     const result = spawnSync('npm', ['pack', '--dry-run', '--json', pkg], {
       cwd: ROOT,
@@ -127,7 +152,7 @@ test('cloud runtime images include the shared Notify summary protocol module', a
     const source = await readFile(path.join(ROOT, file), 'utf8');
     assert.match(source, /COPY notify\/src\/summary\.js \.\/notify\/src\/summary\.js/);
     assert.match(source, /COPY notify\/src\/audit\.js \.\/notify\/src\/audit\.js/);
-    assert.match(source, /COPY notify-daemon\/src\/instance\.js \.\/notify-daemon\/src\/instance\.js/);
+    assert.match(source, /COPY notify-owner\/src\/instance\.js \.\/notify-owner\/src\/instance\.js/);
   }
 });
 
@@ -135,6 +160,7 @@ test('team-sharing package includes install-time plugin bundle and hook template
   const result = spawnSync('npm', ['pack', '--dry-run', '--json', './team-sharing'], {
     cwd: ROOT,
     encoding: 'utf8',
+    env: { ...process.env, NPM_CONFIG_CACHE: '/tmp/magclaw-delivery-boundaries-cache', NPM_CONFIG_UPDATE_NOTIFIER: 'false' },
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const packed = JSON.parse(result.stdout)[0];

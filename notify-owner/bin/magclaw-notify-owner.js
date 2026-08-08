@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { runNotifyDaemonCommand } from '../src/daemon.js';
+import { installNotifyOpenClawPlugin } from '../dist/plugin-installer.js';
 
 function parseArgs(argv) {
   const positional = [];
@@ -16,12 +16,17 @@ function parseArgs(argv) {
     if (!next || next.startsWith('--')) flags[key] = true;
     else { flags[key] = next; index += 1; }
   }
-  if (positional[0] === 'daemon') positional.shift();
+  if (['owner', 'daemon'].includes(positional[0])) positional.shift();
   return { positional, flags };
 }
 
 const { positional, flags } = parseArgs(process.argv);
-runNotifyDaemonCommand(positional, flags).then((result) => {
+const command = positional[0] || 'status';
+const operation = command === 'install'
+  ? installNotifyOpenClawPlugin({ target: flags.target || flags.pluginPath })
+  : import('../dist/owner.js').then(({ runNotifyOwnerCommand }) => runNotifyOwnerCommand(positional, flags));
+
+operation.then((result) => {
   if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
 }).catch((error) => {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error.message })}\n`);

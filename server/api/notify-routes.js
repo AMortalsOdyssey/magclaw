@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { normalizeNotifyInstance } from '../../notify-daemon/src/instance.js';
+import { normalizeNotifyInstance } from '../../notify-owner/src/instance.js';
 import {
   NOTIFY_DEVICE_TTL_MS,
   NOTIFY_TOKEN_TTL_MS,

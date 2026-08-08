@@ -50,7 +50,7 @@ Let the daemon consume Feishu events itself only when no other process owns the
 same Feishu application's event connection:
 
 ```sh
-magclaw-notify-daemon configure \
+magclaw-notify-owner configure \
   --instance <name> \
   --delivery-provider feishu-rest \
   --feishu-app-id APP_ID \
@@ -66,7 +66,7 @@ unpredictably and is unsupported.
 Run:
 
 ```sh
-magclaw-notify-daemon doctor --instance <name> --all
+magclaw-notify-owner doctor --instance <name> --all
 ```
 
 Required before delivery:

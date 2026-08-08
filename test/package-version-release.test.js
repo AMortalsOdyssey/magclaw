@@ -12,6 +12,7 @@ const releasePackages = [
   { name: '@magclaw/team-sharing', version: '0.1.40', dir: '/repo/team-sharing' },
 ];
 const notifyManifest = JSON.parse(await readFile(new URL('../notify/package.json', import.meta.url), 'utf8'));
+const notifyOwnerManifest = JSON.parse(await readFile(new URL('../notify-owner/package.json', import.meta.url), 'utf8'));
 
 async function writePackage(root, dir, pkg) {
   const packageDir = join(root, dir);
@@ -136,6 +137,15 @@ test('collect release packages allows Notify to publish independently', async ()
   });
   assert.deepEqual(packages.map((pkg) => pkg.name), ['@magclaw/notify']);
   assert.equal(packages[0].version, notifyManifest.version);
+});
+
+test('collect release packages allows Notify Owner to publish independently', async () => {
+  const packages = await collectReleasePackages({
+    root: new URL('..', import.meta.url).pathname,
+    packageNames: ['@magclaw/notify-owner'],
+  });
+  assert.deepEqual(packages.map((pkg) => pkg.name), ['@magclaw/notify-owner']);
+  assert.equal(packages[0].version, notifyOwnerManifest.version);
 });
 
 test('package release runner infers next for prereleases and preserves latest', async () => {

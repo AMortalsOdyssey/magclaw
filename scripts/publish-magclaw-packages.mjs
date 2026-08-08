@@ -13,6 +13,7 @@ const DEFAULT_PACKAGE_DIRS = Object.freeze([
   ['@magclaw/computer', 'computer'],
   ['@magclaw/team-sharing', 'team-sharing'],
   ['@magclaw/notify', 'notify'],
+  ['@magclaw/notify-owner', 'notify-owner'],
 ]);
 const MAGCLAW_RELEASE_PACKAGE_NAMES = Object.freeze(DEFAULT_PACKAGE_DIRS.map(([name]) => name));
 const CLI_CORE_PACKAGE_NAME = '@magclaw/cli-core';
@@ -310,6 +311,7 @@ function usage() {
     'Stable versions use latest; alpha/dev/canary use canary; all other prereleases use next.',
     'If @magclaw/cli-core is selected, @magclaw/daemon and @magclaw/computer are included so shared daemon/computer CLI changes ship with both entry packages.',
     '@magclaw/team-sharing is a standalone package; publish it explicitly with --package @magclaw/team-sharing.',
+    '@magclaw/notify-owner is the public Owner CLI and bundled OpenClaw plugin installer.',
     '--verify-only verifies already-published npm versions without publishing; --sync-only is kept as a deprecated alias.',
     'No production database access is required.',
   ].join('\n');

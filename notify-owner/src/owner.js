@@ -15,6 +15,7 @@ import {
 } from '../../notify/src/audit.js';
 import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
+import { installNotifyOpenClawPlugin } from './plugin-installer.js';
 import { ensureNotifyStateStore } from './store.js';
 import {
   disableNotifyDaemonAutostart,
@@ -49,7 +50,7 @@ import {
 } from './handler.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BIN_PATH = path.join(PACKAGE_ROOT, 'bin', 'magclaw-notify-daemon.js');
+const BIN_PATH = path.join(PACKAGE_ROOT, 'bin', 'magclaw-notify-owner.js');
 const DEFAULT_RECONNECT_MIN_MS = 1_000;
 const DEFAULT_RECONNECT_MAX_MS = 30_000;
 const ownerAuditLogs = new Map();
@@ -130,7 +131,10 @@ export async function ensureNotifyRuntimeLogs(paths) {
 }
 
 function machineFingerprint() {
-  return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir(), 'magclaw-notify-daemon'].join('|')).digest('hex')}`;
+  // This namespace is intentionally kept byte-compatible with 0.6.x so the
+  // package/command rename does not invalidate an owner's existing pairing.
+  const stableNamespace = ['magclaw', 'notify', 'daemon'].join('-');
+  return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir(), stableNamespace].join('|')).digest('hex')}`;
 }
 
 function normalizeRelayUrl(value = '') {
@@ -164,7 +168,7 @@ async function requestJson(relayUrl, pathname, options = {}) {
 async function daemonOwnerRequest(paths, pathname, options = {}) {
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) {
-    throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
+    throw new Error('Notify Owner is not logged in. Run magclaw-notify-owner login first.');
   }
   return {
     config,
@@ -284,7 +288,7 @@ export async function loginNotifyDaemon(flags = {}) {
     },
   });
   const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
-  process.stderr.write(`Approve independent MagClaw Notify Daemon:\n${verificationUrl}\nCode: ${started.userCode}\n`);
+  process.stderr.write(`Approve MagClaw Notify Owner:\n${verificationUrl}\nCode: ${started.userCode}\n`);
   if (!flags.noOpen) openBrowser(verificationUrl);
   const deadline = Date.now() + Math.max(30_000, Number(flags.timeoutSeconds || 600) * 1000);
   let approved = null;
@@ -294,10 +298,10 @@ export async function loginNotifyDaemon(flags = {}) {
       body: { deviceCode: started.deviceCode, machineFingerprint: fingerprint },
     });
     if (approved.status === 'approved') break;
-    if (['expired', 'rejected'].includes(approved.status)) throw new Error(`Notify Daemon login ${approved.status}.`);
+    if (['expired', 'rejected'].includes(approved.status)) throw new Error(`Notify Owner login ${approved.status}.`);
     await sleep(Math.max(1000, Number(started.intervalMs || 2000)));
   }
-  if (approved?.status !== 'approved' || !approved.token || !approved.relayId) throw new Error('Notify Daemon login timed out.');
+  if (approved?.status !== 'approved' || !approved.token || !approved.relayId) throw new Error('Notify Owner login timed out.');
   const config = {
     ...previous,
     version: 1,
@@ -580,7 +584,7 @@ export async function runNotifyDaemon(flags = {}) {
   const instance = notifyInstanceFromFlags(flags);
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const config = await readJson(paths.config, {});
-  if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Daemon is not logged in. Run magclaw-notify daemon login first.');
+  if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Owner is not logged in. Run magclaw-notify-owner login first.');
   await ensureNotifyRuntimeLogs(paths);
   const controller = new AbortController();
   const audit = ownerAudit(paths);
@@ -773,7 +777,7 @@ async function manageOpenClawNotifyPlugin(paths, positional, flags = {}) {
     return status();
   }
   const installed = await readFile(path.join(pluginPath, 'installation.json'), 'utf8').then(() => true).catch(() => false);
-  if (!installed) throw new Error(`Install the fixed MagClaw Notify plugin copy first: npm run notify:plugin:install -- --target ${pluginPath}`);
+  if (!installed) throw new Error(`Install the fixed MagClaw Notify plugin copy first: magclaw-notify-owner install --target ${pluginPath}`);
   const pluginConfig = {
     accountId: clean(flags.accountId || handlerState.config.deliveryProvider?.account || handlerState.config.confirmationProvider?.account || 'monkey', 120),
     notifyHome: paths.home,
@@ -845,23 +849,23 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
 
   add('relay.login', true, Boolean(daemonConfig.relayUrl && daemonConfig.relayId && daemonConfig.token),
     daemonConfig.relayUrl ? `Relay ${daemonConfig.relayUrl} as ${daemonConfig.relayHandle || daemonConfig.relayId}` : 'No Relay login stored.',
-    'magclaw-notify daemon login --relay-url <url> --instance <name>');
+    'magclaw-notify-owner login --relay-url <url> --instance <name>');
   const tokenExpiresAt = Date.parse(daemonConfig.tokenExpiresAt || '');
   add('relay.token_valid', true, Number.isFinite(tokenExpiresAt) && tokenExpiresAt > Date.now(),
     Number.isFinite(tokenExpiresAt) ? `Daemon token expires ${daemonConfig.tokenExpiresAt}` : 'No Daemon token expiry recorded.',
-    'magclaw-notify daemon login again to refresh the Daemon token');
+    'magclaw-notify-owner login again to refresh the Owner token');
   add('feishu.delivery_provider', true, Boolean(delivery.enabled && delivery.account),
     delivery.account ? `${delivery.kind} using account/profile ${delivery.account}` : 'No Feishu delivery provider configured.',
-    'magclaw-notify daemon configure --delivery-provider feishu-rest --delivery-account <account> --feishu-app-id <app-id> --feishu-app-secret-env FEISHU_APP_SECRET --delivery-enabled true');
+    'magclaw-notify-owner configure --delivery-provider feishu-rest --delivery-account <account> --feishu-app-id <app-id> --feishu-app-secret-env FEISHU_APP_SECRET --delivery-enabled true');
   add('feishu.owner_dm', true, Boolean(confirmation.enabled && confirmation.account && (confirmation.ownerOpenId || confirmation.target)),
     confirmation.ownerOpenId || confirmation.target ? 'Owner approval DM target configured.' : 'No owner approval DM target configured.',
-    'magclaw-notify daemon configure --confirmation-account <profile> --owner-open-id <ou_...> --confirmation-enabled true');
+    'magclaw-notify-owner configure --confirmation-account <profile> --owner-open-id <ou_...> --confirmation-enabled true');
   const eventConsumer = confirmation.eventConsumer || 'openclaw';
   add('feishu.event_consumer', true, ['openclaw', 'standalone'].includes(eventConsumer),
     eventConsumer === 'standalone'
       ? 'This Daemon consumes card.action.trigger itself. No Agent runtime is required.'
       : 'An Agent runtime owns the Feishu event connection and must forward approval callbacks.',
-    'magclaw-notify daemon configure --event-consumer standalone');
+    'magclaw-notify-owner configure --event-consumer standalone');
   if (eventConsumer === 'openclaw') {
     add('agent.approval_forwarder', true, false,
       `Stop this daemon and enable the complete OpenClaw plugin host: ${notifyOpenClawApprovalPluginPath()}`,
@@ -870,18 +874,18 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
   }
   add('directory.groups', true, groups.some((group) => group && group.chatId && group.enabled !== false),
     `${groups.length} group(s) configured, ${groups.filter((g) => g?.chatId).length} with a Chat ID.`,
-    'magclaw-notify daemon add-group --name <name> --chat-id <chat id> --aliases <alias>');
+    'magclaw-notify-owner add-group --name <name> --chat-id <chat id> --aliases <alias>');
   add('directory.people', false, people.some((person) => person && person.openId && person.enabled !== false),
     `${people.length} person(s) configured. Only needed to @-mention people.`,
-    'magclaw-notify daemon add-person --name <name> --open-id <ou_...>');
+    'magclaw-notify-owner add-person --name <name> --open-id <ou_...>');
   add('agent.group_context', false, Boolean(agent.groupContextSync === true && agent.agentId),
     agent.groupContextSync === true && agent.agentId
       ? `Delivered summaries are mirrored into ${agent.kind} agent ${agent.agentId}'s group session.`
       : 'Group context sync is off; delivery is unaffected. Content is always rendered deterministically from the submitted summary.',
-    'magclaw-notify daemon configure --agent-provider openclaw --agent-id <agent> --group-context-sync true');
+    'magclaw-notify-owner configure --agent-provider openclaw --agent-id <agent> --group-context-sync true');
   add('sender.setup_token', false, Boolean(daemonConfig.inviteToken),
     daemonConfig.inviteToken ? 'A Setup Token exists for senders.' : 'No Setup Token issued yet.',
-    'magclaw-notify daemon setup-token rotate');
+    'magclaw-notify-owner setup-token rotate');
 
   const blocking = checks.filter((check) => check.status === 'missing');
   const verify = checks.filter((check) => check.status === 'verify');
@@ -950,6 +954,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
   const instance = notifyInstanceFromFlags(flags);
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  if (command === 'install') return installNotifyOpenClawPlugin({ target: flags.target || flags.pluginPath, packageRoot: PACKAGE_ROOT });
   if (command === 'access') {
     const action = positional[1] || 'list';
     if (action === 'list') return listNotifyAccess(paths, flags);
@@ -1065,12 +1070,15 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
       personMappings: commaList(flags.personMap || flags.personMaps || ''),
     });
   }
-  throw new Error(`Unknown Notify Daemon command: ${command}`);
+  throw new Error(`Unknown Notify Owner command: ${command}`);
 }
 
-export async function runNotifyDaemonCommand(positional = [], flags = {}) {
+export async function runNotifyOwnerCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
   const subcommand = positional[1] || '';
+  // Installing the packaged plugin does not read or mutate an Owner profile,
+  // so it must also work before ~/.magclaw/notify exists.
+  if (command === 'install') return executeNotifyDaemonCommand(positional, flags);
   const instance = notifyInstanceFromFlags(flags);
   const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
   const audit = ownerAudit(paths);
@@ -1108,3 +1116,7 @@ export async function runNotifyDaemonCommand(positional = [], flags = {}) {
     throw error;
   }
 }
+
+// One compatibility line for callers that imported the 0.6.x symbol. New
+// integrations must use runNotifyOwnerCommand and magclaw-notify-owner.
+export const runNotifyDaemonCommand = runNotifyOwnerCommand;

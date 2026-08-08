@@ -13,4 +13,5 @@ Public entry commands:
   operations.
 
 Notify is not part of this package. Senders install `@magclaw/notify`; owners
-install the private `@magclaw/notify-daemon`.
+install the public `@magclaw/notify-owner` CLI, which installs the fixed
+OpenClaw plugin bundle.

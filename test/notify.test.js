@@ -35,7 +35,7 @@ import {
   removeNotifyDirectoryEntry,
   updateNotifyDirectoryAlias,
   prepareNotifyDelivery,
-} from '../notify-daemon/src/handler.js';
+} from '../notify-owner/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey, notifyRequestIdempotencyKey } from '../notify/src/cli.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown, sanitizeNotifyMarkdown } from '../notify/src/summary.js';
@@ -43,20 +43,20 @@ import {
   ensureNotifyRuntimeLogs,
   notifyDaemonPaths,
   processNotifyApprovalEvent,
-  runNotifyDaemonCommand,
+  runNotifyOwnerCommand,
   startNotifyApprovalListener,
-} from '../notify-daemon/src/daemon.js';
-import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify-daemon/src/executable.js';
-import { normalizeNotifyInstance } from '../notify-daemon/src/instance.js';
+} from '../notify-owner/src/owner.js';
+import { notifyExecutableSearchPath, resolveNotifyExecutable } from '../notify-owner/src/executable.js';
+import { normalizeNotifyInstance } from '../notify-owner/src/instance.js';
 import {
   createNotifyAuditLog,
   LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
   sanitizeNotifyAuditRecord,
 } from '../notify/src/audit.js';
-import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec, stableNotifyNodePath } from '../notify-daemon/src/service.js';
-import { registerNotifyRuntime } from '../notify-daemon/src/runtime-context.js';
-import { ensureNotifyStateStore } from '../notify-daemon/src/store.js';
+import { disableNotifyDaemonAutostart, enableNotifyDaemonAutostart, notifyDaemonAutostartStatus, notifyDaemonServiceSpec, stableNotifyNodePath } from '../notify-owner/src/service.js';
+import { registerNotifyRuntime } from '../notify-owner/src/runtime-context.js';
+import { ensureNotifyStateStore } from '../notify-owner/src/store.js';
 
 async function readNotifyState(profilePaths, collection) {
   return (await ensureNotifyStateStore(profilePaths)).read(collection, 'state', collection === 'pending' || collection === 'receipts' ? [] : {});
@@ -344,7 +344,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.equal(desktop.theme, 'dark');
   assert.equal(desktop.mcpServers.existing.command, 'existing-mcp');
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.4.2', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.5.0', 'mcp']);
   assert.equal(await readFile(`${desktopConfigPath}.magclaw-notify.bak`, 'utf8'), originalDesktopConfig);
 
   const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-invalid-'));
@@ -475,7 +475,7 @@ test('Notify approval status reports plugin mode and refuses to manage an exec a
     agentProvider: { command: fakeOpenClaw, agentId: 'monkey-member' },
     confirmationProvider: { account: 'monkey', ownerOpenId: 'ou_owner', approvalAgentId: 'monkey-owner', eventConsumer: 'openclaw' },
   });
-  const status = await runNotifyDaemonCommand(['openclaw-approval', 'status'], { instance, notifyHome: root });
+  const status = await runNotifyOwnerCommand(['openclaw-approval', 'status'], { instance, notifyHome: root });
   assert.equal(status.mode, 'plugin');
   assert.equal(status.pluginLoaded, true);
   assert.equal(status.agentShellApprovalRequired, false);
@@ -484,7 +484,7 @@ test('Notify approval status reports plugin mode and refuses to manage an exec a
   assert.equal(status.staleAllowlistEntries.length, 1);
   assert.equal(status.staleAllowlistEntries[0].agentId, 'monkey-owner');
   await assert.rejects(
-    runNotifyDaemonCommand(['openclaw-approval', 'enable'], { instance, notifyHome: root }),
+    runNotifyOwnerCommand(['openclaw-approval', 'enable'], { instance, notifyHome: root }),
     /handled by the OpenClaw plugin/i,
   );
 });
@@ -500,7 +500,7 @@ test('Notify handler Skill installs no Agent-invocable approval command', async 
   // Installing must also clean up any handler left by an earlier version.
   await assert.rejects(stat(legacyHandler), /ENOENT/);
   const skill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
-  const sourceSkill = await readFile(path.join(process.cwd(), 'notify-daemon', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
+  const sourceSkill = await readFile(path.join(process.cwd(), 'notify-owner', 'skills', 'magclaw-notify-handler', 'SKILL.md'), 'utf8');
   for (const text of [skill, sourceSkill]) {
     assert.doesNotMatch(text, /approval-handlers/);
     assert.doesNotMatch(text, /NOTIFY_APPROVAL_HANDLER/);
@@ -1093,7 +1093,7 @@ test('Notify daemon access kick CLI preserves explicit cloud and local revoke co
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   try {
-    const result = await runNotifyDaemonCommand(['access', 'kick'], { instance, notifyHome: root, userId: 'usr_sender' });
+    const result = await runNotifyOwnerCommand(['access', 'kick'], { instance, notifyHome: root, userId: 'usr_sender' });
     assert.deepEqual(result, {
       ok: true, userId: 'usr_sender', cloudLoginsRevoked: 2, localGroupGrantsRevoked: 4, localDaemonAvailable: true,
     });
@@ -1314,7 +1314,7 @@ test('Notify public redaction covers credential, identity, cluster, and phone in
     ['mail operator@example.com', 'mail [redacted-email]', /operator@/],
     ['host relay.prod.ttyuyin.com:443', 'host [private-host]', /ttyuyin/],
     ['dns notify.default.svc.cluster.local', 'dns [cluster-host]', /svc\.cluster/],
-    ['pod=notify-daemon-7f9d8c6b5-x2k9p namespace: magclaw-test', 'pod=[cluster-resource] namespace: [cluster-resource]', /notify-daemon|magclaw-test/],
+    ['pod=notify-owner-7f9d8c6b5-x2k9p namespace: magclaw-test', 'pod=[cluster-resource] namespace: [cluster-resource]', /notify-owner|magclaw-test/],
     ['call 13800138000', 'call [redacted-phone]', /13800138000/],
   ];
   for (const [input, expected, forbidden] of cases) {

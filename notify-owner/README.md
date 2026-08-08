@@ -1,6 +1,7 @@
 # MagClaw Notify owner runtime
 
-This private package contains the owner-side MagClaw Notify runtime. OpenClaw
+This npm package contains the owner-side MagClaw Notify CLI and its bundled
+OpenClaw plugin. OpenClaw
 is the phase-one host: the `magclaw-notify` plugin owns the Relay connection,
 durable delivery state, Feishu REST calls, and approvals in the same process as
 OpenClaw's Feishu channel.
@@ -12,13 +13,30 @@ loop and the daemon for the same Notify instance at the same time.
 Runtime credentials, local paths, provider accounts, chat IDs, and open IDs
 must remain local. Never commit them or copy them into public package docs.
 
+## Install
+
+Use either a global command or one-shot `npx`; no repository checkout or local
+build is required:
+
+```sh
+npm install --global @magclaw/notify-owner@latest
+magclaw-notify-owner install
+
+# Equivalent one-shot installation
+npx --yes @magclaw/notify-owner@latest install
+```
+
+`install` atomically writes the fixed plugin bundle under
+`~/.openclaw/plugins/magclaw-notify`. The Owner CLI itself is not resident;
+only the OpenClaw Gateway and its in-process plugin keep running.
+
 ## OpenClaw plugin (recommended)
 
 Build and atomically install a fixed, bundled copy, then enable
 `magclaw-notify`. Do not point `plugins.load.paths` at a Git working tree.
 
 ```sh
-npm run notify:plugin:install
+magclaw-notify-owner install
 ```
 
 The command installs under `~/.openclaw/plugins/magclaw-notify` by default and
@@ -52,16 +70,16 @@ After the fixed copy is installed, use the Notify lifecycle commands instead
 of editing OpenClaw JSON by hand:
 
 ```sh
-magclaw-notify-daemon plugin start \
+magclaw-notify-owner plugin start \
   --instance product-a \
   --account-id monkey \
   --member-agent-id project-member \
   --project-name "Product A" \
   --member-read-tools "project_read,project_search"
 
-magclaw-notify-daemon plugin status --instance product-a
-magclaw-notify-daemon plugin restart --instance product-a
-magclaw-notify-daemon plugin stop --instance product-a
+magclaw-notify-owner plugin status --instance product-a
+magclaw-notify-owner plugin restart --instance product-a
+magclaw-notify-owner plugin stop --instance product-a
 ```
 
 `plugin start` enables the fixed plugin, writes only the plugin's OpenClaw
@@ -73,9 +91,9 @@ Inspect SQLite state as redacted readable JSON, or create owner-only legacy JSON
 files for a rollback drill:
 
 ```sh
-magclaw-notify daemon state dump --instance product-a
-magclaw-notify daemon state dump --instance product-a --output ./state-dump.json
-magclaw-notify daemon state dump --instance product-a --legacy-dir ./rollback/notify
+magclaw-notify-owner state dump --instance product-a
+magclaw-notify-owner state dump --instance product-a --output ./state-dump.json
+magclaw-notify-owner state dump --instance product-a --legacy-dir ./rollback/notify
 ```
 
 ### Durable state and recovery
@@ -111,24 +129,24 @@ adds that field; the plugin does not fabricate one.
 Login and owner-local directory administration remain CLI operations:
 
 ```sh
-magclaw-notify-daemon login \
+magclaw-notify-owner login \
   --instance product-a \
   --relay-url https://notify.example.com \
   --name "Product A"
 
-magclaw-notify-daemon add-group \
+magclaw-notify-owner add-group \
   --instance product-a \
   --name "研发群" \
   --aliases "技术群" \
   --chat-id "RESEARCH_GROUP_CHAT_ID"
 
-magclaw-notify-daemon add-person \
+magclaw-notify-owner add-person \
   --instance product-a \
   --name "张三" \
   --aliases "三哥" \
   --open-id "PERSON_OPEN_ID"
 
-magclaw-notify-daemon doctor --instance product-a --all
+magclaw-notify-owner doctor --instance product-a --all
 ```
 
 `login --name` creates the named Relay installation and prints its one-time
@@ -142,11 +160,11 @@ is reloaded before each request, so an owner or local Agent may edit aliases
 without touching SQLite directly. Equivalent checked commands are:
 
 ```sh
-magclaw-notify-daemon directory list --instance product-a
-magclaw-notify-daemon directory apply --instance product-a --file ./directory.json
-magclaw-notify-daemon directory alias add --instance product-a --kind group --name "某某研发部门" --alias "研发群"
-magclaw-notify-daemon directory alias remove --instance product-a --kind person --name "张三" --alias "张总"
-magclaw-notify-daemon directory remove --instance product-a --kind person --name "张三"
+magclaw-notify-owner directory list --instance product-a
+magclaw-notify-owner directory apply --instance product-a --file ./directory.json
+magclaw-notify-owner directory alias add --instance product-a --kind group --name "某某研发部门" --alias "研发群"
+magclaw-notify-owner directory alias remove --instance product-a --kind person --name "张三" --alias "张总"
+magclaw-notify-owner directory remove --instance product-a --kind person --name "张三"
 ```
 
 Exact canonical names and confirmed aliases resolve automatically. Similar
@@ -183,7 +201,7 @@ For a runtime other than OpenClaw, or no Agent runtime, configure direct Feishu
 REST credentials from an environment variable or a local `0600` file:
 
 ```sh
-magclaw-notify-daemon configure \
+magclaw-notify-owner configure \
   --instance product-a \
   --delivery-provider feishu-rest \
   --feishu-app-id APP_ID \
@@ -191,7 +209,7 @@ magclaw-notify-daemon configure \
   --owner-open-id OWNER_OPEN_ID \
   --event-consumer standalone
 
-magclaw-notify-daemon start --instance product-a
+magclaw-notify-owner start --instance product-a
 ```
 
 The historical `lark-cli-feishu` provider remains readable for existing daemon
@@ -200,24 +218,22 @@ profiles, but the OpenClaw plugin path never shells out to `lark-cli`.
 Service commands are intentionally retained for rollback:
 
 ```sh
-magclaw-notify-daemon status --instance product-a
-magclaw-notify-daemon stop --instance product-a
-magclaw-notify-daemon autostart enable --instance product-a
-magclaw-notify-daemon autostart disable --instance product-a
+magclaw-notify-owner status --instance product-a
+magclaw-notify-owner stop --instance product-a
+magclaw-notify-owner autostart enable --instance product-a
+magclaw-notify-owner autostart disable --instance product-a
 ```
 
 ## Access administration
 
 ```sh
-magclaw-notify-daemon access list --instance product-a
-magclaw-notify-daemon access revoke --instance product-a --access-id ACCESS_ID
-magclaw-notify-daemon access kick --instance product-a --user-id USER_ID
-# Or through the public wrapper:
-magclaw-notify daemon access kick --instance product-a --user-id USER_ID
-magclaw-notify-daemon grants list --instance product-a
-magclaw-notify-daemon grants revoke --instance product-a --grant-id GRANT_ID
-magclaw-notify-daemon setup-token rotate --instance product-a --revoke-existing
-magclaw-notify-daemon setup-token disable --instance product-a --revoke-existing
+magclaw-notify-owner access list --instance product-a
+magclaw-notify-owner access revoke --instance product-a --access-id ACCESS_ID
+magclaw-notify-owner access kick --instance product-a --user-id USER_ID
+magclaw-notify-owner grants list --instance product-a
+magclaw-notify-owner grants revoke --instance product-a --grant-id GRANT_ID
+magclaw-notify-owner setup-token rotate --instance product-a --revoke-existing
+magclaw-notify-owner setup-token disable --instance product-a --revoke-existing
 ```
 
 Owner audit output must remain on the owner machine. Do not paste raw audit

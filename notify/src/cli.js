@@ -189,14 +189,14 @@ async function installClaudeDesktopTool(options = {}) {
   return { kind: 'claude-desktop', type: 'mcp', path: configPath, backupPath: existing ? backupPath : null, restartRequired: true, server };
 }
 
-async function loadNotifyDaemonCommand() {
+async function loadNotifyOwnerCommand() {
   try {
-    return (await import('@magclaw/notify-daemon')).runNotifyDaemonCommand;
+    return (await import('@magclaw/notify-owner')).runNotifyOwnerCommand;
   } catch (packageError) {
     try {
-      return (await import('../../notify-daemon/src/daemon.js')).runNotifyDaemonCommand;
+      return (await import('../../notify-owner/src/owner.js')).runNotifyOwnerCommand;
     } catch {
-      throw new Error('Notify owner commands require the private @magclaw/notify-daemon package. The public @magclaw/notify package only contains sender capabilities.');
+      throw new Error('Notify owner commands require @magclaw/notify-owner. Install it with npm install --global @magclaw/notify-owner.');
     }
   }
 }
@@ -420,7 +420,10 @@ function help() {
 
 async function executeNotifyCli(command, positional, flags) {
   let result;
-  if (command === 'daemon') result = await (await loadNotifyDaemonCommand())(positional, flags);
+  if (['owner', 'daemon'].includes(command)) {
+    if (command === 'daemon') process.stderr.write('magclaw-notify daemon is deprecated; use magclaw-notify-owner.\n');
+    result = await (await loadNotifyOwnerCommand())(positional, flags);
+  }
   else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
   else if (command === 'send') result = await sendNotify(flags);
   else if (command === 'status') result = await status(flags, positional);
@@ -446,7 +449,7 @@ async function executeNotifyCli(command, positional, flags) {
 
 export async function runNotifyCli(argv = process.argv) {
   const { command, positional, flags } = parseArgs(argv);
-  if (command === 'daemon') {
+  if (['owner', 'daemon'].includes(command)) {
     const result = await executeNotifyCli(command, positional, flags);
     if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
     return;

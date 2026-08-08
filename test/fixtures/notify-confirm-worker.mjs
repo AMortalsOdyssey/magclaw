@@ -1,9 +1,9 @@
 import { access, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { confirmNotifyMapping } from '../../notify-daemon/src/handler.js';
-import { registerNotifyRuntime } from '../../notify-daemon/src/runtime-context.js';
-import { closeNotifyStateStore } from '../../notify-daemon/src/store.js';
+import { confirmNotifyMapping } from '../../notify-owner/src/handler.js';
+import { registerNotifyRuntime } from '../../notify-owner/src/runtime-context.js';
+import { closeNotifyStateStore } from '../../notify-owner/src/store.js';
 
 const [profileDir, confirmationId, gateFile, transportFile] = process.argv.slice(2);
 const profilePaths = { dir: profileDir, profile: 'cross-process', config: path.join(profileDir, 'daemon-config.json') };

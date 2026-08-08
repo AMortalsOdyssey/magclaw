@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { classifyNotifyApprovalMessage } from '../notify-daemon/openclaw-plugin/policy.js';
+import { classifyNotifyApprovalMessage } from '../notify-owner/openclaw-plugin/policy.js';
 
 const OWNER = 'ou_0b4161117f6805f382ed11657184c84d';
 const CONFIRMATION = 'ncf_edef24221904b3550253';
@@ -54,10 +54,10 @@ test('Notify approval callbacks are confined to direct conversations and exact p
 });
 
 test('Notify Daemon doctor separates blocking initialization from optional setup', async () => {
-  const { runNotifyDaemonCommand } = await import('../notify-daemon/src/daemon.js');
+  const { runNotifyOwnerCommand } = await import('../notify-owner/src/owner.js');
   const fresh = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-doctor-'));
   try {
-    const report = await runNotifyDaemonCommand(['doctor'], { notifyHome: fresh, instance: 'default', all: true });
+    const report = await runNotifyOwnerCommand(['doctor'], { notifyHome: fresh, instance: 'default', all: true });
     assert.equal(report.ready, false);
     // A brand-new owner must be told about the Relay login, Feishu delivery, the
     // owner DM target, and at least one group before anything can be delivered.
@@ -79,16 +79,16 @@ test('Notify Daemon doctor separates blocking initialization from optional setup
 });
 
 test('Notify Daemon doctor reports the standalone consumer as needing no Agent runtime', async () => {
-  const { runNotifyDaemonCommand } = await import('../notify-daemon/src/daemon.js');
-  const { configureNotifyHandler } = await import('../notify-daemon/src/handler.js');
-  const { notifyDaemonPaths } = await import('../notify-daemon/src/daemon.js');
+  const { runNotifyOwnerCommand } = await import('../notify-owner/src/owner.js');
+  const { configureNotifyHandler } = await import('../notify-owner/src/handler.js');
+  const { notifyDaemonPaths } = await import('../notify-owner/src/owner.js');
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-doctor-standalone-'));
   try {
     const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, 'default');
     await configureNotifyHandler(paths.handler, {
       confirmationProvider: { eventConsumer: 'standalone', account: 'monkey', ownerOpenId: 'ou_owner', enabled: true },
     });
-    const report = await runNotifyDaemonCommand(['doctor'], { notifyHome: root, instance: 'default', all: true });
+    const report = await runNotifyOwnerCommand(['doctor'], { notifyHome: root, instance: 'default', all: true });
     assert.equal(report.eventConsumer, 'standalone');
     assert.equal(report.requiresAgentRuntime, false);
     // No Agent forwarder check at all when the Daemon consumes events itself.

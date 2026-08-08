@@ -7,7 +7,7 @@ import {
   addNotifyGroup,
   configureNotifyHandler,
   handleNotifyDelivery,
-} from '../notify-daemon/src/handler.js';
+} from '../notify-owner/src/handler.js';
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-openclaw-'));
 const profilePaths = { dir: root };
