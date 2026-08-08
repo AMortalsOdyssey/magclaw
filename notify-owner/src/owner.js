@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -16,6 +16,22 @@ import {
 import { resolveNotifyExecutable } from './executable.js';
 import { notifyInstanceFromFlags } from './instance.js';
 import { installNotifyOpenClawPlugin } from './plugin-installer.js';
+import {
+  applyNotifyOwnerUpdate,
+  checkNotifyOwnerUpdate,
+  readNotifyOwnerUpdateState,
+  rollbackNotifyOwnerUpdate,
+  runNotifyOwnerBackgroundUpdate,
+  scheduleNotifyOwnerBackgroundUpdate,
+} from './update.js';
+import {
+  addNotifyBinding,
+  listNotifyBindings,
+  notifyBindingProfile,
+  notifyBindingsPaths,
+  resolveNotifyBinding,
+  setNotifyBindingEnabled,
+} from './bindings.js';
 import { ensureNotifyStateStore } from './store.js';
 import {
   disableNotifyDaemonAutostart,
@@ -74,6 +90,40 @@ function notifyEnvironment(flags = {}) {
   return { ...process.env, MAGCLAW_NOTIFY_HOME: path.resolve(clean(flags.notifyHome, 1000)) };
 }
 
+async function existingOpenClawNotifyConfig(flags = {}) {
+  const command = clean(flags.openclawPath || process.env.OPENCLAW_PATH || 'openclaw', 500);
+  try {
+    const result = await runOpenClawCommand(command, ['config', 'get', 'plugins.entries.magclaw-notify.config', '--json']);
+    const config = JSON.parse(result.stdout || '{}');
+    return config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+  } catch { return {}; }
+}
+
+async function flagsWithConfiguredNotifyHome(flags = {}) {
+  if (flags.notifyHome || process.env.MAGCLAW_NOTIFY_HOME) return flags;
+  const config = await existingOpenClawNotifyConfig(flags);
+  const configured = clean(config.notifyHome || '', 1000);
+  return configured ? { ...flags, notifyHome: configured } : flags;
+}
+
+async function ownerPathsFromFlags(flags = {}, options = {}) {
+  const env = notifyEnvironment(flags);
+  if (flags._paths) return flags._paths;
+  // Compatibility only: old scripts may still pass --instance during the
+  // migration release. New user-facing flows use --bot and bindings.json.
+  if (flags.instance && !flags.bot) return notifyDaemonPaths(env, notifyInstanceFromFlags(flags));
+  try { return (await resolveNotifyBinding({ bot: flags.bot, accountId: flags.accountId }, env)).profile; }
+  catch (error) {
+    if (!options.allowUnconfigured) throw error;
+    const home = notifyBindingsPaths(env).home;
+    return {
+      instance: 'owner', bindingId: '', home, root: path.join(home, 'owner'), config: path.join(home, 'owner', 'config.json'),
+      pid: path.join(home, 'owner', 'run', 'daemon.pid'), stdout: path.join(home, 'owner', 'logs', 'daemon.log'), stderr: path.join(home, 'owner', 'logs', 'daemon.error.log'),
+      auditDir: path.join(home, 'owner', 'audit'), handler: { dir: path.join(home, 'owner'), config: path.join(home, 'owner', 'config.json'), profile: 'owner' },
+    };
+  }
+}
+
 export function notifyDaemonPaths(env = process.env, instance = 'default') {
   const root = instance === 'default'
     ? path.join(notifyHome(env), 'daemon')
@@ -96,7 +146,7 @@ function ownerAudit(paths) {
     ownerAuditLogs.set(paths.auditDir, createNotifyAuditLog({
       dir: paths.auditDir,
       scope: 'owner',
-      base: { instance: paths.instance },
+      base: { bot: paths.bindingId || paths.instance },
       maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
       maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
       maxDays: LOCAL_NOTIFY_AUDIT_MAX_DAYS,
@@ -130,11 +180,11 @@ export async function ensureNotifyRuntimeLogs(paths) {
   }
 }
 
-function machineFingerprint() {
-  // This namespace is intentionally kept byte-compatible with 0.6.x so the
-  // package/command rename does not invalidate an owner's existing pairing.
-  const stableNamespace = ['magclaw', 'notify', 'daemon'].join('-');
-  return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir(), stableNamespace].join('|')).digest('hex')}`;
+function newInstallationFingerprint() {
+  // This is an opaque installation nonce, not a fingerprint of the machine.
+  // Existing profiles retain their legacy value so upgrades do not invalidate
+  // the Owner token.
+  return `mfp_${crypto.randomBytes(32).toString('hex')}`;
 }
 
 function normalizeRelayUrl(value = '') {
@@ -266,11 +316,11 @@ function sleep(ms) {
 }
 
 export async function loginNotifyDaemon(flags = {}) {
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
   const previous = await readJson(paths.config, {});
   const relayUrl = normalizeRelayUrl(flags.relayUrl || flags.url || previous.relayUrl || '');
-  const fingerprint = machineFingerprint();
+  const fingerprint = previous.machineFingerprint || newInstallationFingerprint();
   const requestedName = clean(flags.name || previous.relayName || 'MagClaw', 120);
   const requestedRelayId = clean(
     flags.relay || flags.relayId || (flags.name ? '' : previous.relayId),
@@ -284,7 +334,6 @@ export async function loginNotifyDaemon(flags = {}) {
       relayName: requestedName,
       instance,
       machineFingerprint: fingerprint,
-      client: { hostname: os.hostname(), platform: os.platform(), arch: os.arch() },
     },
   });
   const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
@@ -581,8 +630,8 @@ export async function processNotifyApprovalEvent(profilePaths, event, dependenci
 }
 
 export async function runNotifyDaemon(flags = {}) {
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
   const config = await readJson(paths.config, {});
   if (!config.relayUrl || !config.relayId || !config.token) throw new Error('Notify Owner is not logged in. Run magclaw-notify-owner login first.');
   await ensureNotifyRuntimeLogs(paths);
@@ -623,7 +672,7 @@ export async function runNotifyDaemon(flags = {}) {
     if (recordedPid === process.pid) await rm(paths.pid, { force: true });
     await audit.append({ event: 'owner.daemon.stopped', outcome: 'succeeded', relayId: config.relayId, metadata: { pid: process.pid } });
   }
-  return { stopped: true, instance };
+  return { stopped: true, bot: paths.bindingId || instance };
 }
 
 async function processIsRunning(pid) {
@@ -632,8 +681,8 @@ async function processIsRunning(pid) {
 }
 
 export async function notifyDaemonStatus(flags = {}) {
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
   const config = await readJson(paths.config, {});
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   const pluginHost = await readJson(path.join(paths.root, 'run', 'plugin-host.json'), {});
@@ -653,7 +702,7 @@ export async function notifyDaemonStatus(flags = {}) {
   const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   const autostart = await notifyDaemonAutostartStatus(service);
   return {
-    instance,
+    bot: paths.bindingId || instance,
     mode: pluginHostRunning ? 'plugin-hosted' : 'standalone-daemon',
     configured: Boolean(config.relayUrl && config.relayId && config.token),
     running: pluginHostRunning || await processIsRunning(pid),
@@ -672,9 +721,9 @@ export async function notifyDaemonStatus(flags = {}) {
 }
 
 export async function startNotifyDaemonBackground(flags = {}) {
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
-  const status = await notifyDaemonStatus({ ...flags, instance });
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
+  const status = await notifyDaemonStatus({ ...flags, _paths: paths });
   if (status.running) return status;
   await mkdir(path.dirname(paths.pid), { recursive: true });
   await ensureNotifyRuntimeLogs(paths);
@@ -682,11 +731,12 @@ export async function startNotifyDaemonBackground(flags = {}) {
     const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
     await enableNotifyDaemonAutostart(service);
     await sleep(500);
-    return notifyDaemonStatus({ ...flags, instance });
+    return notifyDaemonStatus({ ...flags, _paths: paths });
   }
   const stdout = await open(paths.stdout, 'a', 0o600);
   const stderr = await open(paths.stderr, 'a', 0o600);
-  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', '--instance', instance, '--notify-home', paths.home], {
+  const selector = paths.bindingId ? ['--bot', paths.bindingId] : ['--instance', instance];
+  const child = spawn(process.execPath, [BIN_PATH, 'daemon', 'run', ...selector, '--notify-home', paths.home], {
     detached: true,
     stdio: ['ignore', stdout.fd, stderr.fd],
     windowsHide: true,
@@ -697,30 +747,30 @@ export async function startNotifyDaemonBackground(flags = {}) {
   await stderr.close();
   await writeFile(paths.pid, `${child.pid}\n`, { mode: 0o600 });
   await sleep(500);
-  return notifyDaemonStatus({ ...flags, instance });
+  return notifyDaemonStatus({ ...flags, _paths: paths });
 }
 
 export async function stopNotifyDaemon(flags = {}) {
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
   const service = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
   await stopNotifyDaemonService(service);
   const pid = Number(String(await readFile(paths.pid, 'utf8').catch(() => '')).trim());
   if (await processIsRunning(pid)) process.kill(pid, 'SIGTERM');
   await rm(paths.pid, { force: true });
-  return { stopped: true, instance, pid: Number.isInteger(pid) ? pid : null, autostartPreserved: true };
+  return { stopped: true, bot: paths.bindingId || instance, pid: Number.isInteger(pid) ? pid : null, autostartPreserved: true };
 }
 
 async function manageNotifyDaemonAutostart(paths, positional, flags = {}) {
   const action = positional[1] || 'status';
   const instance = paths.instance;
   const spec = notifyDaemonServiceSpec({ instance, notifyHome: paths.home, binPath: BIN_PATH, logPath: paths.stdout, errorLogPath: paths.stderr });
-  if (action === 'status') return { instance, ...(await notifyDaemonAutostartStatus(spec)) };
+  if (action === 'status') return { bot: paths.bindingId || instance, ...(await notifyDaemonAutostartStatus(spec)) };
   if (action === 'enable') {
     await ensureNotifyRuntimeLogs(paths);
-    return { instance, ...(await enableNotifyDaemonAutostart(spec)) };
+    return { bot: paths.bindingId || instance, ...(await enableNotifyDaemonAutostart(spec)) };
   }
-  if (action === 'disable') return { instance, ...(await disableNotifyDaemonAutostart(spec)) };
+  if (action === 'disable') return { bot: paths.bindingId || instance, ...(await disableNotifyDaemonAutostart(spec)) };
   throw new Error(`Unknown Notify autostart command: ${action}`);
 }
 
@@ -744,10 +794,38 @@ function runOpenClawCommand(command, args = []) {
   });
 }
 
+async function backupOpenClawConfig(command, notifyHomePath) {
+  const output = String((await runOpenClawCommand(command, ['config', 'file'])).stdout || '');
+  const line = output.split(/\r?\n/).map((item) => item.trim()).reverse().find((item) => item && !item.startsWith('│') && !item.startsWith('◇')) || '';
+  const configPath = line.startsWith('~/') ? path.join(os.homedir(), line.slice(2)) : path.resolve(line);
+  if (!line || !await readFile(configPath).then(() => true).catch(() => false)) return null;
+  const backupDir = path.join(notifyHomePath, 'backups', 'openclaw');
+  await mkdir(backupDir, { recursive: true, mode: 0o700 });
+  const backupPath = path.join(backupDir, `openclaw-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+  await copyFile(configPath, backupPath);
+  await chmod(backupPath, 0o600).catch(() => {});
+  const backups = (await readdir(backupDir)).filter((name) => /^openclaw-.*\.json$/.test(name)).sort().reverse();
+  for (const old of backups.slice(5)) await rm(path.join(backupDir, old), { force: true });
+  return { configPath, backupPath };
+}
+
+async function restoreOpenClawConfig(backup) {
+  if (!backup) return;
+  const temporary = `${backup.configPath}.magclaw-restore-${process.pid}`;
+  await copyFile(backup.backupPath, temporary);
+  await rename(temporary, backup.configPath);
+}
+
 async function manageOpenClawNotifyPlugin(paths, positional, flags = {}) {
   const action = positional[1] || 'status';
-  const handlerState = await ensureNotifyHandlerState(paths.handler);
-  const openclawCommand = clean(handlerState.config.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
+  const env = notifyEnvironment(flags);
+  const existingConfig = await existingOpenClawNotifyConfig(flags);
+  const bindingList = await listNotifyBindings(env);
+  const selectedStates = await Promise.all(bindingList.bindings.map(async (binding) => {
+    const profile = notifyBindingProfile(binding, env);
+    return { binding, profile, state: await ensureNotifyHandlerState(profile.handler) };
+  }));
+  const openclawCommand = clean(selectedStates[0]?.state?.config?.agentProvider?.command || process.env.OPENCLAW_PATH || 'openclaw', 500);
   const pluginPath = notifyOpenClawApprovalPluginPath({ pluginPath: flags.pluginPath });
   const status = async () => {
     let plugins = {};
@@ -756,12 +834,16 @@ async function manageOpenClawNotifyPlugin(paths, positional, flags = {}) {
     try { gateway = JSON.parse((await runOpenClawCommand(openclawCommand, ['gateway', 'status', '--json'])).stdout || '{}'); } catch (error) { gateway = { error: clean(error.message, 500) }; }
     const pluginEntries = Array.isArray(plugins?.plugins) ? plugins.plugins : Array.isArray(plugins) ? plugins : [];
     const notifyPlugin = pluginEntries.find((entry) => entry?.id === 'magclaw-notify' || entry?.name === 'magclaw-notify');
+    const bots = await Promise.all(selectedStates.map(async ({ binding, profile }) => {
+      const runtime = await notifyDaemonStatus({ ...flags, _paths: profile }).catch((error) => ({ running: false, error: clean(error.message, 300) }));
+      return { id: binding.id, name: binding.name, accountId: binding.accountId, enabled: binding.enabled, running: runtime.mode === 'plugin-hosted' && runtime.running, configured: runtime.configured, ...(runtime.error ? { error: runtime.error } : {}) };
+    }));
     return {
-      instance: paths.instance,
       pluginPath,
       installed: await readFile(path.join(pluginPath, 'installation.json'), 'utf8').then(() => true).catch(() => false),
       enabled: notifyPlugin?.enabled === true || notifyPlugin?.status === 'enabled' || notifyPlugin?.state === 'enabled',
-      running: (await notifyDaemonStatus({ ...flags, instance: paths.instance })).mode === 'plugin-hosted',
+      running: bots.some((bot) => bot.running),
+      bots,
       gateway,
     };
   };
@@ -779,20 +861,39 @@ async function manageOpenClawNotifyPlugin(paths, positional, flags = {}) {
   const installed = await readFile(path.join(pluginPath, 'installation.json'), 'utf8').then(() => true).catch(() => false);
   if (!installed) throw new Error(`Install the fixed MagClaw Notify plugin copy first: magclaw-notify-owner install --target ${pluginPath}`);
   const pluginConfig = {
-    accountId: clean(flags.accountId || handlerState.config.deliveryProvider?.account || handlerState.config.confirmationProvider?.account || 'monkey', 120),
+    ...existingConfig,
     notifyHome: paths.home,
-    instance: paths.instance,
+    bindings: selectedStates.map(({ binding }) => ({
+      id: binding.id,
+      name: binding.name,
+      channel: 'feishu',
+      accountId: binding.accountId,
+      enabled: binding.enabled !== false,
+      legacy: binding.legacy === true,
+    })),
     relayEnabled: flags.relayEnabled !== 'false',
+    autoUpdate: flags.autoUpdate !== 'false',
     ...(flags.relayUrl ? { relayUrl: clean(flags.relayUrl, 1000) } : {}),
     ...(flags.memberAgentId ? { memberAgentId: clean(flags.memberAgentId, 120) } : {}),
     ...(flags.projectName ? { projectName: clean(flags.projectName, 120) } : {}),
     ...(flags.memberReadTools ? { memberReadTools: commaList(flags.memberReadTools) } : {}),
   };
-  await runOpenClawCommand(openclawCommand, ['plugins', 'enable', 'magclaw-notify']);
-  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.config', JSON.stringify(pluginConfig), '--strict-json']);
-  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowPromptInjection', 'true', '--strict-json']);
-  await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowConversationAccess', 'true', '--strict-json']);
-  await runOpenClawCommand(openclawCommand, ['gateway', 'restart']);
+  // Old single-profile selectors are intentionally not written back. The
+  // bindings array is the only current routing source of truth.
+  delete pluginConfig.instance;
+  delete pluginConfig.accountId;
+  const backup = await backupOpenClawConfig(openclawCommand, paths.home);
+  try {
+    await runOpenClawCommand(openclawCommand, ['plugins', 'enable', 'magclaw-notify']);
+    await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.config', JSON.stringify(pluginConfig), '--strict-json']);
+    await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowPromptInjection', 'true', '--strict-json']);
+    await runOpenClawCommand(openclawCommand, ['config', 'set', 'plugins.entries.magclaw-notify.hooks.allowConversationAccess', 'true', '--strict-json']);
+    await runOpenClawCommand(openclawCommand, ['config', 'validate']);
+    await runOpenClawCommand(openclawCommand, ['gateway', 'restart']);
+  } catch (error) {
+    await restoreOpenClawConfig(backup).catch(() => {});
+    throw error;
+  }
   return status();
 }
 
@@ -849,7 +950,7 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
 
   add('relay.login', true, Boolean(daemonConfig.relayUrl && daemonConfig.relayId && daemonConfig.token),
     daemonConfig.relayUrl ? `Relay ${daemonConfig.relayUrl} as ${daemonConfig.relayHandle || daemonConfig.relayId}` : 'No Relay login stored.',
-    'magclaw-notify-owner login --relay-url <url> --instance <name>');
+    'magclaw-notify-owner login --relay-url <url> --bot <bot-id>');
   const tokenExpiresAt = Date.parse(daemonConfig.tokenExpiresAt || '');
   add('relay.token_valid', true, Number.isFinite(tokenExpiresAt) && tokenExpiresAt > Date.now(),
     Number.isFinite(tokenExpiresAt) ? `Daemon token expires ${daemonConfig.tokenExpiresAt}` : 'No Daemon token expiry recorded.',
@@ -867,10 +968,22 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
       : 'An Agent runtime owns the Feishu event connection and must forward approval callbacks.',
     'magclaw-notify-owner configure --event-consumer standalone');
   if (eventConsumer === 'openclaw') {
-    add('agent.approval_forwarder', true, false,
-      `Stop this daemon and enable the complete OpenClaw plugin host: ${notifyOpenClawApprovalPluginPath()}`,
-      'Add the plugin path to plugins.load.paths, enable magclaw-notify with relayEnabled=true, then restart the OpenClaw Gateway');
-    checks[checks.length - 1].status = 'verify';
+    checks.push({
+      id: 'feishu.bot_membership_event',
+      required: false,
+      status: 'verify',
+      detail: 'Feishu permission and long-connection subscription are enabled. OpenClaw 2026.7.x receives bot removal events but does not expose channel lifecycle events to plugins; Notify reconciles configured chats by REST at startup and every 10 minutes, and fails closed on delivery.',
+      fix: 'After upgrading OpenClaw, verify whether a channel lifecycle hook is available and replace polling without opening a second Feishu connection.',
+    });
+    const pluginHost = await readJson(path.join(paths.root, 'run', 'plugin-host.json'), {});
+    const pluginForwarderRunning = pluginHost.mode === 'plugin-hosted'
+      && await processIsRunning(Number(pluginHost.pid));
+    add('agent.approval_forwarder', true, pluginForwarderRunning,
+      pluginForwarderRunning
+        ? 'The OpenClaw Notify plugin owns approval callbacks for this Bot Binding.'
+        : `Enable the complete OpenClaw plugin host: ${notifyOpenClawApprovalPluginPath()}`,
+      'Install and start magclaw-notify in the OpenClaw Gateway; do not open a second Feishu event connection.');
+    if (!pluginForwarderRunning) checks[checks.length - 1].status = 'verify';
   }
   add('directory.groups', true, groups.some((group) => group && group.chatId && group.enabled !== false),
     `${groups.length} group(s) configured, ${groups.filter((g) => g?.chatId).length} with a Chat ID.`,
@@ -890,7 +1003,7 @@ async function runNotifyDaemonDoctor(paths, flags = {}) {
   const blocking = checks.filter((check) => check.status === 'missing');
   const verify = checks.filter((check) => check.status === 'verify');
   return {
-    instance: paths.instance,
+    bot: paths.bindingId || paths.instance,
     ready: blocking.length === 0,
     eventConsumer,
     requiresAgentRuntime: eventConsumer === 'openclaw',
@@ -952,9 +1065,29 @@ async function manageOpenClawApproval(paths, positional, flags = {}) {
 
 async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   const command = positional[0] || 'status';
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  const env = notifyEnvironment(flags);
   if (command === 'install') return installNotifyOpenClawPlugin({ target: flags.target || flags.pluginPath, packageRoot: PACKAGE_ROOT });
+  if (command === 'bot') {
+    const action = positional[1] || 'list';
+    if (action === 'list') return listNotifyBindings(env);
+    if (action === 'add') return addNotifyBinding({ id: flags.id || flags.bot, name: flags.name, accountId: flags.accountId, enabled: flags.enabled !== 'false' }, env);
+    if (action === 'enable' || action === 'disable') return setNotifyBindingEnabled(flags.bot || flags.id || positional[2], action === 'enable', env);
+    throw new Error(`Unknown Notify Bot command: ${action}`);
+  }
+  if (command === 'update') {
+    const action = positional[1] || 'status';
+    const packageJson = await readJson(path.join(PACKAGE_ROOT, 'package.json'), { version: flags.currentVersion || '0.0.0' });
+    const currentVersion = clean(flags.currentVersion || packageJson.version || '0.0.0', 40);
+    if (action === 'status') return { currentVersion, state: await readNotifyOwnerUpdateState(env) };
+    if (action === 'check') return checkNotifyOwnerUpdate(currentVersion, { timeoutMs: flags.timeoutMs });
+    if (action === 'apply') return applyNotifyOwnerUpdate(flags.targetVersion || positional[2], { currentVersion, npmPath: flags.npmPath, openclawPath: flags.openclawPath, restart: flags.restart !== 'false' }, env);
+    if (action === 'rollback') return rollbackNotifyOwnerUpdate({ pluginPath: flags.pluginPath, openclawPath: flags.openclawPath, restart: flags.restart !== 'false' }, env);
+    if (action === 'background-check') return runNotifyOwnerBackgroundUpdate(currentVersion, { force: flags.force === true, npmPath: flags.npmPath, openclawPath: flags.openclawPath }, env);
+    throw new Error(`Unknown Notify Owner update command: ${action}`);
+  }
+  const paths = flags._paths || await ownerPathsFromFlags(flags);
+  const instance = paths.instance;
+  flags = { ...flags, _paths: paths };
   if (command === 'access') {
     const action = positional[1] || 'list';
     if (action === 'list') return listNotifyAccess(paths, flags);
@@ -1051,7 +1184,10 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
       : [];
     return { ...config, installedHandlerSkills, approvalPluginPath: notifyOpenClawApprovalPluginPath({ pluginPath: flags.pluginPath }) };
   }
-  if (command === 'add-group') return addNotifyGroup(paths.handler, { name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias) });
+  if (command === 'add-group') return addNotifyGroup(paths.handler, {
+    id: flags.id, name: flags.name, chatId: flags.chatId, aliases: commaList(flags.aliases || flags.alias),
+    routeLabel: flags.routeLabel, ownerName: flags.ownerName, memberCount: flags.memberCount,
+  });
   if (command === 'add-person') return addNotifyPerson(paths.handler, { name: flags.name, openId: flags.openId, aliases: commaList(flags.aliases || flags.alias), groupChatIds: commaList(flags.groupChatIds || flags.groupChatId) });
   if (command === 'directory') {
     const action = positional[1] || 'list';
@@ -1061,6 +1197,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
     if (action === 'alias') return updateNotifyDirectoryAlias(paths.handler, {
       action: positional[2] || flags.action,
       kind: flags.kind,
+      id: flags.id,
       name: flags.name,
       alias: flags.alias,
     });
@@ -1087,12 +1224,17 @@ export async function runNotifyOwnerCommand(positional = [], flags = {}) {
   // Installing the packaged plugin does not read or mutate an Owner profile,
   // so it must also work before ~/.magclaw/notify exists.
   if (command === 'install') return executeNotifyDaemonCommand(positional, flags);
-  const instance = notifyInstanceFromFlags(flags);
-  const paths = notifyDaemonPaths(notifyEnvironment(flags), instance);
+  flags = await flagsWithConfiguredNotifyHome(flags);
+  if (command !== 'update' && process.env.MAGCLAW_NOTIFY_OWNER_UPDATE_CHILD !== '1') {
+    const packageJson = await readJson(path.join(PACKAGE_ROOT, 'package.json'), { version: '0.0.0' });
+    scheduleNotifyOwnerBackgroundUpdate(String(packageJson.version || '0.0.0'), {}, notifyEnvironment(flags));
+  }
+  const paths = await ownerPathsFromFlags(flags, { allowUnconfigured: command === 'bot' || command === 'update' || command === 'plugin' });
+  flags = { ...flags, _paths: paths };
   const audit = ownerAudit(paths);
   const event = `owner.command.${clean(command, 60)}${subcommand ? `.${clean(subcommand, 60)}` : ''}`;
   const metadata = {
-    configPath: paths.config,
+    bindingId: paths.bindingId || '',
     auditDir: paths.auditDir,
     ...(flags.name ? { targetName: flags.name } : {}),
     ...(flags.group ? { targetGroup: flags.group } : {}),

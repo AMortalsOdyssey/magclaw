@@ -10,6 +10,23 @@ import {
   LOCAL_NOTIFY_AUDIT_MAX_FILES,
 } from './audit.js';
 import { normalizeNotifySummary, renderNotifySummaryMarkdown } from './summary.js';
+import {
+  listNotifyConnections,
+  notifyProjectPaths,
+  readNotifyConnections,
+  removeNotifyConnection,
+  saveNotifyConnection,
+  selectNotifyConnection,
+  useNotifyConnection,
+} from './connections.js';
+import {
+  applyNotifyUpdate,
+  checkNotifyUpdate,
+  readNotifyUpdateState,
+  rollbackNotifyUpdate,
+  runNotifyBackgroundUpdate,
+  scheduleNotifyBackgroundUpdate,
+} from './update.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_SOURCE = path.join(PACKAGE_ROOT, 'skills', 'magclaw-notify');
@@ -48,13 +65,13 @@ function pathsFor(profile, env = process.env) {
 }
 
 export function notifySenderAudit(flags = {}, env = process.env) {
-  const profile = profileName(flags.profile || 'default');
-  const paths = pathsFor(profile, env);
+  const profile = profileName(flags.connection || flags.profile || 'default');
+  const paths = notifyProjectPaths({ projectDir: flags.projectDir, env });
   if (!senderAuditLogs.has(paths.auditDir)) {
     senderAuditLogs.set(paths.auditDir, createNotifyAuditLog({
       dir: paths.auditDir,
       scope: 'sender',
-      base: { instance: profile },
+      base: { projectKey: paths.projectKey, connection: profile },
       maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
       maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
     }));
@@ -84,10 +101,6 @@ async function writeJsonAtomic(file, value) {
     await rm(temporary, { force: true }).catch(() => {});
     throw error;
   }
-}
-
-function machineFingerprint() {
-  return `mfp_${crypto.createHash('sha256').update([os.hostname(), os.platform(), os.arch(), os.homedir()].join('|')).digest('hex')}`;
 }
 
 function normalizeRelayUrl(value = '') {
@@ -172,7 +185,7 @@ async function installClaudeDesktopTool(options = {}) {
     }
   }
   const packageJson = await readJson(PACKAGE_JSON, { name: '@magclaw/notify', version: 'latest' });
-  const spec = `${packageJson.name}@${packageJson.version}`;
+  const spec = `${packageJson.name}@latest`;
   const platform = options.platform || process.platform;
   const server = platform === 'win32'
     ? { command: 'cmd.exe', args: ['/d', '/s', '/c', 'npx', '--yes', spec, 'mcp'] }
@@ -249,25 +262,27 @@ export async function installNotifyIntegrations(flags = {}, options = {}) {
     if (!root) continue;
     installed.push(await installHostSkill(kind, root));
   }
+  const stateRoot = path.resolve(env.MAGCLAW_NOTIFY_HOME || path.join(homeDir, '.magclaw', 'notify'));
+  await writeJsonAtomic(path.join(stateRoot, 'integrations.json'), {
+    version: 1,
+    targets: installed.map((item) => item.kind),
+    updatedAt: new Date().toISOString(),
+  });
   return installed;
 }
 
 async function login(flags, positional) {
-  const profile = profileName(flags.profile || 'default');
-  const paths = pathsFor(profile);
-  const previous = await readJson(paths.config, {});
+  const connectionName = profileName(flags.connection || flags.profile || 'default');
+  const projectOptions = { projectDir: flags.projectDir };
+  const current = await readNotifyConnections(projectOptions);
+  const previous = current.registry.connections[connectionName] || {};
   const relayUrl = normalizeRelayUrl(flags.relayUrl || positional[0] || previous.relayUrl || DEFAULT_RELAY_URL);
   const inviteToken = String(flags.token || flags.inviteToken || flags.setupToken || positional[1] || '').trim();
   if (!inviteToken) throw new Error('Notify login requires --token with the owner-provided Notify setup token.');
-  const fingerprint = machineFingerprint();
+  const connectionId = previous.connectionId || `ncn_${crypto.randomUUID()}`;
   const started = await requestJson(relayUrl, '/api/notify/auth/start', {
     method: 'POST',
-    body: {
-      inviteToken,
-      profile,
-      machineFingerprint: fingerprint,
-      client: { hostname: os.hostname(), platform: os.platform(), arch: os.arch() },
-    },
+    body: { inviteToken, connectionId },
   });
   const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
   process.stderr.write(`Approve MagClaw Notify login:\n${verificationUrl}\nCode: ${started.userCode}\n`);
@@ -278,7 +293,7 @@ async function login(flags, positional) {
   while (Date.now() < deadline) {
     approved = await requestJson(relayUrl, '/api/notify/auth/token', {
       method: 'POST',
-      body: { deviceCode: started.deviceCode, machineFingerprint: fingerprint },
+      body: { deviceCode: started.deviceCode },
     });
     if (approved.status === 'approved') break;
     if (approved.status === 'expired' || approved.status === 'rejected') throw new Error(`Notify login ${approved.status}.`);
@@ -287,31 +302,38 @@ async function login(flags, positional) {
   if (approved?.status !== 'approved' || !approved.token) throw new Error('Notify login timed out.');
   const config = {
     version: 1,
-    profile,
+    name: connectionName,
+    connectionId,
     relayUrl,
     relayHandle: approved.relayHandle,
-    machineFingerprint: fingerprint,
     token: approved.token,
     tokenExpiresAt: approved.tokenExpiresAt,
     user: approved.user,
     createdAt: previous.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  await writeJson(paths.config, config);
+  const saved = await saveNotifyConnection(config, { ...projectOptions, connection: connectionName, makeDefault: flags.default === true });
   if (!flags.noSkill) {
     const requestedTargets = String(flags.targets || flags.target || 'auto-detected hosts');
     process.stderr.write(`Installing MagClaw Notify integrations for ${requestedTargets}. Existing host configuration will be preserved; Claude Desktop is backed up before modification.\n`);
   }
   const installedIntegrations = flags.noSkill ? [] : await installNotifyIntegrations(flags);
-  return { profile, relayUrl, relayHandle: config.relayHandle, user: config.user, installedIntegrations };
+  return { projectKey: saved.paths.projectKey, connection: connectionName, relayUrl, relayHandle: config.relayHandle, user: config.user, installedIntegrations };
 }
 
 async function authenticated(flags) {
-  const profile = profileName(flags.profile || 'default');
-  const paths = pathsFor(profile);
-  const config = await readJson(paths.config, {});
-  if (!config.relayUrl || !config.token) throw new Error(`Profile ${profile} is not logged in. Run magclaw-notify login first.`);
-  return { profile, paths, config };
+  try {
+    const selected = await selectNotifyConnection({ projectDir: flags.projectDir, connection: flags.connection || flags.profile });
+    if (!selected.connection.relayUrl || !selected.connection.token) throw new Error(`Notify connection ${selected.name} is incomplete. Run login again.`);
+    return { profile: selected.name, connection: selected.name, paths: selected.paths, config: selected.connection, registry: selected.registry };
+  } catch (error) {
+    // One release of read-only compatibility for pre-project-scoped profiles.
+    const profile = profileName(flags.profile || 'default');
+    const legacyPaths = pathsFor(profile);
+    const legacy = await readJson(legacyPaths.config, {});
+    if (legacy.relayUrl && legacy.token) return { profile, connection: profile, paths: legacyPaths, config: legacy, legacy: true };
+    throw error;
+  }
 }
 
 async function readMarkdown(flags) {
@@ -363,7 +385,7 @@ export async function sendNotify(flags) {
       instruction: flags.instruction || '',
       mentions: String(flags.mentions || flags.mention || '').split(',').map((item) => item.trim()).filter(Boolean),
       context: {
-        sourceAgent: flags.sourceAgent || '', sessionId: flags.sessionId || '', turnId: flags.turnId || '', repository: flags.repository || '',
+        sourceAgent: flags.sourceAgent || '', sessionId: flags.sessionId || '', turnId: flags.turnId || '', repository: flags.repository ? path.basename(String(flags.repository)) : '',
       },
     },
   });
@@ -397,14 +419,15 @@ async function logout(flags) {
   await requestJson(auth.config.relayUrl, '/api/notify/auth/revoke', {
     method: 'POST', token: auth.config.token, fingerprint: auth.config.machineFingerprint, body: {},
   }).catch(() => {});
-  await rm(auth.paths.config, { force: true });
-  return { profile: auth.profile, loggedOut: true };
+  if (auth.legacy) await rm(auth.paths.config, { force: true });
+  else await removeNotifyConnection(auth.connection, { projectDir: flags.projectDir });
+  return { connection: auth.connection, loggedOut: true };
 }
 
 function help() {
   return [
     'MagClaw Notify', '',
-    '  magclaw-notify login RELAY_URL --token SETUP_TOKEN',
+    '  magclaw-notify login RELAY_URL --token SETUP_TOKEN --connection NAME [--default]',
     '  magclaw-notify send --group NAME --summary-json-file FILE --authorized-current-turn',
     '  magclaw-notify send --group NAME --markdown-file FILE --authorized-current-turn',
     '  magclaw-notify status REQUEST_ID',
@@ -413,6 +436,7 @@ function help() {
     '  magclaw-notify install [--targets codex,claude-code,claude-desktop]',
     '  magclaw-notify mcp',
     '  magclaw-notify logout',
+    '  magclaw-notify connections list|use|remove [NAME]',
     '  magclaw-notify audit status|tail [--profile NAME] [--limit 100]', '',
     'Notify never lists available groups and never submits without --authorized-current-turn.',
   ].join('\n');
@@ -430,6 +454,28 @@ async function executeNotifyCli(command, positional, flags) {
   else if (command === 'targets') result = await targets(flags);
   else if (command === 'whoami') result = await whoami(flags);
   else if (command === 'logout') result = await logout(flags);
+  else if (command === 'connections') {
+    const action = positional[0] || 'list';
+    const name = flags.connection || positional[1] || '';
+    if (action === 'list') result = await listNotifyConnections({ projectDir: flags.projectDir });
+    else if (action === 'use') result = await useNotifyConnection(name, { projectDir: flags.projectDir });
+    else if (action === 'remove') result = await removeNotifyConnection(name, { projectDir: flags.projectDir });
+    else throw new Error(`Unknown Notify connections command: ${action}`);
+  }
+  else if (command === 'update') {
+    const action = positional[0] || 'status';
+    const packageJson = await readJson(PACKAGE_JSON, { version: '0.0.0' });
+    const currentVersion = String(flags.currentVersion || packageJson.version || '0.0.0');
+    if (action === 'status') result = { currentVersion, state: await readNotifyUpdateState() };
+    else if (action === 'check') result = await checkNotifyUpdate({ currentVersion, timeoutMs: flags.timeoutMs });
+    else if (action === 'apply') result = await applyNotifyUpdate(flags.targetVersion || positional[1], { currentVersion, npmPath: flags.npmPath });
+    else if (action === 'rollback') result = await rollbackNotifyUpdate({ npmPath: flags.npmPath });
+    else if (action === 'background-check') result = await runNotifyBackgroundUpdate(currentVersion, { force: flags.force === true, npmPath: flags.npmPath });
+    else throw new Error(`Unknown Notify update command: ${action}`);
+  }
+  else if (flags.version === true || command === 'version') {
+    result = { version: (await readJson(PACKAGE_JSON, { version: '0.0.0' })).version };
+  }
   else if (['install', 'install-skill'].includes(command)) result = { installedIntegrations: await installNotifyIntegrations(flags) };
   else if (command === 'audit') {
     const action = positional[0] || 'status';
@@ -449,6 +495,14 @@ async function executeNotifyCli(command, positional, flags) {
 
 export async function runNotifyCli(argv = process.argv) {
   const { command, positional, flags } = parseArgs(argv);
+  const packageVersion = String((await readJson(PACKAGE_JSON, { version: '0.0.0' })).version || '0.0.0');
+  if (flags.version === true || command === 'version') {
+    process.stdout.write(`${packageVersion}\n`);
+    return;
+  }
+  if (command !== 'update' && process.env.MAGCLAW_NOTIFY_UPDATE_CHILD !== '1') {
+    scheduleNotifyBackgroundUpdate(packageVersion);
+  }
   if (['owner', 'daemon'].includes(command)) {
     const result = await executeNotifyCli(command, positional, flags);
     if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
@@ -457,7 +511,7 @@ export async function runNotifyCli(argv = process.argv) {
   const audit = notifySenderAudit(flags);
   const event = `sender.command.${String(command || 'help').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80)}`;
   const metadata = {
-    profile: profileName(flags.profile || 'default'),
+    connection: profileName(flags.connection || flags.profile || 'default'),
     auditDir: audit.dir,
     authorizedCurrentTurn: flags.authorizedCurrentTurn === true,
     ...(flags.group ? { targetGroup: flags.group } : {}),

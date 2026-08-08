@@ -9,6 +9,23 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "bindings": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "channel", "accountId"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$" },
+            "name": { "type": "string", "minLength": 1 },
+            "channel": { "type": "string", "enum": ["feishu"] },
+            "accountId": { "type": "string", "minLength": 1 },
+            "enabled": { "type": "boolean", "default": true },
+            "legacy": { "type": "boolean", "default": false }
+          }
+        },
+        "default": []
+      },
       "accountId": {
         "type": "string",
         "minLength": 1
@@ -29,6 +46,10 @@
         "type": "string",
         "format": "uri",
         "pattern": "^https?://"
+      },
+      "autoUpdate": {
+        "type": "boolean",
+        "default": true
       },
       "memberAgentId": {
         "type": "string",

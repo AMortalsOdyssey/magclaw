@@ -10,7 +10,7 @@ const CONFIRMATION = 'ncf_edef24221904b3550253';
 
 function payload(overrides = {}) {
   return JSON.stringify({
-    source: 'magclaw_notify', instance: 'default', confirmationId: CONFIRMATION, decision: 'once', ...overrides,
+    source: 'magclaw_notify', bot: 'monkey', confirmationId: CONFIRMATION, decision: 'once', ...overrides,
   });
 }
 
@@ -20,6 +20,12 @@ test('Notify approval callbacks take the operator identity from the inbound even
   assert.equal(accepted.operatorOpenId, OWNER);
   assert.equal(accepted.confirmationId, CONFIRMATION);
   assert.equal(accepted.decision, 'once');
+  assert.equal(accepted.bot, 'monkey');
+
+  const legacy = classifyNotifyApprovalMessage(JSON.stringify({
+    source: 'magclaw_notify', instance: 'default', confirmationId: CONFIRMATION, decision: 'once',
+  }), { senderId: OWNER, isGroup: false });
+  assert.equal(legacy.bot, 'default');
 
   // A payload that nominates its own approver cannot override the real sender.
   const forged = classifyNotifyApprovalMessage(
@@ -44,7 +50,7 @@ test('Notify approval callbacks are confined to direct conversations and exact p
     [payload({ decision: 'delete' }), { senderId: OWNER }, 'rejected', 'invalid-decision'],
     [payload({ confirmationId: 'ncf_NOTHEX' }), { senderId: OWNER }, 'rejected', 'invalid-confirmation-id'],
     [payload({ confirmationId: '../../etc/passwd' }), { senderId: OWNER }, 'rejected', 'invalid-confirmation-id'],
-    [payload({ instance: '../other' }), { senderId: OWNER }, 'rejected', 'invalid-instance'],
+    [payload({ bot: '../other' }), { senderId: OWNER }, 'rejected', 'invalid-bot'],
   ];
   for (const [content, options, kind, reason] of cases) {
     const result = classifyNotifyApprovalMessage(content, options);
@@ -59,6 +65,8 @@ test('Notify Daemon doctor separates blocking initialization from optional setup
   try {
     const report = await runNotifyOwnerCommand(['doctor'], { notifyHome: fresh, instance: 'default', all: true });
     assert.equal(report.ready, false);
+    assert.equal(report.bot, 'default');
+    assert.equal(Object.hasOwn(report, 'instance'), false);
     // A brand-new owner must be told about the Relay login, Feishu delivery, the
     // owner DM target, and at least one group before anything can be delivered.
     for (const id of ['relay.login', 'feishu.delivery_provider', 'feishu.owner_dm', 'directory.groups']) {

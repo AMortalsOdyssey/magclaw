@@ -139,7 +139,7 @@ function handlerAudit(profilePaths) {
     handlerAuditLogs.set(paths.auditDir, createNotifyAuditLog({
       dir: paths.auditDir,
       scope: 'owner',
-      base: { instance: cleanText(profilePaths.profile || path.basename(profilePaths.dir), 48) },
+      base: { bot: cleanText(profilePaths.bindingId || profilePaths.profile || path.basename(profilePaths.dir), 80) },
       maxFileBytes: LOCAL_NOTIFY_AUDIT_MAX_FILE_BYTES,
       maxFiles: LOCAL_NOTIFY_AUDIT_MAX_FILES,
       maxDays: LOCAL_NOTIFY_AUDIT_MAX_DAYS,
@@ -216,6 +216,7 @@ export function defaultNotifyDirectory() {
     version: 1,
     groups: [],
     people: [],
+    routePreferences: [],
     updatedAt: null,
   };
 }
@@ -228,7 +229,20 @@ function normalizeManagedDirectory(value) {
     chatId: cleanText(group?.chatId, 200),
     aliases: [...new Set(safeArray(group?.aliases).map((item) => cleanText(item, 120)).filter(Boolean))],
     confirmedAliases: [...new Set(safeArray(group?.confirmedAliases).map((item) => cleanText(item, 120)).filter(Boolean))],
+    routeLabel: cleanText(group?.routeLabel, 120),
+    ownerName: cleanText(group?.ownerName, 120),
+    memberCount: Number.isFinite(Number(group?.memberCount)) ? Math.max(0, Number(group.memberCount)) : null,
+    available: group?.available !== false,
+    unavailableReason: cleanText(group?.unavailableReason, 160),
+    lastVerifiedAt: cleanText(group?.lastVerifiedAt, 80),
   }));
+  directory.routePreferences = safeArray(directory.routePreferences).map((preference) => ({
+    connectionId: cleanText(preference?.connectionId, 120),
+    requesterId: cleanText(preference?.requesterId, 180),
+    phrase: normalizeLookup(preference?.phrase),
+    groupId: cleanText(preference?.groupId, 120),
+    updatedAt: cleanText(preference?.updatedAt, 80),
+  })).filter((preference) => preference.phrase && preference.groupId);
   directory.people = safeArray(directory.people).map((person) => ({
     ...jsonObject(person),
     name: cleanText(person?.name, 120),
@@ -241,7 +255,7 @@ function normalizeManagedDirectory(value) {
   if (invalidGroup) throw new Error('Managed Notify directory groups require non-empty name and chatId fields.');
   const invalidPerson = directory.people.find((person) => !person.name || !person.openId);
   if (invalidPerson) throw new Error('Managed Notify directory people require non-empty name and openId fields.');
-  for (const entries of [directory.groups, directory.people]) {
+  for (const entries of [directory.people]) {
     const keys = new Map();
     for (const entry of entries) {
       for (const label of [entry.name, ...entry.aliases, ...entry.confirmedAliases]) {
@@ -251,6 +265,15 @@ function normalizeManagedDirectory(value) {
         if (owner && owner !== entry) throw new Error(`Managed Notify directory name or alias is ambiguous: ${label}`);
         keys.set(key, entry);
       }
+    }
+  }
+  const groupAliases = new Map();
+  for (const group of directory.groups) {
+    for (const alias of [...group.aliases, ...group.confirmedAliases]) {
+      const key = normalizeLookup(alias);
+      const owner = groupAliases.get(key);
+      if (owner && owner !== group.id) throw new Error(`Managed Notify directory group alias is ambiguous: ${alias}`);
+      groupAliases.set(key, group.id);
     }
   }
   return directory;
@@ -274,6 +297,45 @@ async function saveNotifyDirectory(state, directory = state.directory) {
   await writeFile(state.paths.managedDirectory, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
   await chmod(state.paths.managedDirectory, 0o600).catch(() => {});
   return normalized;
+}
+
+export function isFeishuChatUnavailableError(error) {
+  // Only terminal chat lookup results may disable a route. Authentication,
+  // quota, timeout and 5xx errors are transient and must leave it enabled.
+  return Number(error?.httpStatus) === 404 || new Set([230001, 230002, 230003, 230006, 230027]).has(Number(error?.apiCode));
+}
+
+export async function reconcileNotifyGroups(profilePaths, feishuClient) {
+  if (!feishuClient?.getChat) return { checked: 0, available: 0, unavailable: 0, skipped: true };
+  const state = await ensureNotifyHandlerState(profilePaths);
+  let available = 0;
+  let unavailable = 0;
+  for (const group of state.directory.groups.filter((item) => item?.enabled !== false && item?.chatId)) {
+    try {
+      const chat = await feishuClient.getChat({ chatId: group.chatId });
+      group.available = true;
+      group.unavailableReason = '';
+      group.lastVerifiedAt = now(state);
+      group.ownerName = cleanText(chat.owner_name || chat.ownerName || group.ownerName, 120);
+      const count = Number(chat.user_count ?? chat.userCount ?? group.memberCount);
+      if (Number.isFinite(count)) group.memberCount = Math.max(0, count);
+      available += 1;
+    } catch (error) {
+      if (!isFeishuChatUnavailableError(error)) {
+        await state.audit.append({ event: 'owner.group.reconcile_failed', outcome: 'transient', severity: 'warning', metadata: { groupId: group.id, httpStatus: error?.httpStatus || '', apiCode: error?.apiCode ?? '' } });
+        continue;
+      }
+      group.available = false;
+      group.unavailableReason = 'bot_not_in_chat_or_chat_unavailable';
+      group.lastVerifiedAt = now(state);
+      unavailable += 1;
+    }
+    group.updatedAt = now(state);
+  }
+  state.directory.updatedAt = now(state);
+  await saveNotifyDirectory(state);
+  await state.audit.append({ event: 'owner.group.reconciled', outcome: 'succeeded', metadata: { checked: available + unavailable, available, unavailable } });
+  return { checked: available + unavailable, available, unavailable };
 }
 
 export async function ensureNotifyHandlerState(profilePaths) {
@@ -387,13 +449,25 @@ function similarity(left, right) {
   return 1 - (levenshtein(left, right) / Math.max([...left].length, [...right].length, 1));
 }
 
-export function resolveNotifyGroup(directory, requestedGroup) {
+export function resolveNotifyGroup(directory, requestedGroup, context = {}) {
   const query = normalizeLookup(requestedGroup);
-  const groups = safeArray(directory?.groups).filter((group) => group && group.enabled !== false);
-  for (const group of groups) {
-    const names = [group.name, ...safeArray(group.aliases), ...safeArray(group.confirmedAliases)];
-    const exact = names.find((name) => normalizeLookup(name) === query);
-    if (exact) return { status: 'resolved', group, matchedBy: exact === group.name ? 'name' : 'alias', confidence: 1 };
+  const groups = safeArray(directory?.groups).filter((group) => group && group.enabled !== false && group.available !== false);
+  const exact = groups.flatMap((group) => {
+    const label = [group.name, ...safeArray(group.aliases), ...safeArray(group.confirmedAliases)].find((name) => normalizeLookup(name) === query);
+    return label ? [{ group, matchedBy: label === group.name ? 'name' : 'alias', confidence: 1 }] : [];
+  });
+  if (exact.length === 1) return { status: 'resolved', ...exact[0] };
+  if (exact.length > 1) {
+    const connectionId = cleanText(context.connectionId, 120);
+    const requesterId = cleanText(context.requesterId, 180);
+    const preference = safeArray(directory?.routePreferences).find((item) => (
+      item.phrase === query
+        && (!item.connectionId || item.connectionId === connectionId)
+        && (!item.requesterId || item.requesterId === requesterId)
+        && exact.some((candidate) => candidate.group.id === item.groupId)
+    ));
+    if (preference) return { status: 'resolved', group: exact.find((candidate) => candidate.group.id === preference.groupId).group, matchedBy: 'route_preference', confidence: 1 };
+    return { status: 'ambiguous', candidates: exact };
   }
   const candidates = groups
     .map((group) => ({
@@ -1035,7 +1109,7 @@ async function recordPendingConfirmation(state, request, kind, details) {
     requestIds: [request.id],
     kind,
     status: 'pending',
-    details: { instance: state.profile || 'default', ...jsonObject(details) },
+    details: { bot: state.profile || 'default', ...jsonObject(details) },
     createdAt: timestamp,
     updatedAt: timestamp,
     expiresAt: new Date(Date.parse(timestamp) + CONFIRMATION_TTL_MS).toISOString(),
@@ -1073,7 +1147,7 @@ async function recordTargetAccessConfirmation(state, request, group) {
       kind: 'target_access',
       status: 'pending',
       details: {
-        instance: state.profile || 'default',
+        bot: state.profile || 'default',
         userId,
         userName: cleanText(request.requester?.name || request.requester?.email || '未知用户', 120),
         groupId: targetId,
@@ -1103,7 +1177,7 @@ export function larkCardForTargetApproval(confirmation, requests = []) {
     type,
     behaviors: [{
       type: 'callback',
-      value: { source: 'magclaw_notify', instance: confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision },
+      value: { source: 'magclaw_notify', bot: confirmation.details?.bot || confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision },
     }],
   });
   return {
@@ -1197,8 +1271,11 @@ function approvalDecisionLabel(decision = '') {
 }
 
 function larkCardForGenericConfirmation(confirmation) {
+  const groupCandidates = safeArray(confirmation.details?.candidateGroups);
   const description = confirmation.kind === 'group_alias'
-    ? `是否把“${confirmation.details.requestedGroup}”映射为“${confirmation.details.candidateName}”？`
+    ? groupCandidates.length > 1
+      ? `“${confirmation.details.requestedGroup}”命中多个同名群，请选择真实目标：`
+      : `是否把“${confirmation.details.requestedGroup}”映射为“${confirmation.details.candidateName}”？`
     : safeArray(confirmation.details?.candidateMappings).length
       ? `请确认人员别名映射：\n${safeArray(confirmation.details.candidateMappings).map((mapping) => {
         const names = safeArray(mapping.candidates).map((candidate) => candidate.canonicalName).filter(Boolean);
@@ -1207,14 +1284,23 @@ function larkCardForGenericConfirmation(confirmation) {
       : '需要确认 Notify 中的人员或别名映射。';
   const action = (label, decision, type = 'default') => ({
     tag: 'button', text: { tag: 'plain_text', content: label }, type,
-    behaviors: [{ type: 'callback', value: { source: 'magclaw_notify', instance: confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision } }],
+    behaviors: [{ type: 'callback', value: { source: 'magclaw_notify', bot: confirmation.details?.bot || confirmation.details?.instance || 'default', confirmationId: confirmation.id, decision } }],
+  });
+  const chooseGroup = (candidate) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: cleanText(candidate.label || candidate.name || '选择此群', 80) },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: {
+      source: 'magclaw_notify', bot: confirmation.details?.bot || confirmation.details?.instance || 'default', confirmationId: confirmation.id,
+      decision: 'approve', candidateGroupId: candidate.id,
+    } }],
   });
   return {
     schema: '2.0',
     header: { title: { tag: 'plain_text', content: 'MagClaw Notify 需要确认' }, template: 'orange' },
     body: { elements: [
       { tag: 'markdown', content: `${description}\n\n有效期：24 小时。` },
-      action('确认', 'approve', 'primary'),
+      ...(groupCandidates.length > 1 ? groupCandidates.map(chooseGroup) : [action('确认', 'approve', 'primary')]),
       action('拒绝', 'reject', 'danger'),
     ] },
   };
@@ -1383,17 +1469,28 @@ export async function prepareNotifyDelivery(profilePaths, request) {
   if (!state.config.enabled) {
     return immediateNotifyResult(state, { requestId: request.id, status: 'awaiting_configuration', publicReason: 'Notify handler is disabled.', localReceiptId: receiptId });
   }
-  const groupResolution = resolveNotifyGroup(state.directory, request.payload?.target?.group || '');
+  const groupResolution = resolveNotifyGroup(state.directory, request.payload?.target?.group || '', {
+    connectionId: request.requester?.connectionId || '', requesterId: requesterKey(request.requester),
+  });
   if (groupResolution.status === 'unavailable') {
     const status = state.directory.groups.length ? 'target_unavailable' : 'awaiting_configuration';
     return immediateNotifyResult(state, { requestId: request.id, status, publicReason: status === 'target_unavailable' ? 'The requested target is unavailable.' : 'Notify groups are not configured.', localReceiptId: receiptId });
   }
-  if (groupResolution.status === 'confirmation_required') {
+  if (['confirmation_required', 'ambiguous'].includes(groupResolution.status)) {
     const confirmation = await recordPendingConfirmation(state, request, 'group_alias', {
       requestedGroup: request.payload?.target?.group || '',
       candidateName: groupResolution.candidates[0]?.group?.name || '',
       candidateGroupId: groupResolution.candidates[0]?.group?.id || '',
       confidence: groupResolution.candidates[0]?.confidence || 0,
+      ambiguous: groupResolution.status === 'ambiguous',
+      connectionId: request.requester?.connectionId || '',
+      requesterId: requesterKey(request.requester),
+      candidateGroups: groupResolution.candidates.map(({ group, confidence }) => ({
+        id: group.id,
+        name: group.name,
+        label: group.routeLabel || [group.name, group.ownerName, Number.isFinite(group.memberCount) ? `${group.memberCount}人` : '', group.chatId ? `…${group.chatId.slice(-6)}` : ''].filter(Boolean).join(' · '),
+        confidence: confidence || 1,
+      })),
     });
     const result = {
       requestId: request.id,
@@ -1460,7 +1557,9 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     requestId: request.id,
     metadata: { requestedGroup: request.payload?.target?.group || '', requestedMentionCount: safeArray(request.payload?.mentions).length },
   });
-  const groupResolution = resolveNotifyGroup(state.directory, request.payload?.target?.group || '');
+  const groupResolution = resolveNotifyGroup(state.directory, request.payload?.target?.group || '', {
+    connectionId: request.requester?.connectionId || '', requesterId: requesterKey(request.requester),
+  });
   if (groupResolution.status !== 'resolved' || !groupResolution.group?.chatId) {
     const result = await immediateNotifyResult(state, { requestId: request.id, status: 'target_unavailable', publicReason: 'The approved target is no longer available.', localReceiptId: receiptId });
     return auditedDeliveryResult(state, result, { groupResolution: groupResolution.status });
@@ -1562,6 +1661,14 @@ export async function processAuthorizedNotifyDelivery(profilePaths, request) {
     return auditedDeliveryResult(state, result, { groupName: group.name, mentionCount: peopleResolution.length, dryRun: Boolean(sent.dryRun) });
   } catch (error) {
     if (error?.code === 'MAGCLAW_CRASH_INJECTION') throw error;
+    if (isFeishuChatUnavailableError(error)) {
+      group.available = false;
+      group.unavailableReason = 'bot_not_in_chat_or_chat_unavailable';
+      group.lastVerifiedAt = now(state);
+      group.updatedAt = group.lastVerifiedAt;
+      state.directory.updatedAt = group.updatedAt;
+      await saveNotifyDirectory(state);
+    }
     const result = { requestId: request.id, status: 'failed', publicReason: 'Notify delivery failed.', error: cleanText(redactNotifyPublicText(error.message, 2000), 1000), provider: runtime.feishuClient ? 'feishu-rest' : delivery.kind, localReceiptId: receiptId, deliveryIntentId: intent.id };
     await appendReceipt(state, { ...result, createdAt: now() });
     state.store.updateDeliveryIntent(intent.id, 'failed', { result, error: result.error });
@@ -1630,14 +1737,21 @@ export async function configureNotifyHandler(profilePaths, patch = {}) {
 export async function addNotifyGroup(profilePaths, group = {}) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const name = cleanText(group.name, 120);
+  const chatId = cleanText(group.chatId, 200);
   if (!name) throw new Error('Group name is required.');
-  const existing = state.directory.groups.find((item) => normalizeLookup(item.name) === normalizeLookup(name));
+  if (!chatId) throw new Error('Group chatId is required; names are display labels and may be duplicated.');
+  const existing = state.directory.groups.find((item) => item.chatId === chatId || (group.id && item.id === group.id));
   const record = existing || { id: `ngrp_${crypto.randomBytes(8).toString('hex')}`, createdAt: now() };
   Object.assign(record, {
     name,
-    chatId: cleanText(group.chatId, 200),
+    chatId,
     aliases: [...new Set(safeArray(group.aliases).map((item) => cleanText(item, 120)).filter(Boolean))],
     confirmedAliases: safeArray(record.confirmedAliases),
+    routeLabel: cleanText(group.routeLabel || record.routeLabel, 120),
+    ownerName: cleanText(group.ownerName || record.ownerName, 120),
+    memberCount: group.memberCount === undefined ? record.memberCount ?? null : Math.max(0, Number(group.memberCount || 0)),
+    available: group.available !== false,
+    unavailableReason: '',
     enabled: group.enabled !== false,
     updatedAt: now(),
   });
@@ -1704,6 +1818,10 @@ export async function removeNotifyDirectoryEntry(profilePaths, options = {}) {
   const label = cleanText(options.id || options.name, 200);
   if (!kind || !label) throw new Error('Directory remove requires --kind group|person and --id or --name.');
   const key = kind === 'group' ? 'groups' : 'people';
+  if (!options.id) {
+    const matches = state.directory[key].filter((entry) => normalizeLookup(entry.name) === normalizeLookup(label));
+    if (matches.length > 1) throw new Error(`Notify ${kind} name is ambiguous; use --id. Matches: ${matches.map((entry) => entry.id).join(', ')}.`);
+  }
   const before = state.directory[key].length;
   state.directory[key] = state.directory[key].filter((entry) => entry.id !== label && normalizeLookup(entry.name) !== normalizeLookup(label));
   const removed = before - state.directory[key].length;
@@ -1718,12 +1836,14 @@ export async function removeNotifyDirectoryEntry(profilePaths, options = {}) {
 export async function updateNotifyDirectoryAlias(profilePaths, options = {}) {
   const state = await ensureNotifyHandlerState(profilePaths);
   const kind = options.kind === 'person' ? 'person' : options.kind === 'group' ? 'group' : '';
-  const canonical = cleanText(options.name, 120);
+  const canonical = cleanText(options.id || options.name, 120);
   const alias = cleanText(options.alias, 120);
   const action = options.action === 'remove' ? 'remove' : options.action === 'add' ? 'add' : '';
   if (!kind || !canonical || !alias || !action) throw new Error('Directory alias requires add|remove, --kind group|person, --name and --alias.');
   const entries = kind === 'group' ? state.directory.groups : state.directory.people;
-  const entry = entries.find((item) => normalizeLookup(item.name) === normalizeLookup(canonical));
+  const matches = entries.filter((item) => item.id === canonical || normalizeLookup(item.name) === normalizeLookup(canonical));
+  if (!options.id && matches.length > 1) throw new Error(`Notify ${kind} name is ambiguous; use --id.`);
+  const entry = matches[0];
   if (!entry) throw new Error(`Notify ${kind} was not found: ${canonical}`);
   const aliases = new Set([...safeArray(entry.aliases), ...safeArray(entry.confirmedAliases)]);
   if (action === 'add') aliases.add(alias);
@@ -2095,9 +2215,29 @@ export async function confirmNotifyMapping(profilePaths, confirmationId, decisio
         else throw new Error('People confirmation requires an explicit alias-to-canonical mapping, for example --person-map "三哥=张三".');
       }
       if (approved && record.kind === 'group_alias') {
-        const group = directory.groups.find((item) => item.id === record.details.candidateGroupId);
+        const selectedGroupId = cleanText(options.candidateGroupId || record.details.candidateGroupId, 120);
+        if (record.details.ambiguous && !options.candidateGroupId) throw new Error('This Notify group name is ambiguous; choose a candidate group explicitly.');
+        if (record.details.ambiguous && !safeArray(record.details.candidateGroups).some((candidate) => candidate.id === selectedGroupId)) {
+          throw new Error('The selected Notify group was not offered by this confirmation.');
+        }
+        const group = directory.groups.find((item) => item.id === selectedGroupId);
         if (!group) throw new Error('Notify group candidate no longer exists.');
-        group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), record.details.requestedGroup])];
+        if (record.details.ambiguous) {
+          directory.routePreferences = safeArray(directory.routePreferences).filter((preference) => !(
+            preference.phrase === normalizeLookup(record.details.requestedGroup)
+              && preference.connectionId === cleanText(record.details.connectionId, 120)
+              && preference.requesterId === cleanText(record.details.requesterId, 180)
+          ));
+          directory.routePreferences.push({
+            phrase: normalizeLookup(record.details.requestedGroup),
+            connectionId: cleanText(record.details.connectionId, 120),
+            requesterId: cleanText(record.details.requesterId, 180),
+            groupId: group.id,
+            updatedAt: now(),
+          });
+        } else {
+          group.confirmedAliases = [...new Set([...safeArray(group.confirmedAliases), record.details.requestedGroup])];
+        }
         group.updatedAt = now();
         directory.updatedAt = now();
       }
@@ -2228,6 +2368,7 @@ export async function handleNotifyCardAction(profilePaths, event = {}, options =
   try {
     const result = await confirmNotifyMapping(profilePaths, action.confirmationId, action.decision || 'reject', {
       operatorId: event.operator_id || event.operatorId || '',
+      candidateGroupId: action.candidateGroupId || '',
     });
     await audit.append({
       event: 'owner.approval.decision_completed',

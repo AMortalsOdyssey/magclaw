@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/notify-owner",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Owner CLI and OpenClaw plugin installer for MagClaw Notify.",
   "type": "module",
   "bin": {

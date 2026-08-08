@@ -1,6 +1,6 @@
 {
   "name": "@magclaw/notify",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Explicit Agent Skill and MCP tool for structured Feishu notifications.",
   "type": "module",
   "bin": {
@@ -16,6 +16,8 @@
     "bin/",
     "src/audit.js",
     "src/cli.js",
+    "src/connections.js",
+    "src/update.js",
     "src/mcp.js",
     "src/summary.js",
     "skills/magclaw-notify/",

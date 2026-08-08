@@ -60,3 +60,10 @@ curl -fsS https://<magclaw-host>/api/readyz
 - Delete or quarantine tests that only protect pre-cloud defaults, pre-workspace-ID behavior, or migration-only compatibility after the production path no longer needs them.
 - Keep tests that protect current production contracts: request-scoped workspace selection, PostgreSQL persistence, realtime invalidation, daemon pairing, auth/session behavior, and visible UI state.
 - Keep `TEST_OPTIMIZATION.md` current when the suite topology changes. It is the long-term map for test ownership, serial/parallel boundaries, and candidates for future pruning.
+
+## Notify Multi-Binding And Update Coverage
+
+- `test/notify-multibinding-update.test.js` is the focused regression surface for project-scoped Client connections, multiple Owner Bot bindings, duplicate Feishu group names, backup recovery, membership reconciliation, and Client/Owner automatic updates.
+- Keep the cross-process stress cases: simultaneous project-connection writers must not lose entries, and simultaneous update workers must perform one installation only.
+- Owner update tests must cover both the idle restart path and the deferred-restart path while SQLite contains pending approval or delivery work.
+- Real Feishu acceptance is separate from unit success. Retain sanitized `audit/*.jsonl` evidence for the login, approval, delivery, and grant-revoke path; never commit those runtime audit files.

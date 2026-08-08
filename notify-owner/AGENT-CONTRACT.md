@@ -33,7 +33,7 @@ The adapter must:
 - require `source=magclaw_notify`;
 - validate `confirmationId` against `^ncf_[a-f0-9]{4,64}$`;
 - accept only `once`, `always`, `approve`, or `reject`;
-- validate `instance` against `^[a-z0-9][a-z0-9_-]{0,47}$`;
+- validate the Bot Binding id against `^[a-z0-9][a-z0-9_-]{0,79}$`;
 - take `operatorOpenId` from the runtime-resolved sender identity, never from
   the callback body or model output;
 - swallow accepted and rejected callback payloads so neither reaches a model.
@@ -51,7 +51,7 @@ same Feishu application's event connection:
 
 ```sh
 magclaw-notify-owner configure \
-  --instance <name> \
+  --bot <id> \
   --delivery-provider feishu-rest \
   --feishu-app-id APP_ID \
   --feishu-app-secret-env MAGCLAW_NOTIFY_FEISHU_APP_SECRET \
@@ -66,7 +66,7 @@ unpredictably and is unsupported.
 Run:
 
 ```sh
-magclaw-notify-owner doctor --instance <name> --all
+magclaw-notify-owner doctor --bot <id> --all
 ```
 
 Required before delivery:

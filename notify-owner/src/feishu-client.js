@@ -21,7 +21,12 @@ function feishuBaseUrl(domain = 'feishu') {
 function apiError(operation, response, payload) {
   const code = payload && typeof payload === 'object' ? payload.code : undefined;
   const message = payload && typeof payload === 'object' ? payload.msg || payload.message : '';
-  return new Error(`${operation} failed: HTTP ${response.status}${code === undefined ? '' : ` code=${code}`}${message ? ` ${clean(message, 300)}` : ''}`);
+  const error = new Error(`${operation} failed: HTTP ${response.status}${code === undefined ? '' : ` code=${code}`}${message ? ` ${clean(message, 300)}` : ''}`);
+  error.name = 'FeishuApiError';
+  error.httpStatus = response.status;
+  error.apiCode = code === undefined ? null : Number(code);
+  error.operation = operation;
+  return error;
 }
 
 function assertApiSuccess(operation, response, payload) {
@@ -161,6 +166,10 @@ export function createFeishuRestClient(options = {}) {
         pageToken = clean(payload?.data?.page_token, 500);
       } while (pageToken);
       return items;
+    },
+    async getChat({ chatId }) {
+      const payload = await request('Feishu chat get', `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`, { method: 'GET' });
+      return payload?.data || {};
     },
   };
 }

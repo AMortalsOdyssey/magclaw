@@ -22,12 +22,15 @@ function parseArgs(argv) {
 
 const { positional, flags } = parseArgs(process.argv);
 const command = positional[0] || 'status';
-const operation = command === 'install'
+const operation = flags.version === true || command === 'version'
+  ? import('../package.json', { with: { type: 'json' } }).then(({ default: pkg }) => ({ __version: pkg.version }))
+  : command === 'install'
   ? installNotifyOpenClawPlugin({ target: flags.target || flags.pluginPath })
   : import('../dist/owner.js').then(({ runNotifyOwnerCommand }) => runNotifyOwnerCommand(positional, flags));
 
 operation.then((result) => {
-  if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
+  if (result?.__version) process.stdout.write(`${result.__version}\n`);
+  else if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
 }).catch((error) => {
   process.stderr.write(`${JSON.stringify({ ok: false, error: error.message })}\n`);
   process.exitCode = 1;

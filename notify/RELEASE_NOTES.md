@@ -1,5 +1,20 @@
 # @magclaw/notify Release Notes
 
+## 0.6.0 - 2026-08-08 - Project connections and safe auto-update
+
+### added
+
+- Scopes connection state by local project root and supports multiple named
+  connections with explicit/default selection.
+- Adds detached, rate-limited npm updates with exact-version verification,
+  cross-process locking, rollback state and private update logs.
+
+### security
+
+- Stops sending hostnames, operating-system details, project paths and
+  machine-derived fingerprints during Client login.
+- Recovers connection and update state from private atomic backups.
+
 ## 0.4.2 - 2026-08-07 - Independent standalone sends
 
 ### fixed

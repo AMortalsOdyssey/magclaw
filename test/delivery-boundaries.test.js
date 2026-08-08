@@ -33,7 +33,18 @@ test('root exposes separate web service and daemon delivery scripts', async () =
   const notifyPackage = await readJson('notify/package.json');
   assert.equal(notifyPackage.name, '@magclaw/notify');
   assert.equal(notifyPackage.publishConfig.access, 'public');
-  assert.deepEqual(notifyPackage.files, ['bin/', 'src/audit.js', 'src/cli.js', 'src/mcp.js', 'src/summary.js', 'skills/magclaw-notify/', 'RELEASE_NOTES.md', 'README.md']);
+  assert.deepEqual(notifyPackage.files, [
+    'bin/',
+    'src/audit.js',
+    'src/cli.js',
+    'src/connections.js',
+    'src/update.js',
+    'src/mcp.js',
+    'src/summary.js',
+    'skills/magclaw-notify/',
+    'RELEASE_NOTES.md',
+    'README.md',
+  ]);
 
   const notifyOwnerPackage = await readJson('notify-owner/package.json');
   assert.equal(notifyOwnerPackage.name, '@magclaw/notify-owner');

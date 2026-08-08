@@ -53,8 +53,10 @@ magclaw-notify send --group "USER_GROUP" --title "TITLE" --summary-json-file "FI
 ```
 
 Add `--mentions`, `--session-id`, `--turn-id`, `--source-agent`, and `--repository` when known. Keep the idempotency key stable when retrying the same turn.
+Add `--connection NAME` only when the user selected a project connection or
+the CLI reports that multiple connections have no default. Never guess.
 
-9. Report the returned request ID and external-safe status. `processing` means the owner Daemon accepted it for asynchronous work, not that Feishu delivery is complete. `awaiting_owner_approval`, `awaiting_confirmation`, and `awaiting_configuration` mean nothing was sent yet. Claim success only after a later status result is `sent`.
+9. Report the returned request ID and external-safe status. `processing` means the owner runtime accepted it for asynchronous work, not that Feishu delivery is complete. `awaiting_owner_approval`, `awaiting_confirmation`, and `awaiting_configuration` mean nothing was sent yet. Claim success only after a later status result is `sent`.
 
 ## Safety
 

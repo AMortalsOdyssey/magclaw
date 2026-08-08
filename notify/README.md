@@ -10,13 +10,30 @@ name the target group, and authorize the send in the current turn.
 
 ## Install and sign in
 
+Connections are scoped to the local Git project. A project may keep several
+Owner/Bot connections:
+
+```bash
+npm install --global @magclaw/notify@latest
+magclaw-notify login https://magclaw.example --token SETUP_TOKEN --connection monkey
+magclaw-notify login https://magclaw.example --token OTHER_TOKEN --connection release
+magclaw-notify connections list
+magclaw-notify connections use monkey
+```
+
+With one connection it is selected automatically. With several, the project
+default is used; without a default the CLI requires `--connection` and never
+guesses. Project paths, hostnames, operating-system details and device
+fingerprints are never sent to the Owner or Relay.
+
 ```sh
 npx --yes @magclaw/notify@latest login https://notify.example.com \
   --token "OWNER_PROVIDED_SETUP_TOKEN"
 ```
 
-The command opens a Feishu authorization page. Review the displayed device and
-confirm only when you initiated the login yourself.
+The command opens a Feishu authorization page. It displays the target Bot,
+request time and your Feishu identity, but no hostname, operating system,
+project path or device fingerprint. Confirm only when you initiated the login.
 
 Install integrations for the Agent hosts used on this computer:
 
@@ -139,6 +156,21 @@ magclaw-notify logout
 Sender audit files contain correlation metadata and outcomes, not message
 bodies or credentials. Local credentials must never be committed, pasted into
 task summaries, or shared with another user.
+
+## Automatic updates
+
+Startup schedules a detached update check at most once every six hours; sends
+never wait for it. The exact npm version is verified before activation and the
+previous verified version is retained for rollback.
+
+```sh
+magclaw-notify update status
+magclaw-notify update check
+magclaw-notify update apply --target-version 0.6.0
+magclaw-notify update rollback
+```
+
+Set `MAGCLAW_NOTIFY_AUTO_UPDATE=0` to disable automatic checks.
 
 ## License
 

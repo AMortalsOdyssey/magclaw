@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { connectOnce, processNotifyApprovalEvent } from './owner.js';
-import { ensureNotifyHandlerState, expireNotifyConfirmations, recoverNotifyDeliveries } from './handler.js';
+import { ensureNotifyHandlerState, expireNotifyConfirmations, reconcileNotifyGroups, recoverNotifyDeliveries } from './handler.js';
 import { registerNotifyRuntime } from './runtime-context.js';
 import { closeNotifyStateStore } from './store.js';
 
@@ -24,19 +24,20 @@ function sleep(ms, signal) {
   });
 }
 
-export function notifyPluginProfile({ notifyHome, instance = 'default' } = {}) {
+export function notifyPluginProfile({ notifyHome, bindingId, instance = 'default', legacy = false } = {}) {
   const home = path.resolve(clean(notifyHome, 1000) || path.join(os.homedir(), '.magclaw', 'notify'));
-  const safeInstance = clean(instance || 'default', 48);
-  if (!/^[a-z0-9][a-z0-9_-]{0,47}$/.test(safeInstance)) throw new Error('Invalid Notify plugin instance.');
-  const root = safeInstance === 'default' ? path.join(home, 'daemon') : path.join(home, 'daemons', safeInstance);
+  const safeInstance = clean(bindingId || instance || 'default', 80);
+  if (!/^[a-z0-9][a-z0-9_-]{0,79}$/.test(safeInstance)) throw new Error('Invalid Notify Bot Binding id.');
+  const root = legacy || (!bindingId && safeInstance === 'default') ? path.join(home, 'daemon') : path.join(home, 'bindings', safeInstance);
   return {
     instance: safeInstance,
+    bindingId: safeInstance,
     home,
     root,
     config: path.join(root, 'config.json'),
     hostStatus: path.join(root, 'run', 'plugin-host.json'),
     auditDir: path.join(root, 'audit'),
-    handler: { dir: root, config: path.join(root, 'config.json'), profile: safeInstance },
+    handler: { dir: root, config: path.join(root, 'config.json'), profile: safeInstance, bindingId: safeInstance },
   };
 }
 
@@ -56,6 +57,7 @@ export async function startNotifyPluginHost(options = {}) {
   try {
     await recoverNotifyDeliveries(paths.handler);
     await expireNotifyConfirmations(paths.handler);
+    await reconcileNotifyGroups(paths.handler, options.feishuClient);
   } catch (error) {
     unregisterRuntime();
     closeNotifyStateStore(paths.handler);
@@ -65,8 +67,12 @@ export async function startNotifyPluginHost(options = {}) {
     expireNotifyConfirmations(paths.handler).catch((error) => logger.error(`Notify approval expiry sweep failed: ${clean(error?.message || error, 500)}`));
   }, 60_000);
   expiryTimer.unref?.();
+  const reconciliationTimer = setInterval(() => {
+    reconcileNotifyGroups(paths.handler, options.feishuClient).catch((error) => logger.error(`Notify group reconciliation failed: ${clean(error?.message || error, 500)}`));
+  }, 10 * 60_000);
+  reconciliationTimer.unref?.();
   await mkdir(path.dirname(paths.hostStatus), { recursive: true, mode: 0o700 });
-  await writeFile(paths.hostStatus, `${JSON.stringify({ mode: 'plugin-hosted', pid: process.pid, instance: paths.instance, relayEnabled: options.relayEnabled === true, startedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(paths.hostStatus, `${JSON.stringify({ mode: 'plugin-hosted', pid: process.pid, bot: paths.bindingId || paths.instance, relayEnabled: options.relayEnabled === true, startedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
   await chmod(paths.hostStatus, 0o600).catch(() => {});
 
   let relayTask = Promise.resolve();
@@ -95,9 +101,10 @@ export async function startNotifyPluginHost(options = {}) {
       return processNotifyApprovalEvent(paths.handler, {
         action_value: {
           source: 'magclaw_notify',
-          instance: decision.instance,
+          bot: decision.bot,
           confirmationId: decision.confirmationId,
           decision: decision.decision,
+          ...(decision.candidateGroupId ? { candidateGroupId: decision.candidateGroupId } : {}),
         },
         operator_id: decision.operatorOpenId,
         token: clean(event.token, 2000),
@@ -116,6 +123,7 @@ export async function startNotifyPluginHost(options = {}) {
     async stop() {
       controller.abort();
       clearInterval(expiryTimer);
+      clearInterval(reconciliationTimer);
       await Promise.race([relayTask.catch(() => {}), sleep(5_000)]);
       unregisterRuntime();
       closeNotifyStateStore(paths.handler);

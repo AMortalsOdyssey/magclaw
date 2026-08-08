@@ -82,6 +82,7 @@ test('Notify plugin lifecycle explicitly enables, configures, restarts, reports,
     'const args = process.argv.slice(2);',
     "fs.appendFileSync(log, JSON.stringify(args) + '\\n');",
     "if (args[0] === 'plugins' && args[1] === 'list') process.stdout.write(JSON.stringify({ plugins: [{ id: 'magclaw-notify', enabled: true }] }));",
+    `else if (args[0] === 'config' && args[1] === 'get') process.stdout.write(${JSON.stringify(JSON.stringify({ notifyHome, accountId: 'legacy', instance: 'default', preservedPolicy: 'strict' }))});`,
     "else if (args[0] === 'gateway' && args[1] === 'status') process.stdout.write(JSON.stringify({ service: { running: true } }));",
     "else process.stdout.write(JSON.stringify({ ok: true }));",
     '',
@@ -89,14 +90,20 @@ test('Notify plugin lifecycle explicitly enables, configures, restarts, reports,
   await chmod(openclaw, 0o700);
   const paths = notifyDaemonPaths({ ...process.env, MAGCLAW_NOTIFY_HOME: notifyHome }, 'default');
   await configureNotifyHandler(paths.handler, { agentProvider: { command: openclaw } });
-  const common = { notifyHome, pluginPath, memberAgentId: 'monkey-member', projectName: 'Kizuna', memberReadTools: 'kizuna_read,kizuna_search' };
+  const common = { openclawPath: openclaw, pluginPath, memberAgentId: 'monkey-member', projectName: 'Kizuna', memberReadTools: 'kizuna_read,kizuna_search' };
   const started = await runNotifyOwnerCommand(['plugin', 'start'], common);
   assert.equal(started.installed, true);
   const stopped = await runNotifyOwnerCommand(['plugin', 'stop'], common);
   assert.equal(stopped.installed, true);
   const calls = (await readFile(commandLog, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.ok(calls.some((args) => args.join(' ') === 'plugins enable magclaw-notify'));
-  assert.ok(calls.some((args) => args[0] === 'config' && args[2] === 'plugins.entries.magclaw-notify.config' && args.join(' ').includes('monkey-member')));
+  const configSet = calls.find((args) => args[0] === 'config' && args[1] === 'set' && args[2] === 'plugins.entries.magclaw-notify.config');
+  assert.ok(configSet && configSet.join(' ').includes('monkey-member'), JSON.stringify(calls));
+  const appliedConfig = JSON.parse(configSet[3]);
+  assert.equal(appliedConfig.preservedPolicy, 'strict');
+  assert.equal(Object.hasOwn(appliedConfig, 'instance'), false);
+  assert.equal(Object.hasOwn(appliedConfig, 'accountId'), false);
+  assert.deepEqual(appliedConfig.bindings.map((binding) => binding.id), ['monkey']);
   assert.ok(calls.some((args) => args.join(' ') === 'plugins disable magclaw-notify'));
   assert.ok(calls.filter((args) => args[0] === 'gateway' && args[1] === 'restart').length >= 2);
 });

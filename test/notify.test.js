@@ -37,6 +37,7 @@ import {
   prepareNotifyDelivery,
 } from '../notify-owner/src/handler.js';
 import { installNotifyIntegrations, notifyIdempotencyKey, notifyRequestIdempotencyKey } from '../notify/src/cli.js';
+import { notifyProjectPaths } from '../notify/src/connections.js';
 import { handleNotifyMcpTool } from '../notify/src/mcp.js';
 import { normalizeNotifySummary, redactNotifyPublicText, renderNotifySummaryMarkdown, sanitizeNotifyMarkdown } from '../notify/src/summary.js';
 import {
@@ -141,7 +142,7 @@ async function callRoute(deps, method, pathname, options = {}) {
 async function approveNotifyDevice(deps, verificationUri) {
   const reviewed = await callRoute(deps, 'GET', verificationUri);
   assert.equal(reviewed.res.status, 200);
-  assert.match(reviewed.res.raw, /确认授权这台设备/);
+  assert.match(reviewed.res.raw, /确认连接 Notify/);
   const csrfToken = reviewed.res.raw.match(/name="csrf_token" value="([^"]+)"/)?.[1] || '';
   const userCode = reviewed.res.raw.match(/name="user_code" value="([^"]+)"/)?.[1] || '';
   assert.ok(csrfToken);
@@ -150,7 +151,7 @@ async function approveNotifyDevice(deps, verificationUri) {
     body: { user_code: userCode, csrf_token: csrfToken },
   });
   assert.equal(approved.res.status, 200);
-  assert.match(approved.res.raw, /已批准这台设备/);
+  assert.match(approved.res.raw, /Notify 已连接/);
   return { reviewed, approved };
 }
 
@@ -344,7 +345,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.equal(desktop.theme, 'dark');
   assert.equal(desktop.mcpServers.existing.command, 'existing-mcp');
   assert.equal(desktop.mcpServers['magclaw-notify'].command, 'npx');
-  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@0.5.0', 'mcp']);
+  assert.deepEqual(desktop.mcpServers['magclaw-notify'].args.slice(-2), ['@magclaw/notify@latest', 'mcp']);
   assert.equal(await readFile(`${desktopConfigPath}.magclaw-notify.bak`, 'utf8'), originalDesktopConfig);
 
   const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-hosts-invalid-'));
@@ -403,7 +404,7 @@ test('Notify MCP preview is non-sending and send tool requires explicit current-
   const rejected = await handleNotifyMcpTool('magclaw_notify_send', { ...input, userAuthorizedCurrentTurn: false }, { env: { MAGCLAW_NOTIFY_HOME: auditHome } });
   assert.equal(rejected.isError, true);
   assert.match(rejected.content[0].text, /explicit user authorization/i);
-  const auditRecords = await createNotifyAuditLog({ dir: path.join(auditHome, 'profiles', 'default', 'audit') }).readTail(10);
+  const auditRecords = await createNotifyAuditLog({ dir: notifyProjectPaths({ env: { MAGCLAW_NOTIFY_HOME: auditHome } }).auditDir }).readTail(10);
   assert.deepEqual(auditRecords.map((record) => record.outcome), ['started', 'previewed', 'started', 'failed']);
   assert.doesNotMatch(JSON.stringify(auditRecords), /支持 Claude Desktop/);
 });
@@ -619,7 +620,7 @@ test('Notify approval cards preserve complete request context across pending, pr
   assert.match(pending, /测试monkey（请求名称：测试）/);
   assert.match(pending, /第一项完整内容/);
   assert.match(pending, /通知对象：蒋海波/);
-  assert.match(pending, /"instance":"product-a"/);
+  assert.match(pending, /"bot":"product-a"/);
 
   const processing = JSON.stringify(larkCardForApprovalOutcome(
     confirmation, 'once', { status: 'processing' }, { phase: 'processing', requests },
@@ -735,7 +736,8 @@ test('Notify device authorization is owner-started, POST-confirmed, CSRF-protect
   currentUser = owner;
   const reviewed = await callRoute(deps, 'GET', started.res.body.verificationUri);
   assert.equal(reviewed.res.status, 200);
-  assert.match(reviewed.res.raw, /owner-mac/);
+  assert.doesNotMatch(reviewed.res.raw, /owner-mac|darwin|arm64|aaaaaaaa/);
+  assert.match(reviewed.res.raw, /不会把主机名、系统、文件路径或设备指纹发送给 Owner/);
   assert.equal(notifyRecords(state).some((record) => record.type === 'installation'), false);
   const pending = await callRoute(deps, 'POST', '/api/notify/daemon/auth/token', {
     body: { deviceCode: started.res.body.deviceCode, machineFingerprint: fingerprint },
@@ -751,7 +753,7 @@ test('Notify device authorization is owner-started, POST-confirmed, CSRF-protect
     body: { user_code: userCode, csrf_token: csrfToken },
   });
   assert.equal(approved.res.status, 200);
-  assert.match(approved.res.raw, /Notify 标识/);
+  assert.match(approved.res.raw, /目标 Bot/);
   const replay = await callRoute(deps, 'POST', '/notify/daemon/auth/approve', {
     body: { user_code: userCode, csrf_token: csrfToken },
   });
@@ -935,6 +937,7 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
     const started = await callRoute(deps, 'POST', '/api/notify/auth/start', {
       body: {
         inviteToken: daemonAuth.res.body.inviteToken,
+        connectionId: hostname,
         machineFingerprint: fingerprint,
         client: { hostname, platform: 'darwin', arch: 'arm64' },
       },
@@ -966,14 +969,15 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
   const listed = await callRoute(deps, 'GET', '/api/notify/daemon/access', { headers: daemonHeaders });
   assert.equal(listed.res.status, 200);
   assert.equal(listed.res.body.counts.active, 2);
-  assert.deepEqual(listed.res.body.access.map((record) => record.device.hostname).sort(), ['sender-one', 'sender-two']);
+  assert.deepEqual(listed.res.body.access.map((record) => record.connectionId).sort(), ['sender-one', 'sender-two']);
+  assert.equal(listed.res.body.access.some((record) => 'device' in record), false);
   assert.equal(listed.res.body.access[0].user.identity.openId, 'ou_usr_sender');
   assert.equal(JSON.stringify(listed.res.body).includes('raw_feishu_access_token_must_not_be_copied'), false);
 
   const clientCannotManage = await callRoute(deps, 'GET', '/api/notify/daemon/access', { headers: firstHeaders });
   assert.equal(clientCannotManage.res.status, 401);
 
-  const firstAccess = listed.res.body.access.find((record) => record.device.hostname === 'sender-one');
+  const firstAccess = listed.res.body.access.find((record) => record.connectionId === 'sender-one');
   const revoked = await callRoute(deps, 'POST', '/api/notify/daemon/access/revoke', {
     headers: daemonHeaders,
     body: { accessId: firstAccess.id },

@@ -28,18 +28,17 @@ function htmlEscape(value = '') {
 
 const APPROVAL_PAGE_STYLE = 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fffaf7;color:#1a1a1a;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.card{width:min(500px,calc(100% - 40px));padding:30px;border:2px solid #1a1a1a;border-radius:8px;box-shadow:5px 5px 0 #1a1a1a;background:#fff}.mark{color:#ff3faa;font-weight:900;letter-spacing:.08em}h1{font-size:22px}p,dt,dd{color:#67515f;line-height:1.55}dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 14px}dd{margin:0;overflow-wrap:anywhere}button{width:100%;margin-top:18px;padding:12px 16px;border:2px solid #1a1a1a;border-radius:6px;background:#ff3faa;color:#fff;font:inherit;font-weight:800;cursor:pointer}';
 
-function approvalDeviceRows(request = {}) {
-  const fingerprint = String(request.machineFingerprint || '');
-  return `<dl><dt>设备</dt><dd>${htmlEscape(request.client?.hostname || '未提供')}</dd><dt>系统</dt><dd>${htmlEscape([request.client?.platform, request.client?.arch].filter(Boolean).join(' / ') || '未提供')}</dd><dt>设备指纹</dt><dd>${htmlEscape(fingerprint ? `…${fingerprint.slice(-8)}` : '未提供')}</dd><dt>请求时间</dt><dd>${htmlEscape(request.createdAt || '')}</dd></dl>`;
+function approvalConnectionRows(request = {}, installation = null) {
+  const target = installation?.name || installation?.handle || request.relayHandle || 'MagClaw Notify';
+  return `<dl><dt>用途</dt><dd>允许当前飞书账号发送 Notify 请求</dd><dt>目标 Bot</dt><dd>${htmlEscape(target)}</dd><dt>请求时间</dt><dd>${htmlEscape(request.createdAt || '')}</dd></dl>`;
 }
 
-function approvalConfirmationHtml(request = {}, csrfToken = '', action = '') {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>确认授权这台设备？</h1>${approvalDeviceRows(request)}<p>只有在你刚刚主动从终端发起此登录时才继续。确认后，设备会获得与当前 Notify 身份对应的有限权限。</p><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="user_code" value="${htmlEscape(request.userCode || '')}"><input type="hidden" name="csrf_token" value="${htmlEscape(csrfToken)}"><button type="submit">确认并授权</button></form></main></body></html>`;
+function approvalConfirmationHtml(request = {}, csrfToken = '', action = '', installation = null) {
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>确认连接 Notify？</h1>${approvalConnectionRows(request, installation)}<p>只有在你刚刚主动从终端发起此登录时才继续。MagClaw 不会把主机名、系统、文件路径或设备指纹发送给 Owner。</p><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="user_code" value="${htmlEscape(request.userCode || '')}"><input type="hidden" name="csrf_token" value="${htmlEscape(csrfToken)}"><button type="submit">确认并连接</button></form></main></body></html>`;
 }
 
 function approvalSuccessHtml(request = {}, installation = null) {
-  const handle = installation?.handle || request.relayHandle || '';
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>已批准这台设备</h1>${approvalDeviceRows(request)}${handle ? `<p>Notify 标识：${htmlEscape(handle)}</p>` : ''}<p>登录身份：${htmlEscape(request.approvedUser?.name || request.approvedUser?.email || 'MagClaw member')}</p><p>可以回到终端继续。</p></main></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>Notify 已连接</h1>${approvalConnectionRows(request, installation)}<p>飞书身份：${htmlEscape(request.approvedUser?.name || request.approvedUser?.email || 'MagClaw member')}</p><p>可以回到终端继续。</p></main></body></html>`;
 }
 
 function safeSecretEqual(raw = '', expectedHash = '') {
@@ -188,18 +187,11 @@ function publicSenderAccess(record = {}, timestamp = Date.now()) {
     : Number.isFinite(expiresAt) && expiresAt <= timestamp
       ? 'expired'
       : 'active';
-  const fingerprint = String(record.machineFingerprint || '');
   return {
     id: record.id,
     status,
     user: record.user || {},
-    profile: record.profile || 'default',
-    device: {
-      hostname: compactNotifyText(record.client?.hostname || '', 120),
-      platform: compactNotifyText(record.client?.platform || '', 40),
-      arch: compactNotifyText(record.client?.arch || '', 40),
-      fingerprintSuffix: fingerprint ? fingerprint.slice(-8) : '',
-    },
+    connectionId: compactNotifyText(record.connectionId || record.profile || record.id || '', 120),
     createdAt: record.createdAt || null,
     lastUsedAt: record.lastUsedAt || null,
     expiresAt: record.expiresAt || null,
@@ -787,13 +779,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       setupTokenVersion: setupTokenVersion(installation),
       deviceCodeHash: hashNotifySecret(deviceCode),
       userCode,
-      machineFingerprint: normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || ''),
-      profile: compactNotifyText(body.profile || 'default', 80),
-      client: {
-        hostname: compactNotifyText(body.client?.hostname || '', 120),
-        platform: compactNotifyText(body.client?.platform || '', 40),
-        arch: compactNotifyText(body.client?.arch || '', 40),
-      },
+      connectionId: compactNotifyText(body.connectionId || body.connection_id || '', 120),
       status: 'pending',
       approvedUser: null,
       createdAt,
@@ -848,7 +834,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     await persistState({ workspaceId: request.workspaceId, reason: 'notify_auth_review' });
     emitAudit(200, { relayId: request.relayId, status: 'confirmation_required' }, 'confirmation_required');
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(approvalConfirmationHtml(request, csrfToken, '/notify/auth/approve'));
+    res.end(approvalConfirmationHtml(request, csrfToken, '/notify/auth/approve', installation));
     return true;
   }
 
@@ -926,11 +912,6 @@ export async function handleNotifyApi(req, res, url, deps) {
       sendJson(res, 200, { ok: true, status: request.status || 'pending' });
       return true;
     }
-    const fingerprint = normalizeMachineFingerprint(body.machineFingerprint || body.machine_fingerprint || '');
-    if (request.machineFingerprint && request.machineFingerprint !== fingerprint) {
-      sendError(res, 401, 'Notify login was requested from another machine.');
-      return true;
-    }
     const token = randomNotifySecret('mcn');
     const createdAt = now();
     const tokenRecord = {
@@ -941,10 +922,8 @@ export async function handleNotifyApi(req, res, url, deps) {
       relayId: request.relayId,
       relayHandle: installation?.handle || '',
       tokenHash: hashNotifySecret(token),
-      machineFingerprint: request.machineFingerprint || fingerprint,
-      profile: request.profile || 'default',
+      connectionId: request.connectionId || '',
       user: request.approvedUser,
-      client: request.client || {},
       scopes: ['notify:submit', 'notify:status'],
       createdAt,
       updatedAt: createdAt,
@@ -959,7 +938,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       token,
       tokenExpiresAt: tokenRecord.expiresAt,
       relayHandle: tokenRecord.relayHandle,
-      profile: tokenRecord.profile,
+      connectionId: tokenRecord.connectionId,
       user: tokenRecord.user,
       scopes: tokenRecord.scopes,
     });
@@ -1040,7 +1019,7 @@ export async function handleNotifyApi(req, res, url, deps) {
       workspaceId: token.workspaceId,
       relayId: token.relayId,
       requesterTokenId: token.id,
-      requester: token.user,
+      requester: { ...(token.user || {}), connectionId: token.connectionId || '' },
       idempotencyKey,
       status: 'queued',
       publicReason: '',

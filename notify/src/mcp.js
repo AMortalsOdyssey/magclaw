@@ -18,7 +18,9 @@ function toolDefinitions() {
     sessionId: { type: 'string' },
     turnId: { type: 'string' },
     repository: { type: 'string' },
-    profile: { type: 'string' },
+    connection: { type: 'string', description: 'Project-local Notify connection name. Required only when the project has multiple connections without a default.' },
+    projectDir: { type: 'string', description: 'Local project directory used only to select local connection state; it is never sent to the Relay.' },
+    profile: { type: 'string', description: 'Deprecated alias for connection.' },
   };
   return [
     {
@@ -53,19 +55,20 @@ function flagsFromInput(input = {}) {
     sessionId: input.sessionId || '',
     turnId: input.turnId || '',
     repository: input.repository || '',
-    profile: input.profile || 'default',
+    connection: input.connection || input.profile || '',
+    projectDir: input.projectDir || '',
   };
 }
 
 export async function handleNotifyMcpTool(name, input = {}, options = {}) {
-  const audit = notifySenderAudit({ profile: input.profile || 'default' }, options.env || process.env);
+  const audit = notifySenderAudit({ connection: input.connection || input.profile || 'default', projectDir: input.projectDir }, options.env || process.env);
   const event = `sender.mcp.${String(name || 'unknown').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 100)}`;
   const startedAt = Date.now();
   await audit.append({
     event,
     outcome: 'started',
     metadata: {
-      profile: input.profile || 'default',
+      connection: input.connection || input.profile || 'default',
       targetGroup: input.group || '',
       sourceAgent: input.sourceAgent || 'claude-desktop',
       authorizedCurrentTurn: input.userAuthorizedCurrentTurn === true,
@@ -113,7 +116,7 @@ export async function runNotifyMcpServer() {
     import('@modelcontextprotocol/sdk/server/stdio.js'),
     import('@modelcontextprotocol/sdk/types.js'),
   ]);
-  const server = new Server({ name: 'magclaw-notify', version: '0.4.1' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'magclaw-notify', version: '0.6.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDefinitions() }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => handleNotifyMcpTool(request.params.name, request.params.arguments || {}));
   await server.connect(new StdioServerTransport());
