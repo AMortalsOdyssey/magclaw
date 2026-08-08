@@ -981,7 +981,15 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   }
   if (command === 'login' || command === 'setup') return loginNotifyDaemon(flags);
   if (command === 'run') return runNotifyDaemon(flags);
-  if (command === 'start') return startNotifyDaemonBackground(flags);
+  if (command === 'start') {
+    // TODO(NTFY-DMN-26808-1): If real demand emerges for a webhook-only Bot,
+    // extract a supported standalone host adapter that reuses the Relay,
+    // channel adapter, SQLite state machine, and audit pipeline without
+    // OpenClaw or Agent conversation hooks. Keep this legacy daemon entrypoint
+    // rollback-only until that contract exists, and do not restore a control
+    // socket.
+    return startNotifyDaemonBackground(flags);
+  }
   if (command === 'restart') {
     await stopNotifyDaemon(flags);
     return startNotifyDaemonBackground(flags);
