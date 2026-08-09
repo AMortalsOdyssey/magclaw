@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { handleNotifyApi } from '../server/api/notify-routes.js';
+import { formatBeijingDateTime, handleNotifyApi } from '../server/api/notify-routes.js';
 import {
   NOTIFY_DEVICE_TTL_MS,
   NOTIFY_TOKEN_TTL_MS,
@@ -143,6 +143,15 @@ async function approveNotifyDevice(deps, verificationUri) {
   const reviewed = await callRoute(deps, 'GET', verificationUri);
   assert.equal(reviewed.res.status, 200);
   assert.match(reviewed.res.raw, /确认连接 Notify/);
+  assert.doesNotMatch(reviewed.res.raw, /允许当前飞书账号发送 Notify 请求/);
+  assert.match(reviewed.res.raw, /北京时间，UTC\+8/);
+  if (verificationUri.startsWith('/notify/auth/')) {
+    assert.match(reviewed.res.raw, /Bot 处理当前已验证用户提交的 Notify 请求，并由 Bot 向获批群聊发送消息/);
+    assert.match(reviewed.res.raw, /当前飞书账号仅用于核验请求人身份与权限，不作为消息发送方/);
+  } else {
+    assert.match(reviewed.res.raw, /授权本地 Notify Owner 连接并使用/);
+    assert.match(reviewed.res.raw, /当前飞书账号仅用于核验 Owner 身份与权限，不作为消息发送方/);
+  }
   const csrfToken = reviewed.res.raw.match(/name="csrf_token" value="([^"]+)"/)?.[1] || '';
   const userCode = reviewed.res.raw.match(/name="user_code" value="([^"]+)"/)?.[1] || '';
   assert.ok(csrfToken);
@@ -152,8 +161,18 @@ async function approveNotifyDevice(deps, verificationUri) {
   });
   assert.equal(approved.res.status, 200);
   assert.match(approved.res.raw, /Notify 已连接/);
+  assert.doesNotMatch(approved.res.raw, /允许当前飞书账号发送 Notify 请求/);
+  assert.match(approved.res.raw, /北京时间，UTC\+8/);
   return { reviewed, approved };
 }
+
+test('Notify approval pages render request timestamps in Beijing time', () => {
+  assert.equal(
+    formatBeijingDateTime('2026-08-09T14:41:11.682Z'),
+    '2026-08-09 22:41:11（北京时间，UTC+8）',
+  );
+  assert.equal(formatBeijingDateTime('not-a-date'), '—');
+});
 
 test('Notify submission requires explicit current-turn authorization and strips raw mentions', () => {
   assert.throws(() => normalizeNotifySubmission({ group: '研发群', markdown: 'done' }), /explicit user authorization/i);

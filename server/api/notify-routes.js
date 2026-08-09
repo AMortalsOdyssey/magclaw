@@ -26,11 +26,37 @@ function htmlEscape(value = '') {
   return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+export function formatBeijingDateTime(value = '') {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return parts.year + '-' + parts.month + '-' + parts.day + ' '
+    + parts.hour + ':' + parts.minute + ':' + parts.second + '（北京时间，UTC+8）';
+}
+
 const APPROVAL_PAGE_STYLE = 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:#fffaf7;color:#1a1a1a;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.card{width:min(500px,calc(100% - 40px));padding:30px;border:2px solid #1a1a1a;border-radius:8px;box-shadow:5px 5px 0 #1a1a1a;background:#fff}.mark{color:#ff3faa;font-weight:900;letter-spacing:.08em}h1{font-size:22px}p,dt,dd{color:#67515f;line-height:1.55}dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 14px}dd{margin:0;overflow-wrap:anywhere}button{width:100%;margin-top:18px;padding:12px 16px;border:2px solid #1a1a1a;border-radius:6px;background:#ff3faa;color:#fff;font:inherit;font-weight:800;cursor:pointer}';
 
 function approvalConnectionRows(request = {}, installation = null) {
   const target = installation?.name || installation?.handle || request.relayHandle || 'MagClaw Notify';
-  return `<dl><dt>用途</dt><dd>允许当前飞书账号发送 Notify 请求</dd><dt>目标 Bot</dt><dd>${htmlEscape(target)}</dd><dt>请求时间</dt><dd>${htmlEscape(request.createdAt || '')}</dd></dl>`;
+  const targetLabel = htmlEscape(target);
+  const clientPurpose = '授权 ' + targetLabel + ' Bot 处理当前已验证用户提交的 Notify 请求，并由 Bot 向获批群聊发送消息';
+  const ownerPurpose = '授权本地 Notify Owner 连接并使用 ' + targetLabel + ' Bot 处理消息';
+  const purpose = request.authMode === 'client' ? clientPurpose : ownerPurpose;
+  const identityDescription = request.authMode === 'client'
+    ? '当前飞书账号仅用于核验请求人身份与权限，不作为消息发送方'
+    : '当前飞书账号仅用于核验 Owner 身份与权限，不作为消息发送方';
+  return '<dl><dt>用途</dt><dd>' + purpose + '</dd><dt>目标 Bot</dt><dd>' + targetLabel
+    + '</dd><dt>身份说明</dt><dd>' + identityDescription + '</dd><dt>请求时间</dt><dd>'
+    + htmlEscape(formatBeijingDateTime(request.createdAt)) + '</dd></dl>';
 }
 
 function approvalConfirmationHtml(request = {}, csrfToken = '', action = '', installation = null) {
