@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +27,7 @@ import {
   runNotifyBackgroundUpdate,
   scheduleNotifyBackgroundUpdate,
 } from './update.js';
+import { decodeNotifyConnectionToken } from './setup-token.js';
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SKILL_SOURCE = path.join(PACKAGE_ROOT, 'skills', 'magclaw-notify');
@@ -53,6 +54,55 @@ function parseArgs(argv) {
 
 function profileName(value = 'default') {
   return String(value || 'default').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80) || 'default';
+}
+
+function automaticConnectionName(relayHandle, registry = {}) {
+  const handle = String(relayHandle || '').trim();
+  if (!handle) throw new Error('Notify Relay did not identify the Bot bound to this Token.');
+  const base = profileName(handle);
+  const existing = registry.connections?.[base];
+  if (!existing || !existing.relayHandle || existing.relayHandle === handle) return base;
+  const suffix = crypto.createHash('sha256').update(handle).digest('hex').slice(0, 8);
+  return profileName(`${base}-${suffix}`);
+}
+
+function existingConnectionForSetupToken(registry = {}, setupToken = '') {
+  return Object.values(registry.connections || {}).find((connection) => (
+    connection?.relayHandle
+    && String(setupToken || '').startsWith(`mcn_inv_${connection.relayHandle}_`)
+  )) || {};
+}
+
+function suppliedNotifyToken(flags = {}, positional = []) {
+  const positionalToken = String(positional[0] || '').startsWith('mcn_') ? positional[0] : positional[1];
+  return {
+    positionalToken,
+    suppliedToken: String(flags.token || flags.inviteToken || flags.setupToken || positionalToken || '').trim(),
+  };
+}
+
+export async function installGlobalNotifyClient(options = {}) {
+  const packageJson = await readJson(PACKAGE_JSON, { name: '@magclaw/notify', version: '' });
+  const packageName = String(packageJson.name || '@magclaw/notify');
+  const version = String(packageJson.version || '').trim();
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error('Notify package version is invalid; global installation was not attempted.');
+  const platform = options.platform || process.platform;
+  const npm = String(options.npmPath || (platform === 'win32' ? 'npm.cmd' : 'npm'));
+  const run = options.spawnSync || spawnSync;
+  const env = { ...process.env, ...(options.env || {}) };
+  const install = run(npm, [
+    'install', '--global', '--ignore-scripts', '--no-audit', '--no-fund', `${packageName}@${version}`,
+  ], { encoding: 'utf8', windowsHide: true, env });
+  if (install.status !== 0) {
+    throw new Error(`Unable to install MagClaw Notify ${version}: ${String(install.stderr || install.stdout || `npm exited ${install.status}`).trim()}`);
+  }
+  const listed = run(npm, ['list', '--global', '--depth=0', '--json', packageName], {
+    encoding: 'utf8', windowsHide: true, env,
+  });
+  let installedVersion = '';
+  try { installedVersion = JSON.parse(String(listed.stdout || '{}')).dependencies?.[packageName]?.version || ''; } catch {}
+  if (listed.status !== 0 || installedVersion !== version) throw new Error(`MagClaw Notify ${version} was installed but exact-version verification failed.`);
+  return { packageName, version, installed: true };
 }
 
 function home(env = process.env) {
@@ -271,35 +321,52 @@ export async function installNotifyIntegrations(flags = {}, options = {}) {
   return installed;
 }
 
-async function login(flags, positional) {
-  const connectionName = profileName(flags.connection || flags.profile || 'default');
-  const projectOptions = { projectDir: flags.projectDir };
+export async function loginNotifyClient(flags = {}, positional = [], options = {}) {
+  const explicitConnection = String(flags.connection || flags.profile || '').trim();
+  const projectOptions = { projectDir: flags.projectDir, env: options.env || process.env };
   const current = await readNotifyConnections(projectOptions);
-  const previous = current.registry.connections[connectionName] || {};
-  const relayUrl = normalizeRelayUrl(flags.relayUrl || positional[0] || previous.relayUrl || DEFAULT_RELAY_URL);
-  const inviteToken = String(flags.token || flags.inviteToken || flags.setupToken || positional[1] || '').trim();
-  if (!inviteToken) throw new Error('Notify login requires --token with the owner-provided Notify setup token.');
-  const connectionId = previous.connectionId || `ncn_${crypto.randomUUID()}`;
-  const started = await requestJson(relayUrl, '/api/notify/auth/start', {
+  const explicitName = explicitConnection ? profileName(explicitConnection) : '';
+  const { positionalToken, suppliedToken } = suppliedNotifyToken(flags, positional);
+  const decodedToken = decodeNotifyConnectionToken(suppliedToken);
+  const previousBeforeLogin = explicitName
+    ? current.registry.connections[explicitName] || {}
+    : existingConnectionForSetupToken(current.registry, decodedToken.setupToken);
+  const relayUrl = normalizeRelayUrl(
+    flags.relayUrl
+    || decodedToken.relayUrl
+    || (positionalToken === positional[1] ? positional[0] : '')
+    || previousBeforeLogin.relayUrl
+    || options.env?.MAGCLAW_NOTIFY_RELAY_URL
+    || process.env.MAGCLAW_NOTIFY_RELAY_URL
+    || DEFAULT_RELAY_URL,
+  );
+  const inviteToken = decodedToken.setupToken;
+  if (!inviteToken.startsWith('mcn_inv_')) throw new Error('Notify login requires --token with a valid Owner-provided Notify Token.');
+  const connectionId = previousBeforeLogin.connectionId || `ncn_${crypto.randomUUID()}`;
+  const request = options.requestJson || requestJson;
+  const started = await request(relayUrl, '/api/notify/auth/start', {
     method: 'POST',
     body: { inviteToken, connectionId },
   });
   const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
-  process.stderr.write(`Approve MagClaw Notify login:\n${verificationUrl}\nCode: ${started.userCode}\n`);
-  if (!flags.noOpen) openBrowser(verificationUrl);
+  const stderr = options.stderr || process.stderr;
+  stderr.write(`Approve MagClaw Notify login:\n${verificationUrl}\nCode: ${started.userCode}\n`);
+  if (!flags.noOpen) (options.openBrowser || openBrowser)(verificationUrl);
   const deadline = Date.now() + Math.max(30_000, Number(flags.timeoutSeconds || 600) * 1000);
   const interval = Math.max(1000, Number(started.intervalMs || 2000));
   let approved;
   while (Date.now() < deadline) {
-    approved = await requestJson(relayUrl, '/api/notify/auth/token', {
+    approved = await request(relayUrl, '/api/notify/auth/token', {
       method: 'POST',
       body: { deviceCode: started.deviceCode },
     });
     if (approved.status === 'approved') break;
     if (approved.status === 'expired' || approved.status === 'rejected') throw new Error(`Notify login ${approved.status}.`);
-    await sleep(interval);
+    await (options.sleep || sleep)(interval);
   }
   if (approved?.status !== 'approved' || !approved.token) throw new Error('Notify login timed out.');
+  const connectionName = explicitName || automaticConnectionName(approved.relayHandle, current.registry);
+  const previous = current.registry.connections[connectionName] || {};
   const config = {
     version: 1,
     name: connectionName,
@@ -312,13 +379,46 @@ async function login(flags, positional) {
     createdAt: previous.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const saved = await saveNotifyConnection(config, { ...projectOptions, connection: connectionName, makeDefault: flags.default === true });
+  const saved = await saveNotifyConnection(config, {
+    ...projectOptions,
+    connection: connectionName,
+    makeDefault: options.setupMode === true || flags.default === true,
+  });
   if (!flags.noSkill) {
     const requestedTargets = String(flags.targets || flags.target || 'auto-detected hosts');
-    process.stderr.write(`Installing MagClaw Notify integrations for ${requestedTargets}. Existing host configuration will be preserved; Claude Desktop is backed up before modification.\n`);
+    stderr.write(`Installing MagClaw Notify integrations for ${requestedTargets}. Existing host configuration will be preserved; Claude Desktop is backed up before modification.\n`);
   }
-  const installedIntegrations = flags.noSkill ? [] : await installNotifyIntegrations(flags);
-  return { projectKey: saved.paths.projectKey, connection: connectionName, relayUrl, relayHandle: config.relayHandle, user: config.user, installedIntegrations };
+  const install = options.installNotifyIntegrations || installNotifyIntegrations;
+  let installedIntegrations = [];
+  try {
+    installedIntegrations = flags.noSkill ? [] : await install(flags, options.integrationOptions || {});
+  } catch (error) {
+    throw new Error(`Notify connection ${connectionName} was saved, but Agent integration installation failed: ${error.message}. Fix the host configuration and run setup again.`);
+  }
+  return {
+    projectKey: saved.paths.projectKey,
+    connection: connectionName,
+    default: saved.registry.defaultConnection === connectionName,
+    relayUrl,
+    relayHandle: config.relayHandle,
+    user: config.user,
+    installedIntegrations,
+  };
+}
+
+export async function setupNotifyClient(flags = {}, positional = [], options = {}) {
+  const { suppliedToken } = suppliedNotifyToken(flags, positional);
+  const decoded = decodeNotifyConnectionToken(suppliedToken);
+  if (!decoded.setupToken.startsWith('mcn_inv_')) throw new Error('Notify setup requires --token with a valid Owner-provided Token.');
+  const install = options.installGlobalNotifyClient || installGlobalNotifyClient;
+  const clientInstall = flags.noInstall ? { installed: false, skipped: true } : await install({
+    platform: options.platform,
+    npmPath: flags.npmPath || options.npmPath,
+    env: options.env,
+    spawnSync: options.spawnSync,
+  });
+  const result = await loginNotifyClient(flags, positional, { ...options, setupMode: true });
+  return { ...result, clientInstall };
 }
 
 async function authenticated(flags) {
@@ -427,7 +527,8 @@ async function logout(flags) {
 function help() {
   return [
     'MagClaw Notify', '',
-    '  magclaw-notify login RELAY_URL --token SETUP_TOKEN --connection NAME [--default]',
+    '  npx --yes @magclaw/notify@latest setup --token OWNER_TOKEN',
+    '  magclaw-notify login [RELAY_URL] --token LEGACY_SETUP_TOKEN [--connection NAME]',
     '  magclaw-notify send --group NAME --summary-json-file FILE --authorized-current-turn',
     '  magclaw-notify send --group NAME --markdown-file FILE --authorized-current-turn',
     '  magclaw-notify status REQUEST_ID',
@@ -448,7 +549,8 @@ async function executeNotifyCli(command, positional, flags) {
     if (command === 'daemon') process.stderr.write('magclaw-notify daemon is deprecated; use magclaw-notify-owner.\n');
     result = await (await loadNotifyOwnerCommand())(positional, flags);
   }
-  else if (['login', 'setup'].includes(command)) result = await login(flags, positional);
+  else if (command === 'setup') result = await setupNotifyClient(flags, positional);
+  else if (command === 'login') result = await loginNotifyClient(flags, positional);
   else if (command === 'send') result = await sendNotify(flags);
   else if (command === 'status') result = await status(flags, positional);
   else if (command === 'targets') result = await targets(flags);

@@ -10,13 +10,24 @@ name the target group, and authorize the send in the current turn.
 
 ## Install and sign in
 
-Connections are scoped to the local Git project. A project may keep several
-Owner/Bot connections:
+One command downloads the current Client, opens Feishu login, binds the Bot
+contained in the Owner Token, makes it the current project's default connection,
+and installs integrations for detected Agent hosts:
 
 ```bash
-npm install --global @magclaw/notify@latest
-magclaw-notify login https://magclaw.example --token SETUP_TOKEN --connection monkey
-magclaw-notify login https://magclaw.example --token OTHER_TOKEN --connection release
+npx --yes @magclaw/notify@latest setup --token "OWNER_TOKEN"
+```
+
+No connection name, default flag, Relay URL, or separate install command is
+needed. Bootstrap installs and verifies the current CLI version before login.
+The Owner Token is self-describing and already selects the Bot and Relay. It is
+a secret: send it only through a private channel.
+
+Connections are scoped to the local Git project. Running setup with another
+Owner Token adds that Bot connection and makes it the project default. Advanced
+management remains available:
+
+```bash
 magclaw-notify connections list
 magclaw-notify connections use monkey
 ```
@@ -25,11 +36,6 @@ With one connection it is selected automatically. With several, the project
 default is used; without a default the CLI requires `--connection` and never
 guesses. Project paths, hostnames, operating-system details and device
 fingerprints are never sent to the Owner or Relay.
-
-```sh
-npx --yes @magclaw/notify@latest login https://notify.example.com \
-  --token "OWNER_PROVIDED_SETUP_TOKEN"
-```
 
 The command opens a Feishu authorization page. It displays the target Bot,
 request time and your Feishu identity, but no hostname, operating system,
@@ -166,7 +172,7 @@ previous verified version is retained for rollback.
 ```sh
 magclaw-notify update status
 magclaw-notify update check
-magclaw-notify update apply --target-version 0.6.0
+magclaw-notify update apply --target-version 0.7.0
 magclaw-notify update rollback
 ```
 

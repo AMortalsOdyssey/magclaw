@@ -337,6 +337,7 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   assert.match(codexMetadata, /allow_implicit_invocation: false/);
   const claudeSkill = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(claudeSkill, /disable-model-invocation: true/);
+  assert.match(claudeSkill, /magclaw-notify send/);
   const openclawSkill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   const hermesSkill = await readFile(path.join(root, '.hermes', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(openclawSkill, /disable-model-invocation: true/);
@@ -1106,6 +1107,27 @@ test('Notify daemon access kick CLI preserves explicit cloud and local revoke co
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('Notify Owner renders the enabled Setup Token as a self-describing Token without rotation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-token-show-'));
+  const instance = 'token-show';
+  const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
+  const rawToken = 'mcn_inv_monkey-show_safe-owner-secret';
+  await mkdir(path.dirname(paths.config), { recursive: true });
+  await writeFile(paths.config, `${JSON.stringify({
+    relayUrl: 'http://127.0.0.1:7443',
+    relayId: 'nrl_show',
+    relayHandle: 'monkey-show',
+    token: 'owner-token',
+    inviteToken: rawToken,
+    machineFingerprint: 'mfp_test',
+  })}\n`, { mode: 0o600 });
+  const result = await runNotifyOwnerCommand(['setup-token', 'show'], { instance, notifyHome: root });
+  assert.equal(result.relayHandle, 'monkey-show');
+  assert.equal(result.setupTokenFormat, 'connection-token-v1');
+  assert.match(result.setupToken, /^mcn_setup_/);
+  assert.doesNotMatch(result.setupToken, /safe-owner-secret/);
 });
 
 test('Setup token routes an authenticated client request to exactly one independent Notify Relay', async () => {

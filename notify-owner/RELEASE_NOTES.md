@@ -1,5 +1,15 @@
 # MagClaw Notify Owner release notes
 
+## 0.9.0
+
+- Returns a self-describing Owner Token from initial login and token rotation,
+  allowing Clients to download, sign in, bind the correct Relay/Bot and install
+  Agent integrations with one `npx ... setup --token` command.
+- Adds `setup-token show` to render the currently enabled credential in the new
+  format without rotating it or interrupting pending users.
+- Keeps the raw Relay Setup Token private in Owner state and compatible with the
+  existing Relay protocol.
+
 ## 0.8.0
 
 - Replaces user-facing instances with Feishu Bot Bindings and hosts multiple

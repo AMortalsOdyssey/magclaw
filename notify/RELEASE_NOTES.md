@@ -1,5 +1,23 @@
 # @magclaw/notify Release Notes
 
+## 0.7.0 - 2026-08-09 - One-token setup
+
+### added
+
+- Adds one-command Client bootstrap with `npx --yes @magclaw/notify@latest
+  setup --token OWNER_TOKEN`.
+- Reads the Relay and Bot binding from a self-describing Owner Token, creates a
+  project-scoped connection automatically, selects it as the project default,
+  and installs detected Agent integrations.
+
+### changed
+
+- Keeps connection naming and default flags as advanced compatibility options;
+  ordinary users only need the Owner Token.
+- Bootstrap installs the exact running Client version globally and verifies it
+  before login, so generated Skills can use the stable local executable and
+  retain exact-version update and rollback behavior.
+
 ## 0.6.0 - 2026-08-08 - Project connections and safe auto-update
 
 ### added

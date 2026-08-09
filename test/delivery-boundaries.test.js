@@ -38,6 +38,7 @@ test('root exposes separate web service and daemon delivery scripts', async () =
     'src/audit.js',
     'src/cli.js',
     'src/connections.js',
+    'src/setup-token.js',
     'src/update.js',
     'src/mcp.js',
     'src/summary.js',

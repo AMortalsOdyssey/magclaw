@@ -15,6 +15,16 @@ import {
   useNotifyConnection,
 } from '../notify/src/connections.js';
 import {
+  installGlobalNotifyClient,
+  loginNotifyClient,
+  setupNotifyClient,
+} from '../notify/src/cli.js';
+import {
+  decodeNotifyConnectionToken,
+  encodeNotifyConnectionToken,
+} from '../notify/src/setup-token.js';
+import { encodeNotifyConnectionToken as encodeOwnerConnectionToken } from '../notify-owner/src/setup-token.js';
+import {
   applyNotifyUpdate,
   checkNotifyUpdate,
   notifyUpdatePaths,
@@ -49,6 +59,178 @@ async function project(root, name) {
   await mkdir(path.join(dir, '.git'), { recursive: true });
   return dir;
 }
+
+function fakeNotifyLogin(relayHandle, calls = []) {
+  return async (relayUrl, pathname, options = {}) => {
+    calls.push({ relayUrl, pathname, options });
+    if (pathname === '/api/notify/auth/start') {
+      return {
+        verificationUri: '/notify/auth/approve?user_code=ABCDE-12345',
+        userCode: 'ABCDE-12345',
+        deviceCode: 'mcn_dev_test',
+        intervalMs: 1,
+      };
+    }
+    return {
+      status: 'approved',
+      token: `mcn_access_${relayHandle}`,
+      tokenExpiresAt: '2026-08-10T00:00:00.000Z',
+      relayHandle,
+      user: { id: 'usr_sender', name: 'Sender' },
+    };
+  };
+}
+
+test('Notify one-token setup derives Relay and Bot, installs integrations, and selects the project default', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-one-token-'));
+  const projectDir = await project(root, 'alpha');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  const rawToken = 'mcn_inv_monkey-ee50caa_safe-test-secret';
+  const ownerToken = encodeNotifyConnectionToken({ relayUrl: 'https://notify.example/', setupToken: rawToken });
+  assert.equal(ownerToken, encodeOwnerConnectionToken({ relayUrl: 'https://notify.example/', setupToken: rawToken }));
+  assert.deepEqual(decodeNotifyConnectionToken(ownerToken), {
+    setupToken: rawToken,
+    relayUrl: 'https://notify.example',
+    format: 'connection-token',
+  });
+
+  const calls = [];
+  const installed = [];
+  const result = await setupNotifyClient({ token: ownerToken, projectDir, noOpen: true }, [], {
+    env,
+    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.7.0', installed: true }),
+    requestJson: fakeNotifyLogin('monkey-ee50caa', calls),
+    installNotifyIntegrations: async () => { installed.push('called'); return [{ kind: 'codex' }]; },
+    stderr: { write() {} },
+  });
+  assert.equal(result.connection, 'monkey-ee50caa');
+  assert.equal(result.default, true);
+  assert.equal(result.clientInstall.version, '0.7.0');
+  assert.equal(result.relayUrl, 'https://notify.example');
+  assert.deepEqual(result.installedIntegrations, [{ kind: 'codex' }]);
+  assert.deepEqual(installed, ['called']);
+  assert.equal(calls[0].relayUrl, 'https://notify.example');
+  assert.equal(calls[0].options.body.inviteToken, rawToken);
+  assert.doesNotMatch(JSON.stringify(await listNotifyConnections({ projectDir, env })), /safe-test-secret|mcn_setup_/);
+});
+
+test('Notify setup keeps multiple Bot Tokens isolated, makes the newest default, and updates repeated Bots in place', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-multi-token-'));
+  const projectDir = await project(root, 'alpha');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  const connectionIds = [];
+  const setup = async (relayHandle, secret) => setupNotifyClient({
+    token: encodeNotifyConnectionToken({ relayUrl: 'https://notify.example', setupToken: `mcn_inv_${relayHandle}_${secret}` }),
+    projectDir,
+    noOpen: true,
+    noSkill: true,
+  }, [], {
+    env,
+    installGlobalNotifyClient: async () => ({ installed: true }),
+    requestJson: async (relayUrl, pathname, options) => {
+      if (pathname === '/api/notify/auth/start') connectionIds.push(options.body.connectionId);
+      return fakeNotifyLogin(relayHandle)(relayUrl, pathname, options);
+    },
+    stderr: { write() {} },
+  });
+
+  await setup('monkey-ee50caa', 'first');
+  await setup('release-12345678', 'second');
+  let connections = await listNotifyConnections({ projectDir, env });
+  assert.equal(connections.connections.length, 2);
+  assert.equal(connections.defaultConnection, 'release-12345678');
+
+  await setup('monkey-ee50caa', 'rotated');
+  connections = await listNotifyConnections({ projectDir, env });
+  assert.equal(connections.connections.length, 2);
+  assert.equal(connections.defaultConnection, 'monkey-ee50caa');
+  assert.equal(connectionIds[0], connectionIds[2]);
+});
+
+test('Notify setup preserves an authenticated connection when host integration installation fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-install-recovery-'));
+  const projectDir = await project(root, 'alpha');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  const token = encodeNotifyConnectionToken({
+    relayUrl: 'https://notify.example',
+    setupToken: 'mcn_inv_monkey-ee50caa_install-failure',
+  });
+  await assert.rejects(setupNotifyClient({ token, projectDir, noOpen: true }, [], {
+    env,
+    installGlobalNotifyClient: async () => ({ installed: true }),
+    requestJson: fakeNotifyLogin('monkey-ee50caa'),
+    installNotifyIntegrations: async () => { throw new Error('invalid Claude Desktop JSON'); },
+    stderr: { write() {} },
+  }), /connection monkey-ee50caa was saved.*run setup again/i);
+  const connections = await listNotifyConnections({ projectDir, env });
+  assert.equal(connections.connections.length, 1);
+  assert.equal(connections.defaultConnection, 'monkey-ee50caa');
+});
+
+test('Notify setup rejects damaged self-describing Tokens before contacting a Relay or writing project state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-bad-token-'));
+  const projectDir = path.join(root, 'plain-directory');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  await mkdir(projectDir, { recursive: true });
+  let contacted = false;
+  await assert.rejects(setupNotifyClient({ token: 'mcn_setup_not-valid-base64', projectDir, noOpen: true }, [], {
+    env,
+    installGlobalNotifyClient: async () => { throw new Error('must not install'); },
+    requestJson: async () => { contacted = true; },
+    stderr: { write() {} },
+  }), /invalid or damaged/i);
+  assert.equal(contacted, false);
+  assert.equal((await listNotifyConnections({ projectDir, env })).connections.length, 0);
+  await assert.rejects(setupNotifyClient({ token: 'not-a-notify-token', projectDir }, [], {
+    env,
+    installGlobalNotifyClient: async () => { throw new Error('must not install'); },
+  }), /valid Owner-provided Token/i);
+});
+
+test('Notify bootstrap installs and verifies the exact Client version on POSIX and Windows', async () => {
+  for (const platform of ['darwin', 'win32']) {
+    const calls = [];
+    const result = await installGlobalNotifyClient({
+      platform,
+      spawnSync(command, args) {
+        calls.push({ command, args });
+        if (args[0] === 'install') return { status: 0, stdout: '', stderr: '' };
+        return {
+          status: 0,
+          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.7.0' } } }),
+          stderr: '',
+        };
+      },
+    });
+    assert.equal(result.version, '0.7.0');
+    assert.equal(calls[0].command, platform === 'win32' ? 'npm.cmd' : 'npm');
+    assert.deepEqual(calls[0].args.slice(0, 2), ['install', '--global']);
+    assert.ok(calls[0].args.includes('@magclaw/notify@0.7.0'));
+    assert.deepEqual(calls[1].args.slice(0, 4), ['list', '--global', '--depth=0', '--json']);
+  }
+});
+
+test('Notify bootstrap stops before Relay login and project writes when global installation fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-global-install-failure-'));
+  const projectDir = await project(root, 'alpha');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  let contacted = false;
+  await assert.rejects(setupNotifyClient({
+    token: encodeNotifyConnectionToken({
+      relayUrl: 'https://notify.example',
+      setupToken: 'mcn_inv_monkey-ee50caa_global-install-failure',
+    }),
+    projectDir,
+    noOpen: true,
+  }, [], {
+    env,
+    installGlobalNotifyClient: async () => { throw new Error('npm global directory is not writable'); },
+    requestJson: async () => { contacted = true; },
+    stderr: { write() {} },
+  }), /npm global directory is not writable/i);
+  assert.equal(contacted, false);
+  assert.equal((await listNotifyConnections({ projectDir, env })).connections.length, 0);
+});
 
 test('Notify Client scopes multiple connections by project, refuses ambiguous selection, and recovers a corrupted registry', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-project-connections-'));

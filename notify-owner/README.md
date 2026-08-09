@@ -43,11 +43,18 @@ magclaw-notify-owner configure --bot monkey \
 magclaw-notify-owner add-group --bot monkey --name "研发群" --chat-id oc_chat \
   --route-label "研发群 · 上海" --owner-name "群主" --member-count 18
 magclaw-notify-owner setup-token rotate --bot monkey
+magclaw-notify-owner setup-token show --bot monkey
 magclaw-notify-owner plugin start
 ```
 
-The Setup Token is bound to that Bot, not to a group. Sender identity and group
-access are still verified and approved.
+The returned Owner Token contains the Relay address and is bound to that Bot,
+not to a group. Senders need only one command:
+
+```bash
+npx --yes @magclaw/notify@latest setup --token "OWNER_TOKEN"
+```
+
+Sender identity and group access are still verified and approved.
 
 ```bash
 magclaw-notify-owner plugin status
@@ -87,7 +94,7 @@ recorded and retried later.
 ```bash
 magclaw-notify-owner update status
 magclaw-notify-owner update check
-magclaw-notify-owner update apply --target-version 0.8.0
+magclaw-notify-owner update apply --target-version 0.9.0
 magclaw-notify-owner update rollback
 ```
 

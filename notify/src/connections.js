@@ -146,7 +146,7 @@ export async function selectNotifyConnection(options = {}) {
   if (registry.defaultConnection && registry.connections[registry.defaultConnection]) {
     return { paths, registry, name: registry.defaultConnection, connection: registry.connections[registry.defaultConnection], recoveredFromBackup };
   }
-  if (!names.length) throw new Error('This project has no Notify connection. Run magclaw-notify login --token SETUP_TOKEN --connection NAME.');
+  if (!names.length) throw new Error('This project has no Notify connection. Run npx --yes @magclaw/notify@latest setup --token OWNER_TOKEN.');
   throw new Error(`This project has multiple Notify connections and no default. Use --connection NAME or run magclaw-notify connections use NAME. Available: ${names.join(', ')}.`);
 }
 

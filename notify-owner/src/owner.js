@@ -24,6 +24,7 @@ import {
   runNotifyOwnerBackgroundUpdate,
   scheduleNotifyOwnerBackgroundUpdate,
 } from './update.js';
+import { encodeNotifyConnectionToken } from './setup-token.js';
 import {
   addNotifyBinding,
   listNotifyBindings,
@@ -289,7 +290,23 @@ async function rotateNotifySetupToken(paths, flags = {}) {
   delete config.inviteTokenDisabledAt;
   config.updatedAt = new Date().toISOString();
   await writeJson(paths.config, config);
-  return result;
+  return {
+    ...result,
+    setupToken: encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: result.setupToken }),
+    setupTokenFormat: 'connection-token-v1',
+  };
+}
+
+async function showNotifySetupToken(paths) {
+  const config = await readJson(paths.config, {});
+  if (!config.relayUrl || !config.inviteToken) {
+    throw new Error('Notify Owner has no enabled Setup Token. Run setup-token rotate first.');
+  }
+  return {
+    relayHandle: config.relayHandle || '',
+    setupToken: encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: config.inviteToken }),
+    setupTokenFormat: 'connection-token-v1',
+  };
 }
 
 async function disableNotifySetupToken(paths, flags = {}) {
@@ -372,7 +389,9 @@ export async function loginNotifyDaemon(flags = {}) {
     relayUrl,
     relayId: config.relayId,
     relayHandle: config.relayHandle,
-    inviteToken: approved.inviteToken || '',
+    inviteToken: approved.inviteToken
+      ? encodeNotifyConnectionToken({ relayUrl, setupToken: approved.inviteToken })
+      : '',
     inviteTokenCreated: Boolean(approved.inviteToken),
     owner: config.owner,
   };
@@ -1103,6 +1122,7 @@ async function executeNotifyDaemonCommand(positional = [], flags = {}) {
   }
   if (command === 'setup-token') {
     const action = positional[1] || '';
+    if (action === 'show') return showNotifySetupToken(paths);
     if (action === 'rotate') return rotateNotifySetupToken(paths, flags);
     if (action === 'disable') return disableNotifySetupToken(paths, flags);
     throw new Error(`Unknown Notify setup-token command: ${action || '[missing]'}`);
