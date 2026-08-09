@@ -79,7 +79,7 @@ function existingConnectionForSetupToken(registry = {}, setupToken = '') {
 }
 
 function suppliedNotifyToken(flags = {}, positional = []) {
-  const positionalToken = String(positional[0] || '').startsWith('mcn_') ? positional[0] : positional[1];
+  const positionalToken = /^mcn(?:_|-)/i.test(String(positional[0] || '')) ? positional[0] : positional[1];
   return {
     positionalToken,
     suppliedToken: String(flags.token || flags.inviteToken || flags.setupToken || positionalToken || '').trim(),

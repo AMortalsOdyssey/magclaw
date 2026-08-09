@@ -85,33 +85,86 @@ test('Notify one-token setup derives Relay and Bot, installs integrations, and s
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-one-token-'));
   const projectDir = await project(root, 'alpha');
   const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
-  const rawToken = 'mcn_inv_monkey-ee50caa_safe-test-secret';
-  const ownerToken = encodeNotifyConnectionToken({ relayUrl: 'https://notify.example/', setupToken: rawToken });
-  assert.equal(ownerToken, encodeOwnerConnectionToken({ relayUrl: 'https://notify.example/', setupToken: rawToken }));
+  const rawToken = 'mcn_inv_7KQ4P9DX3M2F8R6T';
+  const ownerToken = encodeNotifyConnectionToken({ relayUrl: 'https://magclaw-testing.multiego.me/', setupToken: rawToken });
+  assert.equal(ownerToken, 'MCN-T-7KQ4-P9DX-3M2F-8R6T');
+  assert.equal(ownerToken, encodeOwnerConnectionToken({ relayUrl: 'https://magclaw-testing.multiego.me/', setupToken: rawToken }));
   assert.deepEqual(decodeNotifyConnectionToken(ownerToken), {
     setupToken: rawToken,
-    relayUrl: 'https://notify.example',
-    format: 'connection-token',
+    relayUrl: 'https://magclaw-testing.multiego.me',
+    format: 'short-connection-code',
   });
 
   const calls = [];
   const installed = [];
   const result = await setupNotifyClient({ token: ownerToken, projectDir, noOpen: true }, [], {
     env,
-    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.7.1', installed: true }),
+    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.8.0', installed: true }),
     requestJson: fakeNotifyLogin('monkey-ee50caa', calls),
     installNotifyIntegrations: async () => { installed.push('called'); return [{ kind: 'codex' }]; },
     stderr: { write() {} },
   });
   assert.equal(result.connection, 'monkey-ee50caa');
   assert.equal(result.default, true);
-  assert.equal(result.clientInstall.version, '0.7.1');
-  assert.equal(result.relayUrl, 'https://notify.example');
+  assert.equal(result.clientInstall.version, '0.8.0');
+  assert.equal(result.relayUrl, 'https://magclaw-testing.multiego.me');
   assert.deepEqual(result.installedIntegrations, [{ kind: 'codex' }]);
   assert.deepEqual(installed, ['called']);
-  assert.equal(calls[0].relayUrl, 'https://notify.example');
+  assert.equal(calls[0].relayUrl, 'https://magclaw-testing.multiego.me');
   assert.equal(calls[0].options.body.inviteToken, rawToken);
-  assert.doesNotMatch(JSON.stringify(await listNotifyConnections({ projectDir, env })), /safe-test-secret|mcn_setup_/);
+  assert.doesNotMatch(JSON.stringify(await listNotifyConnections({ projectDir, env })), /7KQ4P9DX3M2F8R6T|MCN-T/);
+});
+
+test('Notify official Relay tokens render as compact connection codes while legacy and custom tokens remain compatible', () => {
+  const rawToken = 'mcn_inv_7KQ4P9DX3M2F8R6T';
+  const testingCode = encodeNotifyConnectionToken({
+    relayUrl: 'https://magclaw-testing.multiego.me/',
+    setupToken: rawToken,
+  });
+  assert.equal(testingCode, 'MCN-T-7KQ4-P9DX-3M2F-8R6T');
+  assert.equal(testingCode, encodeOwnerConnectionToken({
+    relayUrl: 'https://magclaw-testing.multiego.me/',
+    setupToken: rawToken,
+  }));
+  assert.deepEqual(decodeNotifyConnectionToken(testingCode.toLowerCase()), {
+    setupToken: rawToken,
+    relayUrl: 'https://magclaw-testing.multiego.me',
+    format: 'short-connection-code',
+  });
+
+  const productionCode = encodeNotifyConnectionToken({
+    relayUrl: 'https://magclaw.multiego.me',
+    setupToken: rawToken,
+  });
+  assert.equal(productionCode, 'MCN-P-7KQ4-P9DX-3M2F-8R6T');
+  assert.deepEqual(decodeNotifyConnectionToken(productionCode), {
+    setupToken: rawToken,
+    relayUrl: 'https://magclaw.multiego.me',
+    format: 'short-connection-code',
+  });
+
+  const oldRawToken = 'mcn_inv_monkey-ee50caa_existing-owner-secret';
+  const oldOwnerToken = encodeNotifyConnectionToken({
+    relayUrl: 'https://magclaw-testing.multiego.me',
+    setupToken: oldRawToken,
+  });
+  assert.match(oldOwnerToken, /^mcn_setup_/);
+  assert.deepEqual(decodeNotifyConnectionToken(oldOwnerToken), {
+    setupToken: oldRawToken,
+    relayUrl: 'https://magclaw-testing.multiego.me',
+    format: 'connection-token',
+  });
+
+  const customToken = encodeNotifyConnectionToken({
+    relayUrl: 'https://notify.example',
+    setupToken: rawToken,
+  });
+  assert.match(customToken, /^mcn_setup_/);
+  assert.deepEqual(decodeNotifyConnectionToken(customToken), {
+    setupToken: rawToken,
+    relayUrl: 'https://notify.example',
+    format: 'connection-token',
+  });
 });
 
 test('Notify setup keeps multiple Bot Tokens isolated, makes the newest default, and updates repeated Bots in place', async () => {
@@ -213,6 +266,10 @@ test('Notify setup rejects damaged self-describing Tokens before contacting a Re
   }), /invalid or damaged/i);
   assert.equal(contacted, false);
   assert.equal((await listNotifyConnections({ projectDir, env })).connections.length, 0);
+  await assert.rejects(setupNotifyClient({ token: 'MCN-T-7KQ4-P9DX-3M2F-8R6I', projectDir }, [], {
+    env,
+    installGlobalNotifyClient: async () => { throw new Error('must not install'); },
+  }), /valid Owner-provided Token/i);
   await assert.rejects(setupNotifyClient({ token: 'not-a-notify-token', projectDir }, [], {
     env,
     installGlobalNotifyClient: async () => { throw new Error('must not install'); },
@@ -229,15 +286,15 @@ test('Notify bootstrap installs and verifies the exact Client version on POSIX a
         if (args[0] === 'install') return { status: 0, stdout: '', stderr: '' };
         return {
           status: 0,
-          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.7.1' } } }),
+          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.8.0' } } }),
           stderr: '',
         };
       },
     });
-    assert.equal(result.version, '0.7.1');
+    assert.equal(result.version, '0.8.0');
     assert.equal(calls[0].command, platform === 'win32' ? 'npm.cmd' : 'npm');
     assert.deepEqual(calls[0].args.slice(0, 2), ['install', '--global']);
-    assert.ok(calls[0].args.includes('@magclaw/notify@0.7.1'));
+    assert.ok(calls[0].args.includes('@magclaw/notify@0.8.0'));
     assert.deepEqual(calls[1].args.slice(0, 4), ['list', '--global', '--depth=0', '--json']);
   }
 });

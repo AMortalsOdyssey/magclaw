@@ -819,7 +819,7 @@ test('Standalone Notify Daemon creates a stable handle and one-time setup token'
   });
   assert.equal(approved.res.body.status, 'approved');
   assert.equal(approved.res.body.relayHandle, installation.handle);
-  assert.match(approved.res.body.inviteToken, new RegExp(`^mcn_inv_${installation.handle}_`));
+  assert.match(approved.res.body.inviteToken, /^mcn_inv_[0-9A-HJKMNP-TV-Z]{16}$/);
   assert.equal(JSON.stringify(state).includes(approved.res.body.inviteToken), false);
   assert.ok(notifyTokenForRequest(state, { headers: {
     authorization: `Bearer ${approved.res.body.token}`,
@@ -1015,6 +1015,7 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
   });
   assert.equal(rotated.res.status, 200);
   assert.notEqual(rotated.res.body.setupToken, oldSetupToken);
+  assert.match(rotated.res.body.setupToken, /^mcn_inv_[0-9A-HJKMNP-TV-Z]{16}$/);
   assert.equal(rotated.res.body.revokedExistingAccess, 1);
   assert.equal(JSON.stringify(state).includes(rotated.res.body.setupToken), false);
 
@@ -1056,6 +1057,26 @@ test('Notify owner can list and revoke sender access and rotate a leaked Setup T
   const audit = await callRoute(deps, 'GET', '/api/notify/daemon/access?include_revoked=1', { headers: daemonHeaders });
   assert.equal(audit.res.body.counts.revoked, 2);
   assert.equal(audit.res.body.access.every((record) => record.status === 'revoked'), true);
+});
+
+test('Notify setup-token guessing is rate limited before token lookup', async () => {
+  const state = {
+    connection: { workspaceId: 'ws_1' },
+    cloud: { workspaces: [{ id: 'ws_1' }] },
+    notifyRecords: [],
+  };
+  const deps = routeDeps(state, { now: () => '2026-08-09T15:00:00.000Z' });
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const invalid = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+      body: { inviteToken: 'mcn_inv_0000000000000000' },
+    });
+    assert.equal(invalid.res.status, 404);
+  }
+  const limited = await callRoute(deps, 'POST', '/api/notify/auth/start', {
+    body: { inviteToken: 'mcn_inv_0000000000000000' },
+  });
+  assert.equal(limited.res.status, 429);
+  assert.match(limited.res.body.error, /Too many Notify login attempts/);
 });
 
 test('Notify owner access kick reports cloud login and local group grant revocation separately', async () => {
@@ -1128,7 +1149,7 @@ test('Notify daemon access kick CLI preserves explicit cloud and local revoke co
   }
 });
 
-test('Notify Owner renders the enabled Setup Token as a self-describing Token without rotation', async () => {
+test('Notify Owner renders legacy and short Setup Tokens without rotation', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-token-show-'));
   const instance = 'token-show';
   const paths = notifyDaemonPaths({ MAGCLAW_NOTIFY_HOME: root }, instance);
@@ -1147,6 +1168,18 @@ test('Notify Owner renders the enabled Setup Token as a self-describing Token wi
   assert.equal(result.setupTokenFormat, 'connection-token-v1');
   assert.match(result.setupToken, /^mcn_setup_/);
   assert.doesNotMatch(result.setupToken, /safe-owner-secret/);
+
+  await writeFile(paths.config, `${JSON.stringify({
+    relayUrl: 'https://magclaw-testing.multiego.me',
+    relayId: 'nrl_show',
+    relayHandle: 'monkey-show',
+    token: 'owner-token',
+    inviteToken: 'mcn_inv_7KQ4P9DX3M2F8R6T',
+    machineFingerprint: 'mfp_test',
+  })}\n`, { mode: 0o600 });
+  const compact = await runNotifyOwnerCommand(['setup-token', 'show'], { instance, notifyHome: root });
+  assert.equal(compact.setupToken, 'MCN-T-7KQ4-P9DX-3M2F-8R6T');
+  assert.equal(compact.setupTokenFormat, 'short-connection-code-v1');
 });
 
 test('Setup token routes an authenticated client request to exactly one independent Notify Relay', async () => {

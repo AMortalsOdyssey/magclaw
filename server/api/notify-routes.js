@@ -21,6 +21,13 @@ import {
 const START_LIMIT = 20;
 const SUBMIT_LIMIT = 30;
 const RATE_WINDOW_MS = 10 * 60_000;
+const NOTIFY_SETUP_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+function randomNotifySetupToken() {
+  const bytes = crypto.randomBytes(16);
+  const code = Array.from(bytes, (byte) => NOTIFY_SETUP_CODE_ALPHABET[byte & 31]).join('');
+  return 'mcn_inv_' + code;
+}
 
 function htmlEscape(value = '') {
   return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -534,7 +541,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     let inviteToken = '';
     if (!installation.inviteTokenHash && !installation.inviteTokenDisabledAt) {
-      inviteToken = `mcn_inv_${installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
+      inviteToken = randomNotifySetupToken();
       installation.inviteTokenHash = hashNotifySecret(inviteToken);
       installation.setupTokenVersion = setupTokenVersion(installation);
       installation.inviteTokenRotatedAt = now();
@@ -690,7 +697,7 @@ export async function handleNotifyApi(req, res, url, deps) {
     }
     const body = await readJson(req);
     const revokeExisting = body.revokeExisting === true || body.revoke_existing === true;
-    const setupToken = `mcn_inv_${owner.installation.handle}_${crypto.randomBytes(24).toString('base64url')}`;
+    const setupToken = randomNotifySetupToken();
     owner.installation.inviteTokenHash = hashNotifySecret(setupToken);
     delete owner.installation.inviteTokenDisabledAt;
     owner.installation.inviteTokenRotatedAt = now();
@@ -774,6 +781,10 @@ export async function handleNotifyApi(req, res, url, deps) {
 
   if (req.method === 'POST' && url.pathname === '/api/notify/auth/start') {
     const body = await readJson(req);
+    if (!consumeRate(state, { workspaceId: 'notify', key: `auth-start:${requestIp(req)}`, limit: START_LIMIT, now })) {
+      sendError(res, 429, 'Too many Notify login attempts.');
+      return true;
+    }
     const inviteToken = compactNotifyText(body.inviteToken || body.invite_token || body.token || '', 500);
     const installation = installationForInviteToken(state, inviteToken);
     if (!installation) {

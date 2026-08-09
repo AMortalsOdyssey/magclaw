@@ -1,5 +1,14 @@
 # MagClaw Notify Owner release notes
 
+## 0.10.0
+
+- Generates 80-bit opaque Setup credentials and renders official testing and
+  production Relay credentials as readable short connection codes such as
+  `MCN-T-7KQ4-P9DX-3M2F-8R6T`.
+- Keeps existing long Owner Tokens valid. Custom Relay URLs and pre-0.10 Setup
+  credentials retain the self-describing long format until explicitly rotated.
+- Keeps Bot, group, user and local-device information out of the short code.
+
 ## 0.9.0
 
 - Returns a self-describing Owner Token from initial login and token rotation,

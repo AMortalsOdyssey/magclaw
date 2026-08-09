@@ -18,10 +18,21 @@ and installs integrations for detected Agent hosts:
 npx --yes @magclaw/notify@latest setup --token "OWNER_TOKEN"
 ```
 
+For an official MagClaw Relay, `OWNER_TOKEN` is a short connection code:
+
+```text
+MCN-T-7KQ4-P9DX-3M2F-8R6T
+```
+
+The `T` or `P` segment selects the official testing or production Relay. The
+remaining 16 characters are an 80-bit random credential. The code contains no
+Bot name, group, user identity or local-device information. Existing long
+`mcn_setup_...` Tokens remain valid, and custom Relay URLs keep that format.
+
 No connection name, default flag, Relay URL, or separate install command is
 needed. Bootstrap installs and verifies the current CLI version before login.
-The Owner Token is self-describing and already selects the Bot and Relay. It is
-a secret: send it only through a private channel.
+The Owner Token already selects the Bot and Relay. It is a secret: send it only
+through a private channel.
 
 Connections are scoped to the local Git project. Running setup with another
 Owner Token adds that Bot connection and makes it the project default. Advanced
@@ -172,7 +183,7 @@ previous verified version is retained for rollback.
 ```sh
 magclaw-notify update status
 magclaw-notify update check
-magclaw-notify update apply --target-version 0.7.1
+magclaw-notify update apply --target-version 0.8.0
 magclaw-notify update rollback
 ```
 

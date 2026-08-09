@@ -1,5 +1,20 @@
 # @magclaw/notify Release Notes
 
+## 0.8.0 - 2026-08-09 - Short connection codes
+
+### added
+
+- Accepts readable 25-character connection codes such as
+  `MCN-T-7KQ4-P9DX-3M2F-8R6T` for the official testing and production Relays.
+- Resolves the Relay environment locally from the code without exposing Bot,
+  group or sender identity in the code itself.
+
+### compatibility
+
+- Continues to accept existing self-describing `mcn_setup_...` Owner Tokens and
+  raw legacy Setup Tokens. Custom Relay URLs continue to use the self-describing
+  format because they cannot be safely inferred from a short environment code.
+
 ## 0.7.1 - 2026-08-09 - Existing connection reuse
 
 ### fixed

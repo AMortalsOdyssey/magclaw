@@ -47,6 +47,13 @@ magclaw-notify-owner setup-token show --bot monkey
 magclaw-notify-owner plugin start
 ```
 
+Official MagClaw testing and production Relays return a short connection code,
+for example `MCN-T-7KQ4-P9DX-3M2F-8R6T`. It contains only an environment marker
+and an 80-bit random credential; it does not encode the Bot, group, user or
+device. Existing long Tokens remain valid. Rotate once to replace a legacy long
+Token with the short format; existing authorized Clients remain connected
+unless `--revoke-existing` is explicitly requested.
+
 The returned Owner Token contains the Relay address and is bound to that Bot,
 not to a group. Senders need only one command:
 
@@ -94,7 +101,7 @@ recorded and retried later.
 ```bash
 magclaw-notify-owner update status
 magclaw-notify-owner update check
-magclaw-notify-owner update apply --target-version 0.9.0
+magclaw-notify-owner update apply --target-version 0.10.0
 magclaw-notify-owner update rollback
 ```
 

@@ -290,10 +290,11 @@ async function rotateNotifySetupToken(paths, flags = {}) {
   delete config.inviteTokenDisabledAt;
   config.updatedAt = new Date().toISOString();
   await writeJson(paths.config, config);
+  const setupToken = encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: result.setupToken });
   return {
     ...result,
-    setupToken: encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: result.setupToken }),
-    setupTokenFormat: 'connection-token-v1',
+    setupToken,
+    setupTokenFormat: setupToken.startsWith('MCN-') ? 'short-connection-code-v1' : 'connection-token-v1',
   };
 }
 
@@ -302,10 +303,11 @@ async function showNotifySetupToken(paths) {
   if (!config.relayUrl || !config.inviteToken) {
     throw new Error('Notify Owner has no enabled Setup Token. Run setup-token rotate first.');
   }
+  const setupToken = encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: config.inviteToken });
   return {
     relayHandle: config.relayHandle || '',
-    setupToken: encodeNotifyConnectionToken({ relayUrl: config.relayUrl, setupToken: config.inviteToken }),
-    setupTokenFormat: 'connection-token-v1',
+    setupToken,
+    setupTokenFormat: setupToken.startsWith('MCN-') ? 'short-connection-code-v1' : 'connection-token-v1',
   };
 }
 
