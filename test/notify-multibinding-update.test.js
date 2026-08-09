@@ -98,14 +98,14 @@ test('Notify one-token setup derives Relay and Bot, installs integrations, and s
   const installed = [];
   const result = await setupNotifyClient({ token: ownerToken, projectDir, noOpen: true }, [], {
     env,
-    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.7.0', installed: true }),
+    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.7.1', installed: true }),
     requestJson: fakeNotifyLogin('monkey-ee50caa', calls),
     installNotifyIntegrations: async () => { installed.push('called'); return [{ kind: 'codex' }]; },
     stderr: { write() {} },
   });
   assert.equal(result.connection, 'monkey-ee50caa');
   assert.equal(result.default, true);
-  assert.equal(result.clientInstall.version, '0.7.0');
+  assert.equal(result.clientInstall.version, '0.7.1');
   assert.equal(result.relayUrl, 'https://notify.example');
   assert.deepEqual(result.installedIntegrations, [{ kind: 'codex' }]);
   assert.deepEqual(installed, ['called']);
@@ -145,6 +145,38 @@ test('Notify setup keeps multiple Bot Tokens isolated, makes the newest default,
   assert.equal(connections.connections.length, 2);
   assert.equal(connections.defaultConnection, 'monkey-ee50caa');
   assert.equal(connectionIds[0], connectionIds[2]);
+});
+
+test('Notify setup reuses an existing user-named Bot connection and repairs only same-device duplicates', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'magclaw-notify-existing-name-'));
+  const projectDir = await project(root, 'alpha');
+  const env = { MAGCLAW_NOTIFY_HOME: path.join(root, 'home') };
+  await saveNotifyConnection({
+    relayUrl: 'https://notify.example', token: 'old-token', connectionId: 'ncn_same', relayHandle: 'monkey-ee50caa',
+  }, { projectDir, connection: 'monkey', env });
+  await saveNotifyConnection({
+    relayUrl: 'https://notify.example', token: 'duplicate-token', connectionId: 'ncn_same', relayHandle: 'monkey-ee50caa',
+  }, { projectDir, connection: 'monkey-ee50caa', env });
+  await saveNotifyConnection({
+    relayUrl: 'https://notify.example', token: 'other-device', connectionId: 'ncn_other', relayHandle: 'monkey-ee50caa',
+  }, { projectDir, connection: 'monkey-other-device', env });
+  const result = await setupNotifyClient({
+    token: encodeNotifyConnectionToken({
+      relayUrl: 'https://notify.example', setupToken: 'mcn_inv_monkey-ee50caa_reuse-existing',
+    }),
+    projectDir,
+    noOpen: true,
+    noSkill: true,
+  }, [], {
+    env,
+    installGlobalNotifyClient: async () => ({ installed: true }),
+    requestJson: fakeNotifyLogin('monkey-ee50caa'),
+    stderr: { write() {} },
+  });
+  assert.equal(result.connection, 'monkey');
+  const connections = await listNotifyConnections({ projectDir, env });
+  assert.deepEqual(connections.connections.map((item) => item.name), ['monkey', 'monkey-other-device']);
+  assert.equal(connections.defaultConnection, 'monkey');
 });
 
 test('Notify setup preserves an authenticated connection when host integration installation fails', async () => {
@@ -197,15 +229,15 @@ test('Notify bootstrap installs and verifies the exact Client version on POSIX a
         if (args[0] === 'install') return { status: 0, stdout: '', stderr: '' };
         return {
           status: 0,
-          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.7.0' } } }),
+          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.7.1' } } }),
           stderr: '',
         };
       },
     });
-    assert.equal(result.version, '0.7.0');
+    assert.equal(result.version, '0.7.1');
     assert.equal(calls[0].command, platform === 'win32' ? 'npm.cmd' : 'npm');
     assert.deepEqual(calls[0].args.slice(0, 2), ['install', '--global']);
-    assert.ok(calls[0].args.includes('@magclaw/notify@0.7.0'));
+    assert.ok(calls[0].args.includes('@magclaw/notify@0.7.1'));
     assert.deepEqual(calls[1].args.slice(0, 4), ['list', '--global', '--depth=0', '--json']);
   }
 });

@@ -172,7 +172,7 @@ previous verified version is retained for rollback.
 ```sh
 magclaw-notify update status
 magclaw-notify update check
-magclaw-notify update apply --target-version 0.7.0
+magclaw-notify update apply --target-version 0.7.1
 magclaw-notify update rollback
 ```
 

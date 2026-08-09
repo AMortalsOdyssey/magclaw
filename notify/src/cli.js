@@ -60,6 +60,11 @@ function automaticConnectionName(relayHandle, registry = {}) {
   const handle = String(relayHandle || '').trim();
   if (!handle) throw new Error('Notify Relay did not identify the Bot bound to this Token.');
   const base = profileName(handle);
+  const matching = Object.entries(registry.connections || {}).filter(([, connection]) => connection?.relayHandle === handle);
+  if (matching.length) {
+    const userNamed = matching.find(([name]) => name !== base);
+    return (userNamed || matching[0])[0];
+  }
   const existing = registry.connections?.[base];
   if (!existing || !existing.relayHandle || existing.relayHandle === handle) return base;
   const suffix = crypto.createHash('sha256').update(handle).digest('hex').slice(0, 8);
@@ -379,11 +384,22 @@ export async function loginNotifyClient(flags = {}, positional = [], options = {
     createdAt: previous.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const saved = await saveNotifyConnection(config, {
+  let saved = await saveNotifyConnection(config, {
     ...projectOptions,
     connection: connectionName,
     makeDefault: options.setupMode === true || flags.default === true,
   });
+  if (!explicitName) {
+    const redundantNames = Object.entries(saved.registry.connections)
+      .filter(([name, connection]) => (
+        name !== connectionName
+        && connection.relayHandle === config.relayHandle
+        && connection.connectionId === config.connectionId
+      ))
+      .map(([name]) => name);
+    for (const redundantName of redundantNames) await removeNotifyConnection(redundantName, projectOptions);
+    if (redundantNames.length) saved = await readNotifyConnections(projectOptions);
+  }
   if (!flags.noSkill) {
     const requestedTargets = String(flags.targets || flags.target || 'auto-detected hosts');
     stderr.write(`Installing MagClaw Notify integrations for ${requestedTargets}. Existing host configuration will be preserved; Claude Desktop is backed up before modification.\n`);
@@ -630,7 +646,12 @@ export async function runNotifyCli(argv = process.argv) {
       outcome: 'succeeded',
       requestId: result?.request?.id || result?.requestId || '',
       relayId: result?.relayId || '',
-      metadata: { ...metadata, resultStatus: result?.status || '', installedCount: result?.installedIntegrations?.length },
+      metadata: {
+        ...metadata,
+        resultStatus: result?.status || '',
+        installedCount: result?.installedIntegrations?.length,
+        ...(result?.connection ? { resultConnection: result.connection } : {}),
+      },
     });
     if (result !== null && result !== undefined) process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
   } catch (error) {

@@ -1,5 +1,17 @@
 # @magclaw/notify Release Notes
 
+## 0.7.1 - 2026-08-09 - Existing connection reuse
+
+### fixed
+
+- Reuses a project's existing local name when it already points to the Bot in
+  the Owner Token, instead of creating a second Relay-handle-named connection.
+- Consolidates only duplicate entries that share both Relay Handle and
+  connection ID, repairing the redundant entry created by 0.7.0 without
+  merging intentionally distinct Client connections.
+- Records the automatically selected connection in the setup audit result so
+  diagnostics do not show only the pre-login placeholder.
+
 ## 0.7.0 - 2026-08-09 - One-token setup
 
 ### added
