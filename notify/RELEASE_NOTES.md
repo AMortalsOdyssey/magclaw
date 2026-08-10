@@ -1,5 +1,15 @@
 # @magclaw/notify Release Notes
 
+## 0.8.2 - 2026-08-10 - Teammate-focused change summaries
+
+### fixed
+
+- Makes software-change cards default to concise `问题描述` and `修复结果`
+  sections so teammates see the shared conclusion first.
+- Omits routine merge, test, validation, deployment, and infrastructure details
+  unless they materially affect usage, risk, availability, or a requested next
+  action.
+
 ## 0.8.1 - 2026-08-10 - Clear approval prompt
 
 ### fixed

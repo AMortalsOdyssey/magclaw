@@ -96,21 +96,20 @@ Prefer a structured summary so mixed tasks remain short and clear:
 ```json
 {
   "headline": "完成角色创建稳定性修复",
-  "taskTypes": ["bugfix", "verification"],
-  "status": "completed",
+  "taskTypes": ["bugfix"],
   "sections": [
     {
       "type": "bugfix",
-      "title": "修复",
+      "title": "问题描述",
       "items": [
-        { "status": "done", "text": "修复候选角色名称误匹配问题" }
+        { "status": "info", "text": "短英文角色名被误判为占位内容，导致创角流程无法完成" }
       ]
     },
     {
-      "type": "verification",
-      "title": "验证",
+      "type": "bugfix",
+      "title": "修复结果",
       "items": [
-        { "status": "done", "text": "测试环境回归通过" }
+        { "status": "done", "text": "短专有名词现可作为合法角色名，英文占位短语和完整句子仍会被拦截" }
       ]
     }
   ],
@@ -118,15 +117,16 @@ Prefer a structured summary so mixed tasks remain short and clear:
     { "label": "变更说明", "url": "https://example.com/change" }
   ],
   "images": [
-    { "url": "https://example.com/result.png", "alt": "验证结果" }
+    { "url": "https://example.com/result.png", "alt": "修复结果" }
   ]
 }
 ```
 
-Recommended task types include `feature`, `bugfix`, `optimization`,
-`verification`, `investigation`, `design`, `research`, `operations`, and
-`custom`. Combine sections when a turn contains several kinds of work. Keep the
-headline factual, retain required conclusions and risks, and omit process noise.
+Supported task types are `feature`, `bugfix`, `performance`, `investigation`,
+`design`, `deployment`, `research`, `documentation`, and `custom`. For software
+changes, default to `问题描述` and `修复结果`. Keep the headline factual, retain
+material impact and unresolved risks, and omit routine merge, test, validation,
+and deployment details unless they change what teammates need to do.
 
 Images must use public HTTPS URLs. Links and images are validated before the
 request is accepted.

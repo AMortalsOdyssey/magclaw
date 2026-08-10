@@ -2,16 +2,26 @@
 
 Choose the smallest useful combination. Do not output empty sections.
 
+## Software change default
+
+Cards are for teammates who need the shared conclusion, not a delivery log.
+
+- Default sections: `问题描述`, `修复结果`; optionally add `影响与待办` only when something remains actionable.
+- Describe the user-visible symptom, affected scope, confirmed cause when useful, and the final behavior after the change.
+- Omit branch names, commit hashes, merge direction, test names/counts, deployment versions, Pod state, CI runs, and routine validation or release steps.
+- Include validation or rollout information only when it materially limits availability, compatibility, risk, or the next action, or when the user explicitly requests it.
+- Normally keep 2–5 items total. Merge closely related fixes into one outcome-oriented item instead of enumerating work items.
+
 ## Feature
 
 - Headline: capability delivered and user-visible outcome.
-- Sections: `新增能力`, `使用影响`, `验收`.
-- Include compatibility or rollout constraints only when material.
+- Sections: `需求背景`, `交付结果`, optional `使用影响`.
+- Include compatibility or rollout constraints only when they affect teammates.
 
 ## Bug fix
 
 - Headline: symptom fixed plus affected scope.
-- Sections: `问题与修复`, `验证`, optional `风险`.
+- Sections: `问题描述`, `修复结果`, optional `影响与待办`.
 - State the root cause only when confirmed. Do not turn the card into a debugging diary.
 
 ## Performance
@@ -34,8 +44,9 @@ Choose the smallest useful combination. Do not output empty sections.
 
 ## Deployment or release
 
+- Use this template only when the deployment or release itself is the requested subject, not merely the delivery step for a code change.
 - Headline: target environment and real deployment state.
-- Sections: `发布内容`, `环境状态`, `验收`, optional `回滚或风险`.
+- Sections: `发布结果`, optional `影响与风险`.
 - Do not say deployed from a build or merge alone; include runtime evidence when known.
 
 ## Research
@@ -54,9 +65,8 @@ Choose the smallest useful combination. Do not output empty sections.
 Order sections by decision value, not chronology:
 
 1. Overall outcome.
-2. Delivered features and fixes.
-3. Investigation or design conclusions.
-4. Validation and deployment evidence.
-5. Risks, blockers, or next steps.
+2. Problem or need being addressed.
+3. Delivered result and teammate-visible impact.
+4. Material risks, blockers, or next steps.
 
-Normally keep 3–7 items total. Expand only when omission would create a materially incorrect shared understanding.
+Normally keep 2–5 items total. Expand only when omission would create a materially incorrect shared understanding.

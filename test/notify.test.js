@@ -359,6 +359,13 @@ test('Notify integrations install native Skills and a Claude Desktop MCP entry w
   const claudeSkill = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(claudeSkill, /disable-model-invocation: true/);
   assert.match(claudeSkill, /magclaw-notify send/);
+  assert.match(claudeSkill, /问题描述/);
+  assert.match(claudeSkill, /修复结果/);
+  assert.match(claudeSkill, /Omit branch names, commits, merge direction, test counts, deployment versions, Pod state/);
+  const summaryTemplates = await readFile(path.join(root, '.claude', 'skills', 'magclaw-notify', 'references', 'summary-templates.md'), 'utf8');
+  assert.match(summaryTemplates, /Default sections: `问题描述`, `修复结果`/);
+  assert.match(summaryTemplates, /Cards are for teammates who need the shared conclusion, not a delivery log/);
+  assert.doesNotMatch(summaryTemplates, /Validation and deployment evidence/);
   const openclawSkill = await readFile(path.join(root, '.openclaw', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   const hermesSkill = await readFile(path.join(root, '.hermes', 'skills', 'magclaw-notify', 'SKILL.md'), 'utf8');
   assert.match(openclawSkill, /disable-model-invocation: true/);

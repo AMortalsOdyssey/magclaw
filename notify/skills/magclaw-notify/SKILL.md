@@ -20,7 +20,7 @@ Do not infer consent from earlier turns, a useful-looking summary, task completi
 
 1. Read [references/summary-templates.md](references/summary-templates.md). Select only the sections relevant to this turn; combine task types when necessary.
 2. Summarize only completed or verified outcomes as such. Label decisions, partial work, blockers, and unverified checks accurately.
-3. Lead with one outcome sentence. Keep 3–7 high-value points in the normal case. Preserve critical scope, validation evidence, impact, risks, and follow-up without narrating the work log.
+3. Lead with one outcome sentence. Keep 2–5 high-value points in the normal case. For software changes, optimize for what teammates need to understand: a concise `问题描述` followed by a concise `修复结果`. Omit branch names, commits, merge direction, test counts, deployment versions, Pod state, and other delivery-process evidence unless it changes usage, risk, or rollout availability, or the user explicitly asks for it. Preserve only material impact, unresolved risk, and follow-up.
 4. Use descriptive HTTPS links. Include at most four public HTTPS images only when they materially prove or explain the result.
 5. Use the exact group wording supplied by the user. Never discover or enumerate group names.
 6. Extract people to mention only when the user explicitly asks to notify or mention them.
@@ -28,14 +28,21 @@ Do not infer consent from earlier turns, a useful-looking summary, task completi
 
 ```json
 {
-  "headline": "一句话结论",
-  "taskTypes": ["feature", "bugfix"],
+  "headline": "问题已修复及其用户影响",
+  "taskTypes": ["bugfix"],
   "sections": [
     {
-      "type": "feature",
-      "title": "新增能力",
+      "type": "bugfix",
+      "title": "问题描述",
       "items": [
-        { "status": "done", "text": "完成了什么", "evidence": "可选的简短验收证据" }
+        { "status": "info", "text": "用户遇到的问题及影响范围" }
+      ]
+    },
+    {
+      "type": "bugfix",
+      "title": "修复结果",
+      "items": [
+        { "status": "done", "text": "采用的修复及现在的表现" }
       ]
     }
   ],
