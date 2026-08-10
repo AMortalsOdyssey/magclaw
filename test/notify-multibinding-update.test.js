@@ -97,21 +97,24 @@ test('Notify one-token setup derives Relay and Bot, installs integrations, and s
 
   const calls = [];
   const installed = [];
+  let loginPrompt = '';
   const result = await setupNotifyClient({ token: ownerToken, projectDir, noOpen: true }, [], {
     env,
-    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.8.0', installed: true }),
+    installGlobalNotifyClient: async () => ({ packageName: '@magclaw/notify', version: '0.8.1', installed: true }),
     requestJson: fakeNotifyLogin('monkey-ee50caa', calls),
     installNotifyIntegrations: async () => { installed.push('called'); return [{ kind: 'codex' }]; },
-    stderr: { write() {} },
+    stderr: { write(value) { loginPrompt += value; } },
   });
   assert.equal(result.connection, 'monkey-ee50caa');
   assert.equal(result.default, true);
-  assert.equal(result.clientInstall.version, '0.8.0');
+  assert.equal(result.clientInstall.version, '0.8.1');
   assert.equal(result.relayUrl, 'https://magclaw-testing.multiego.me');
   assert.deepEqual(result.installedIntegrations, [{ kind: 'codex' }]);
   assert.deepEqual(installed, ['called']);
   assert.equal(calls[0].relayUrl, 'https://magclaw-testing.multiego.me');
   assert.equal(calls[0].options.body.inviteToken, rawToken);
+  assert.match(loginPrompt, /^Open this link to approve MagClaw Notify \(no code entry required\):\nhttps:\/\/magclaw-testing\.multiego\.me\/notify\/auth\/approve\?user_code=ABCDE-12345\n/);
+  assert.doesNotMatch(loginPrompt, /^Code:/m);
   assert.doesNotMatch(JSON.stringify(await listNotifyConnections({ projectDir, env })), /7KQ4P9DX3M2F8R6T|MCN-T/);
 });
 
@@ -286,15 +289,15 @@ test('Notify bootstrap installs and verifies the exact Client version on POSIX a
         if (args[0] === 'install') return { status: 0, stdout: '', stderr: '' };
         return {
           status: 0,
-          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.8.0' } } }),
+          stdout: JSON.stringify({ dependencies: { '@magclaw/notify': { version: '0.8.1' } } }),
           stderr: '',
         };
       },
     });
-    assert.equal(result.version, '0.8.0');
+    assert.equal(result.version, '0.8.1');
     assert.equal(calls[0].command, platform === 'win32' ? 'npm.cmd' : 'npm');
     assert.deepEqual(calls[0].args.slice(0, 2), ['install', '--global']);
-    assert.ok(calls[0].args.includes('@magclaw/notify@0.8.0'));
+    assert.ok(calls[0].args.includes('@magclaw/notify@0.8.1'));
     assert.deepEqual(calls[1].args.slice(0, 4), ['list', '--global', '--depth=0', '--json']);
   }
 });

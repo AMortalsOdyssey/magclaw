@@ -1,5 +1,13 @@
 # @magclaw/notify Release Notes
 
+## 0.8.1 - 2026-08-10 - Clear approval prompt
+
+### fixed
+
+- Stops printing the approval user code as a separate terminal instruction.
+- Clarifies that opening the generated approval link is sufficient and no code
+  entry is required.
+
 ## 0.8.0 - 2026-08-09 - Short connection codes
 
 ### added

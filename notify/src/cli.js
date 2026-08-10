@@ -355,7 +355,7 @@ export async function loginNotifyClient(flags = {}, positional = [], options = {
   });
   const verificationUrl = new URL(started.verificationUri, `${relayUrl}/`).toString();
   const stderr = options.stderr || process.stderr;
-  stderr.write(`Approve MagClaw Notify login:\n${verificationUrl}\nCode: ${started.userCode}\n`);
+  stderr.write(`Open this link to approve MagClaw Notify (no code entry required):\n${verificationUrl}\n`);
   if (!flags.noOpen) (options.openBrowser || openBrowser)(verificationUrl);
   const deadline = Date.now() + Math.max(30_000, Number(flags.timeoutSeconds || 600) * 1000);
   const interval = Math.max(1000, Number(started.intervalMs || 2000));
