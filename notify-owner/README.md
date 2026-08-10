@@ -101,7 +101,7 @@ recorded and retried later.
 ```bash
 magclaw-notify-owner update status
 magclaw-notify-owner update check
-magclaw-notify-owner update apply --target-version 0.10.0
+magclaw-notify-owner update apply --target-version 0.11.0
 magclaw-notify-owner update rollback
 ```
 

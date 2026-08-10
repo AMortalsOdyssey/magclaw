@@ -25,7 +25,6 @@ const HANDLER_SKILL_SOURCE = path.join(HANDLER_ROOT, 'skills', 'magclaw-notify-h
 const MAX_LOCAL_RECEIPTS = 500;
 export const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
 export const TARGET_GRANT_TTL_MS = 90 * 24 * 60 * 60 * 1000;
-export const TARGET_GRANT_DAILY_LIMIT = 10;
 const notifyStateLocks = new Map();
 const handlerAuditLogs = new Map();
 const standaloneFeishuClients = new Map();
@@ -557,13 +556,26 @@ function activeTargetGrant(state, request, group) {
     grant.dailyWindow = day;
     grant.dailyCount = 0;
   }
-  if (Number(grant.dailyCount || 0) >= TARGET_GRANT_DAILY_LIMIT) return null;
   return grant;
 }
 
 async function saveTargetGrants(state) {
   state.grants.updatedAt = now();
   await writeJson(state.paths.grants, state.grants);
+}
+
+export function larkCardForTargetGrantUsage(grant = {}) {
+  return {
+    schema: '2.0',
+    header: { title: { tag: 'plain_text', content: 'MagClaw Notify 长期授权使用摘要' }, template: 'blue' },
+    body: { elements: [{ tag: 'markdown', content: [
+      `**用户**：${cleanText(grant.userName || '未知用户', 120).replace(/[<>]/g, '')}`,
+      `**群聊**：${cleanText(grant.groupName || '未知群聊', 120).replace(/[<>]/g, '')}`,
+      `**今日已使用**：${Number(grant.dailyCount || 0)} 次`,
+      `**授权到期**：${formatNotifyTime(grant.expiresAt)}`,
+      '此摘要不包含消息正文；可随时用 daemon access kick 撤销云端登录和本地群授权。',
+    ].join('\n') }] },
+  };
 }
 
 async function sendTargetGrantUsageSummary(state, request, group) {
@@ -591,17 +603,7 @@ async function sendTargetGrantUsageSummary(state, request, group) {
       receiveIdType: 'open_id',
       receiveId: provider.ownerOpenId || provider.target,
       idempotencyKey: `mcn_grant_summary_${claimed.id}_${day}`,
-      card: {
-        schema: '2.0',
-        header: { title: { tag: 'plain_text', content: 'MagClaw Notify 长期授权使用摘要' }, template: 'blue' },
-        body: { elements: [{ tag: 'markdown', content: [
-          `**用户**：${cleanText(claimed.userName || '未知用户', 120).replace(/[<>]/g, '')}`,
-          `**群聊**：${cleanText(claimed.groupName || '未知群聊', 120).replace(/[<>]/g, '')}`,
-          `**今日已使用**：${Number(claimed.dailyCount || 0)} / ${TARGET_GRANT_DAILY_LIMIT}`,
-          `**授权到期**：${formatNotifyTime(claimed.expiresAt)}`,
-          '此摘要不包含消息正文；可随时用 daemon access kick 撤销云端登录和本地群授权。',
-        ].join('\n') }] },
-      },
+      card: larkCardForTargetGrantUsage(claimed),
     });
     await state.audit.append({ event: 'owner.grant.usage_summary_sent', outcome: 'sent', metadata: { grantId: claimed.id, dailyCount: Number(claimed.dailyCount || 0) } });
     return { sent: true };

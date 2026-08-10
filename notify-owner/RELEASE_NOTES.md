@@ -1,5 +1,12 @@
 # MagClaw Notify Owner release notes
 
+## 0.11.0
+
+- Removes the daily delivery cap from long-lived target grants while retaining
+  the per-day usage counter and 90-day expiry.
+- Renders usage summaries as a count only, without presenting a misleading
+  quota denominator.
+
 ## 0.10.0
 
 - Generates 80-bit opaque Setup credentials and renders official testing and

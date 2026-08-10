@@ -28,6 +28,7 @@ import {
   listNotifyDirectory,
   listNotifyTargetGrants,
   larkCardForNotify,
+  larkCardForTargetGrantUsage,
   isPrivateNotifyAddress,
   mergeNotifyMentions,
   resolveNotifyGroup,
@@ -1617,14 +1618,21 @@ test('Notify target approval batches per user and group with once, long-lived, o
   assert.equal(grants.length, 1);
   assert.equal(grants[0].target.group, '测试monkey');
   assert.equal(Date.parse(grants[0].expiresAt) - Date.parse(grants[0].createdAt), 90 * 24 * 60 * 60 * 1000);
+  const usageCard = larkCardForTargetGrantUsage({
+    userName: '李四', groupName: '测试monkey', dailyCount: 27, expiresAt: grants[0].expiresAt,
+  });
+  const usageSummary = usageCard.body.elements[0].content;
+  assert.match(usageSummary, /\*\*今日已使用\*\*：27 次/);
+  assert.doesNotMatch(usageSummary, /\/\s*10/);
   const direct = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_6'));
   assert.equal(direct.status, 'processing');
   assert.equal(direct.shouldProcess, true);
   for (let index = 7; index <= 15; index += 1) {
     assert.equal((await prepareNotifyDelivery(profilePaths, makeRequest(`nreq_batch_${index}`))).status, 'processing');
   }
-  const overLimit = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_16'));
-  assert.equal(overLimit.status, 'awaiting_owner_approval');
+  const beyondFormerLimit = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_batch_16'));
+  assert.equal(beyondFormerLimit.status, 'processing');
+  assert.equal((await listNotifyTargetGrants(profilePaths, { userId: 'usr_sender' }))[0].dailyCount, 11);
 
   const expiring = await prepareNotifyDelivery(profilePaths, makeRequest('nreq_expired', 'usr_other'));
   const expiringRecords = await readNotifyState(profilePaths, 'pending');
