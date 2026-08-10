@@ -67,7 +67,7 @@ function approvalConnectionRows(request = {}, installation = null) {
 }
 
 function approvalConfirmationHtml(request = {}, csrfToken = '', action = '', installation = null) {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>确认连接 Notify？</h1>${approvalConnectionRows(request, installation)}<p>只有在你刚刚主动从终端发起此登录时才继续。MagClaw 不会把主机名、系统、文件路径或设备指纹发送给 Owner。</p><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="user_code" value="${htmlEscape(request.userCode || '')}"><input type="hidden" name="csrf_token" value="${htmlEscape(csrfToken)}"><button type="submit">确认并连接</button></form></main></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MagClaw Notify</title><style>${APPROVAL_PAGE_STYLE}</style></head><body><main class="card"><div class="mark">MAGCLAW NOTIFY</div><h1>确认连接 Notify？</h1>${approvalConnectionRows(request, installation)}<p>MagClaw 不会把主机名、系统、文件路径或设备指纹发送给 Owner。</p><form method="post" action="${htmlEscape(action)}"><input type="hidden" name="user_code" value="${htmlEscape(request.userCode || '')}"><input type="hidden" name="csrf_token" value="${htmlEscape(csrfToken)}"><button type="submit">确认并连接</button></form></main></body></html>`;
 }
 
 function approvalSuccessHtml(request = {}, installation = null) {

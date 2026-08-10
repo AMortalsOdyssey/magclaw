@@ -144,6 +144,7 @@ async function approveNotifyDevice(deps, verificationUri) {
   const reviewed = await callRoute(deps, 'GET', verificationUri);
   assert.equal(reviewed.res.status, 200);
   assert.match(reviewed.res.raw, /确认连接 Notify/);
+  assert.doesNotMatch(reviewed.res.raw, /只有在你刚刚主动从终端发起此登录时才继续/);
   assert.doesNotMatch(reviewed.res.raw, /允许当前飞书账号发送 Notify 请求/);
   assert.match(reviewed.res.raw, /北京时间，UTC\+8/);
   if (verificationUri.startsWith('/notify/auth/')) {
