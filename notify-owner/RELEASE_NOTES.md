@@ -1,5 +1,13 @@
 # MagClaw Notify Owner release notes
 
+## 0.11.1
+
+- Routes Feishu approval callbacks to the exact Bot Binding when testing and
+  production share one Feishu account, failing closed on ambiguous legacy
+  callbacks instead of approving the wrong environment.
+- Mentions the configured Owner in private approval, mapping-confirmation and
+  approval-result cards so the responsible approver is explicit.
+
 ## 0.11.0
 
 - Removes the daily delivery cap from long-lived target grants while retaining
