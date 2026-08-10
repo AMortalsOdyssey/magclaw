@@ -1167,12 +1167,17 @@ async function recordTargetAccessConfirmation(state, request, group) {
   });
 }
 
-export function larkCardForTargetApproval(confirmation, requests = []) {
+export function larkCardForTargetApproval(confirmation, requests = [], options = {}) {
   const count = Math.max(1, safeArray(confirmation.requestIds).length);
   const requester = cleanText(confirmation.details?.userName || '未知用户', 120).replace(/[<>]/g, '');
   const group = cleanText(confirmation.details?.groupName || '未知群聊', 120).replace(/[<>]/g, '');
   const requestedGroup = cleanText(confirmation.details?.requestedGroup || '', 120).replace(/[<>]/g, '');
   const target = requestedGroup && requestedGroup !== group ? `${group}（请求名称：${requestedGroup}）` : group;
+  // Approval cards are sent to a private chat, but a direct message alone does
+  // not make the approver visually obvious when multiple Bot Bindings share the
+  // same Feishu account. Mention only the locally configured owner Open ID; the
+  // requester can never provide or override this value.
+  const approverMention = feishuMention(options.approverOpenId);
   const action = (label, decision, type = 'default') => ({
     tag: 'button',
     text: { tag: 'plain_text', content: label },
@@ -1191,6 +1196,7 @@ export function larkCardForTargetApproval(confirmation, requests = []) {
     },
     body: {
       elements: [
+        ...(approverMention ? [{ tag: 'markdown', content: `${approverMention} 请审批以下 Notify 请求。` }] : []),
         { tag: 'markdown', content: [
           `**申请人**：${requester}`,
           `**目标群**：${target}`,
@@ -1272,8 +1278,9 @@ function approvalDecisionLabel(decision = '') {
   return decision === 'always' ? '永久允许' : decision === 'once' ? '仅允许本次' : decision === 'approve' ? '已确认' : decision === 'expired' ? '审批已过期' : '已拒绝';
 }
 
-function larkCardForGenericConfirmation(confirmation) {
+function larkCardForGenericConfirmation(confirmation, options = {}) {
   const groupCandidates = safeArray(confirmation.details?.candidateGroups);
+  const approverMention = feishuMention(options.approverOpenId);
   const description = confirmation.kind === 'group_alias'
     ? groupCandidates.length > 1
       ? `“${confirmation.details.requestedGroup}”命中多个同名群，请选择真实目标：`
@@ -1301,6 +1308,7 @@ function larkCardForGenericConfirmation(confirmation) {
     schema: '2.0',
     header: { title: { tag: 'plain_text', content: 'MagClaw Notify 需要确认' }, template: 'orange' },
     body: { elements: [
+      ...(approverMention ? [{ tag: 'markdown', content: `${approverMention} 请确认以下 Notify 映射。` }] : []),
       { tag: 'markdown', content: `${description}\n\n有效期：24 小时。` },
       ...(groupCandidates.length > 1 ? groupCandidates.map(chooseGroup) : [action('确认', 'approve', 'primary')]),
       action('拒绝', 'reject', 'danger'),
@@ -1311,13 +1319,14 @@ function larkCardForGenericConfirmation(confirmation) {
 async function sendConfirmationPrompt(state, confirmation) {
   const provider = state.config.confirmationProvider;
   if (!provider.enabled || !provider.account || !(provider.ownerOpenId || provider.target)) return { sent: false, reason: 'confirmation_provider_unconfigured' };
+  const cardOptions = { approverOpenId: provider.ownerOpenId || provider.target };
   if (provider.kind === 'feishu-rest' || notifyRuntime(state.profilePaths).feishuClient) {
     const requests = confirmation.kind === 'target_access'
       ? (await Promise.all(confirmationRequestIds(confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean)
       : [];
     const card = confirmation.kind === 'target_access'
-      ? larkCardForTargetApproval(confirmation, requests)
-      : larkCardForGenericConfirmation(confirmation);
+      ? larkCardForTargetApproval(confirmation, requests, cardOptions)
+      : larkCardForGenericConfirmation(confirmation, cardOptions);
     if (provider.dryRun) return { sent: true, messageId: '', dryRun: true };
     const result = await feishuClientFor(state, provider).sendInteractive({
       receiveIdType: 'open_id',
@@ -1333,8 +1342,8 @@ async function sendConfirmationPrompt(state, confirmation) {
       ? (await Promise.all(confirmationRequestIds(confirmation).map((requestId) => storedNotifyRequest(state, requestId)))).filter(Boolean)
       : [];
     const card = confirmation.kind === 'target_access'
-      ? larkCardForTargetApproval(confirmation, requests)
-      : larkCardForGenericConfirmation(confirmation);
+      ? larkCardForTargetApproval(confirmation, requests, cardOptions)
+      : larkCardForGenericConfirmation(confirmation, cardOptions);
     const args = [
       '--profile', String(provider.account), 'im', '+messages-send',
       '--user-id', String(provider.target), '--as', 'bot',
@@ -2429,6 +2438,7 @@ export function larkCardForApprovalOutcome(confirmation, decision, result = {}, 
   const group = cleanText(confirmation.details?.groupName || '未知群聊', 120).replace(/[<>]/g, '');
   const requestedGroup = cleanText(confirmation.details?.requestedGroup || '', 120).replace(/[<>]/g, '');
   const target = requestedGroup && requestedGroup !== group ? `${group}（请求名称：${requestedGroup}）` : group;
+  const approverMention = feishuMention(options.approverOpenId);
   const resultRows = safeArray(options.results).length ? options.results : result ? [result] : [];
   const resultSummary = phase === 'processing'
     ? '已记录授权，正在调用本地 Agent 解析内容并发送到飞书群。'
@@ -2443,6 +2453,7 @@ export function larkCardForApprovalOutcome(confirmation, decision, result = {}, 
     config: { width_mode: 'fill', summary: { content: `MagClaw Notify · ${label}` } },
     header: { title: { tag: 'plain_text', content: `MagClaw Notify · ${label}` }, template: color },
     body: { elements: [
+      ...(approverMention ? [{ tag: 'markdown', content: `${approverMention} 审批结果如下。` }] : []),
       { tag: 'markdown', content: [
         `**申请人**：${requester}`,
         `**目标群**：${target}`,
@@ -2499,6 +2510,7 @@ export async function updateNotifyApprovalCard(profilePaths, event, confirmation
     phase: confirmationResult.phase || 'completed',
     requests,
     results: confirmationResult.results,
+    approverOpenId: provider.ownerOpenId || provider.target,
   });
   if (provider.kind === 'feishu-rest' || notifyRuntime(state.profilePaths).feishuClient) {
     const client = feishuClientFor(state, provider);

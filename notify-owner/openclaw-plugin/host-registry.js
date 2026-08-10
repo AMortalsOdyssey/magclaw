@@ -29,3 +29,24 @@ export function publishNotifyPluginHost(key, host) {
 export function getNotifyPluginHost(key) {
   return hostRegistry().get(key)?.host || null;
 }
+
+/**
+ * Resolve the exact Bot Binding named by a trusted, validated approval action.
+ *
+ * Multiple Owner environments may intentionally share one Feishu Bot account.
+ * Account-only lookup would then route every callback to the first Binding and
+ * could approve the wrong environment. New cards always carry their Binding id;
+ * the single-candidate fallback exists only for legacy `default` cards.
+ */
+export function selectNotifyApprovalBinding(bindings = [], options = {}) {
+  const accountId = String(options.accountId || '');
+  const botId = String(options.botId || '');
+  const candidates = bindings.filter((binding) => (
+    binding?.enabled !== false
+      && String(binding?.accountId || '') === accountId
+  ));
+  const exact = candidates.find((binding) => String(binding?.id || '') === botId);
+  if (exact) return exact;
+  if ((!botId || botId === 'default') && candidates.length === 1) return candidates[0];
+  return null;
+}

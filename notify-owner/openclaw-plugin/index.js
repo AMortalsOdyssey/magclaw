@@ -8,7 +8,7 @@ import { resolveConfiguredSecretInputString } from 'openclaw/plugin-sdk/secret-i
 import { createFeishuRestClient } from '../src/feishu-client.js';
 import { notifyPluginProfile, startNotifyPluginHost } from '../src/plugin-host.js';
 import { scheduleNotifyOwnerBackgroundUpdate } from '../src/update.js';
-import { getNotifyPluginHost, notifyPluginHostSlotKey, publishNotifyPluginHost } from './host-registry.js';
+import { getNotifyPluginHost, notifyPluginHostSlotKey, publishNotifyPluginHost, selectNotifyApprovalBinding } from './host-registry.js';
 import { memberAgentRunDecision, memberPolicySystemPrompt, memberToolDecision, sanitizeMemberReply } from './member-policy.js';
 import { classifyNotifyApprovalMessage } from './policy.js';
 
@@ -36,6 +36,10 @@ export default definePluginEntry({
     const activeHost = (accountId = '') => {
       const binding = bindingForAccount(accountId) || (bindings.length === 1 ? bindings[0] : null);
       return binding ? hosts.get(binding.id) || getNotifyPluginHost(hostSlotKey(binding)) : null;
+    };
+    const approvalHost = (accountId = '', botId = '') => {
+      const binding = selectNotifyApprovalBinding(bindings, { accountId, botId });
+      return binding ? { binding, host: hosts.get(binding.id) || getNotifyPluginHost(hostSlotKey(binding)) } : null;
     };
     const memberConfig = {
       memberAgentId: String(config.memberAgentId || '').trim(),
@@ -130,15 +134,15 @@ export default definePluginEntry({
           return { handled: true };
         }
         try {
-          const currentHost = activeHost(context?.accountId);
-          if (!currentHost) throw new Error('MagClaw Notify plugin host is not ready.');
-          const result = await currentHost.processApproval(decision, {
+          const selected = approvalHost(context?.accountId, decision.bot);
+          if (!selected?.host) throw new Error('MagClaw Notify approval Bot Binding is unavailable or does not match this Feishu account.');
+          const result = await selected.host.processApproval(decision, {
             // OpenClaw 2026.7.x does not expose Feishu's callback token to
             // before_dispatch. The original approval message id remains
             // available and is the deterministic card-update fallback.
             messageId: event?.replyToIdFull || event?.replyToId || context?.replyToIdFull || context?.replyToId,
           });
-          api.logger.info(`Notify approval accepted: bot=${bindingForAccount(context?.accountId)?.id || 'unknown'} decision=${decision.decision} accepted=${Boolean(result?.handled)}`);
+          api.logger.info(`Notify approval accepted: bot=${selected.binding.id} decision=${decision.decision} accepted=${Boolean(result?.handled)}`);
         } catch (error) {
           api.logger.error(`Notify approval submission failed: ${String(error?.message || error)}`);
         }

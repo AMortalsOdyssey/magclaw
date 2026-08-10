@@ -21,6 +21,7 @@ import {
 import { registerNotifyRuntime } from '../notify-owner/src/runtime-context.js';
 import { closeNotifyStateStore, ensureNotifyStateStore } from '../notify-owner/src/store.js';
 import { memberAgentRunDecision, memberPolicySystemPrompt, memberToolDecision, sanitizeMemberReply } from '../notify-owner/openclaw-plugin/member-policy.js';
+import { selectNotifyApprovalBinding } from '../notify-owner/openclaw-plugin/host-registry.js';
 
 test('OpenClaw plugin host registry bridges separate plugin entry module instances', async () => {
   const publisher = await import(`../notify-owner/openclaw-plugin/host-registry.js?publisher=${Date.now()}`);
@@ -31,6 +32,19 @@ test('OpenClaw plugin host registry bridges separate plugin entry module instanc
   assert.equal(consumer.getNotifyPluginHost(key), host);
   unpublish();
   assert.equal(consumer.getNotifyPluginHost(key), null);
+});
+
+test('OpenClaw approval callbacks select the exact Bot Binding when environments share one Feishu account', () => {
+  const bindings = [
+    { id: 'monkey-testing', accountId: 'monkey', enabled: true },
+    { id: 'monkey-production', accountId: 'monkey', enabled: true },
+    { id: 'release', accountId: 'release', enabled: true },
+  ];
+  assert.equal(selectNotifyApprovalBinding(bindings, { accountId: 'monkey', botId: 'monkey-testing' })?.id, 'monkey-testing');
+  assert.equal(selectNotifyApprovalBinding(bindings, { accountId: 'monkey', botId: 'monkey-production' })?.id, 'monkey-production');
+  assert.equal(selectNotifyApprovalBinding(bindings, { accountId: 'release', botId: 'monkey-testing' }), null);
+  assert.equal(selectNotifyApprovalBinding(bindings, { accountId: 'monkey', botId: 'default' }), null);
+  assert.equal(selectNotifyApprovalBinding([bindings[0]], { accountId: 'monkey', botId: 'default' })?.id, 'monkey-testing');
 });
 
 test('OpenClaw member Bot policy is project-only, configured-group-only, and fail-closed read-only', () => {

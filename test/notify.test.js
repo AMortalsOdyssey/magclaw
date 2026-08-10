@@ -644,7 +644,8 @@ test('Notify approval cards preserve complete request context across pending, pr
       context: { sourceAgent: 'codex', repository: 'magclaw' },
     },
   }];
-  const pending = JSON.stringify(larkCardForTargetApproval(confirmation, requests));
+  const pending = JSON.stringify(larkCardForTargetApproval(confirmation, requests, { approverOpenId: 'ou_owner' }));
+  assert.match(pending, /<at id=ou_owner><\/at> 请审批以下 Notify 请求/);
   assert.match(pending, /申请人.*蒋海波/);
   assert.match(pending, /测试monkey（请求名称：测试）/);
   assert.match(pending, /第一项完整内容/);
@@ -652,14 +653,15 @@ test('Notify approval cards preserve complete request context across pending, pr
   assert.match(pending, /"bot":"product-a"/);
 
   const processing = JSON.stringify(larkCardForApprovalOutcome(
-    confirmation, 'once', { status: 'processing' }, { phase: 'processing', requests },
+    confirmation, 'once', { status: 'processing' }, { phase: 'processing', requests, approverOpenId: 'ou_owner' },
   ));
+  assert.match(processing, /<at id=ou_owner><\/at> 审批结果如下/);
   assert.match(processing, /仅允许本次 · 正在处理/);
   assert.match(processing, /正在调用本地 Agent/);
   assert.match(processing, /第一项完整内容/);
 
   const sent = JSON.stringify(larkCardForApprovalOutcome(
-    confirmation, 'once', { status: 'sent' }, { phase: 'completed', requests, results: [{ status: 'sent' }] },
+    confirmation, 'once', { status: 'sent' }, { phase: 'completed', requests, results: [{ status: 'sent' }], approverOpenId: 'ou_owner' },
   ));
   assert.match(sent, /MagClaw Notify · 已发送/);
   assert.match(sent, /消息 1：已发送/);
