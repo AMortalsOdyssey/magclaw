@@ -1,5 +1,11 @@
 # @magclaw/notify Release Notes
 
+## 0.8.3 - 2026-08-14 - Internal HTTPS links
+
+### fixed
+
+- Keeps validated `*.ttyuyin.com` HTTPS links clickable while retaining credential, sensitive-query, private-address, and cluster-host redaction.
+
 ## 0.8.2 - 2026-08-10 - Teammate-focused change summaries
 
 ### fixed

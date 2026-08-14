@@ -1,5 +1,9 @@
 # @magclaw/web Release Notes
 
+## 0.4.3 - 2026-08-14 - Notify internal links
+### bug fix
+- Validated internal HTTPS links in Notify cards remain clickable instead of degrading to plain text.
+
 ## 0.4.2 - 2026-08-01 - Standalone Notify Relay
 ### new
 - Notify sender and owner Daemon authentication, Setup Token routing, and WebSocket delivery now operate independently from MagClaw Server, workspace, Computer, and the existing Daemon.

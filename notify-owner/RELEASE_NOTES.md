@@ -1,5 +1,9 @@
 # MagClaw Notify Owner release notes
 
+## 0.11.2
+
+- Keeps validated `*.ttyuyin.com` HTTPS links clickable in delivered Feishu cards while retaining the remaining public-text safety filters.
+
 ## 0.11.1
 
 - Routes Feishu approval callbacks to the exact Bot Binding when testing and

@@ -319,13 +319,20 @@ test('Notify structured summaries normalize mixed work and preserve safe rich co
       { type: 'bugfix', title: '修复', items: [{ status: 'verified', text: '修复卡片更新', evidence: '18/18' }] },
       { type: 'custom', title: '自定义结论', items: ['保留扩展空间'] },
     ],
-    links: [{ label: '技术文档', url: 'https://example.com/docs' }],
+    links: [
+      { label: '技术文档', url: 'https://example.com/docs' },
+      {
+        label: '创角代码地图',
+        url: 'https://gitlab.ttyuyin.com/enigma/omnivibe/-/blob/revision/framework/banzi/CREATE_CHARACTER_CODE_MAP.md',
+      },
+    ],
     images: [{ url: 'https://example.com/result.png', alt: '结果截图' }],
   }, { required: true });
   assert.deepEqual(summary.taskTypes, ['feature', 'bugfix']);
   const markdown = renderNotifySummaryMarkdown(summary);
   assert.match(markdown, /【已完成】支持结构化总结/);
   assert.match(markdown, /\[技术文档\]\(https:\/\/example.com\/docs\)/);
+  assert.match(markdown, /\[创角代码地图\]\(https:\/\/gitlab\.ttyuyin\.com\/enigma\/omnivibe\/-\/blob\/revision\/framework\/banzi\/CREATE_CHARACTER_CODE_MAP\.md\)/);
   assert.match(markdown, /\[结果截图\]\(https:\/\/example.com\/result.png\)/);
   const payload = normalizeNotifySubmission({
     explicitUserAuthorization: true,
@@ -1401,7 +1408,7 @@ test('Notify public redaction covers credential, identity, cluster, and phone in
     ['fine github_pat_11AAabcdefghijklmnopqrstuvwxyz', 'fine [redacted-secret]', /github_pat_/],
     ['jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature123', 'jwt [redacted-jwt]', /eyJ/],
     ['mail operator@example.com', 'mail [redacted-email]', /operator@/],
-    ['host relay.prod.ttyuyin.com:443', 'host [private-host]', /ttyuyin/],
+    ['host relay.prod.ttyuyin.com:443', 'host relay.prod.ttyuyin.com:443', /\[private-host\]/],
     ['dns notify.default.svc.cluster.local', 'dns [cluster-host]', /svc\.cluster/],
     ['pod=notify-owner-7f9d8c6b5-x2k9p namespace: magclaw-test', 'pod=[cluster-resource] namespace: [cluster-resource]', /notify-owner|magclaw-test/],
     ['call 13800138000', 'call [redacted-phone]', /13800138000/],

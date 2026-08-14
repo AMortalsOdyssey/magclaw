@@ -39,7 +39,6 @@ export function redactNotifyPublicText(value = '', max = 96 * 1024) {
     .replace(/\b172\.(?:1[6-9]|2\d|3[01])\.(?:\d{1,3}\.)\d{1,3}\b/g, '[private-ip]')
     .replace(/\b169\.254\.(?:\d{1,3}\.)\d{1,3}\b/g, '[private-ip]')
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]')
-    .replace(/\b(?:[A-Za-z0-9-]+\.)*ttyuyin\.com(?::\d+)?\b/gi, '[private-host]')
     .replace(/\b(?:[A-Za-z0-9-]+\.)+svc\.cluster\.local(?::\d+)?\b/gi, '[cluster-host]')
     .replace(/((?:k8s[_ -]?)?(?:pod(?:[_ -]?name)?|namespace|ns)\s*[:=]\s*)[A-Za-z0-9][A-Za-z0-9._-]*/gi, '$1[cluster-resource]')
     .replace(/(\/api\/v1\/namespaces\/)[A-Za-z0-9][A-Za-z0-9._-]*/gi, '$1[cluster-resource]')
