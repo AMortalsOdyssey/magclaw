@@ -948,6 +948,21 @@ CREATE TABLE IF NOT EXISTS cloud_state_records (
 CREATE INDEX IF NOT EXISTS cloud_state_records_kind_position_idx
   ON cloud_state_records(workspace_id, kind, position);
 
+CREATE TABLE IF NOT EXISTS cloud_team_share_body_settings (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  enabled BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+INSERT INTO cloud_team_share_body_settings (singleton) VALUES (TRUE)
+  ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS cloud_team_share_bodies (
+  workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,
+  content_hash TEXT NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, content_hash)
+);
+
 CREATE TABLE IF NOT EXISTS cloud_attachments (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES cloud_workspaces(id) ON DELETE CASCADE,

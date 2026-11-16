@@ -386,42 +386,53 @@ function currentShareVersion(share = {}) {
     || null;
 }
 
-function shareContentBlob(teamSharingState = {}, version = {}) {
+function shareContentBlob(teamSharingState = {}, version = {}, workspaceId = '') {
   const blobId = String(version?.contentBlobId || '').trim();
   const hash = String(version?.contentHash || '').trim();
-  return ensureTeamSharingShareContents(teamSharingState).find((blob) => (
-    blob
-    && !blob.revokedAt
-    && ((blobId && String(blob.id || '').trim() === blobId) || (hash && String(blob.contentHash || '').trim() === hash))
-  )) || null;
+  const blobs = ensureTeamSharingShareContents(teamSharingState);
+  const available = (blob) => blob && !blob.revokedAt
+    && (!blob.workspaceId || !workspaceId || blob.workspaceId === workspaceId);
+  return (blobId && blobs.find((blob) => available(blob) && blob.id === blobId))
+    || (hash && blobs.find((blob) => available(blob) && blob.contentHash === hash))
+    || null;
 }
 
 function shareContentRecord(teamSharingState = {}, share = {}) {
   const version = currentShareVersion(share);
-  const blob = shareContentBlob(teamSharingState, version);
-  const content = String(blob?.content ?? version?.content ?? share.content ?? '');
+  const blob = shareContentBlob(teamSharingState, version, share.workspaceId);
+  const source = [blob, version, share].find((record) => record?.content != null || record?.bodyFile);
+  const content = String(source?.content ?? '');
   const contentType = String(version?.contentType || blob?.contentType || share.contentType || '').trim();
   const assetIds = Array.from(new Set(asArray(version?.assetIds || blob?.assetIds || share.assetIds).map(String).filter(Boolean)));
   return {
     version,
     blob,
     content,
+    bodyFile: source?.bodyFile,
     contentType,
     contentHash: String(version?.contentHash || blob?.contentHash || share.contentHash || (content ? sha256Text(content) : '')).trim(),
     assetIds,
   };
 }
 
-function ensureShareVersionModel(teamSharingState = {}, share = {}, { makeId, now } = {}) {
+async function readShareContent(record, readShareBody) {
+  if (!record.bodyFile) return record;
+  if (typeof readShareBody !== 'function') throw new Error('Team Sharing body storage is unavailable.');
+  return { ...record, content: await readShareBody(record.bodyFile) };
+}
+
+async function ensureShareVersionModel(teamSharingState = {}, share = {}, { makeId, now, readShareBody } = {}) {
   share.versions = Array.isArray(share.versions) ? share.versions : [];
   if (share.versions.length && share.currentVersionId) return shareContentRecord(teamSharingState, share);
   const createdAt = share.createdAt || (typeof now === 'function' ? now() : new Date().toISOString());
-  const contentType = normalizeShareContentType(share.contentType, share.content || '');
+  const { content } = await readShareContent(shareContentRecord(teamSharingState, share), readShareBody);
+  if (share.currentVersionId) return shareContentRecord(teamSharingState, share);
+  const contentType = normalizeShareContentType(share.contentType, content);
   const assetIds = asArray(share.assetIds).map(String).filter(Boolean);
   const blob = upsertShareContentBlob(teamSharingState, {
     workspaceId: share.workspaceId || 'local',
     contentType,
-    content: share.content || '',
+    content,
     assetIds,
     now,
     makeId,
@@ -548,7 +559,7 @@ function markdownPreviewText(content = '', max = 120) {
   return cleanSharePreviewText(text, max, { stripMarkup: true });
 }
 
-function shareContentPreviewText(content = '', contentType = '', max = 120) {
+export function shareContentPreviewText(content = '', contentType = '', max = 120) {
   const type = normalizeShareContentType(contentType, content);
   if (type === 'html') {
     return htmlMetaDescription(content) || htmlBodyPreviewText(content, max);
@@ -564,7 +575,8 @@ function sharePreviewText(share = {}, record = {}, max = 120) {
   if (explicit && !shareDescriptionLooksLikeSource(explicit)) {
     return cleanSharePreviewText(explicit, max, { stripMarkup: true });
   }
-  return shareContentPreviewText(record.content || share.content || '', record.contentType || share.contentType || '', max);
+  return record.bodyFile?.preview
+    || shareContentPreviewText(record.content || share.content || '', record.contentType || share.contentType || '', max);
 }
 
 function slugSegment(value = '', fallback = 'section') {
@@ -687,8 +699,7 @@ function shareAssetRefs(req, teamSharingState = {}, assetIds = []) {
     .map((asset) => publicTeamSharingAsset(req, asset));
 }
 
-function shareReadPayload(req, share = {}, teamSharingState = {}) {
-  const record = shareContentRecord(teamSharingState, share);
+function shareReadPayload(req, share, teamSharingState, record) {
   const contentType = record.contentType || String(share.contentType || '').trim();
   return {
     ok: true,
@@ -753,8 +764,7 @@ function shareListItemPayload(req, share = {}, teamSharingState = {}, extra = {}
   };
 }
 
-function shareSectionsPayload(req, share = {}, teamSharingState = {}) {
-  const record = shareContentRecord(teamSharingState, share);
+function shareSectionsPayload(req, share, teamSharingState, record) {
   const contentType = record.contentType || String(share.contentType || '').trim();
   return {
     ok: true,
@@ -830,7 +840,7 @@ function upsertTeamSharingVectorDocument(teamSharingState = {}, document = {}) {
   return document;
 }
 
-function refreshShareVectorDocuments(teamSharingState = {}, share = {}) {
+function refreshShareVectorDocuments(teamSharingState = {}, share = {}, content = '') {
   teamSharingState.vectorDocuments = Array.isArray(teamSharingState.vectorDocuments) ? teamSharingState.vectorDocuments : [];
   const shareId = String(share.id || '').trim();
   if (!shareId) return [];
@@ -870,7 +880,7 @@ function refreshShareVectorDocuments(teamSharingState = {}, share = {}) {
     keywordScore: 0,
     freshnessScore: 1,
   }));
-  const sections = extractShareSections(record.content, contentType);
+  const sections = extractShareSections(content, contentType);
   for (const section of sections) {
     const sectionText = searchableShareText(section.content, contentType);
     const chunks = chunkSearchableText(sectionText);
@@ -1478,9 +1488,8 @@ function shareChromeHtml(share = {}, innerHtml = '') {
 </html>`;
 }
 
-function renderShareHtml(share = {}, teamSharingState = {}) {
+function renderShareHtml(share, teamSharingState, record) {
   const title = htmlEscape(share.title || 'Shared page');
-  const record = shareContentRecord(teamSharingState, share);
   const content = signShareAssetRefs(String(record.content || ''), {
     share,
     teamSharingState,
@@ -5240,6 +5249,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
     now,
     persistState = async () => {},
     readJson,
+    readShareBody = null,
     rerank = null,
     rerankReady = null,
     saveAttachmentBuffer = null,
@@ -5803,7 +5813,8 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendShareHtml(res, shareRootDeniedHtml(access.status, access.error), { status: access.status });
       return true;
     }
-    sendShareHtml(res, renderShareHtml(share, teamSharingState));
+    const record = await readShareContent(shareContentRecord(teamSharingState, share), readShareBody);
+    sendShareHtml(res, renderShareHtml(share, teamSharingState, record));
     return true;
   }
 
@@ -6076,9 +6087,10 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       return true;
     }
     const hadVersion = Boolean(share.currentVersionId);
-    ensureShareVersionModel(teamSharingState, share, { makeId, now });
+    await ensureShareVersionModel(teamSharingState, share, { makeId, now, readShareBody });
     if (!hadVersion) await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_migrated' });
-    sendJson(res, 200, shareSectionsPayload(req, share, teamSharingState));
+    const record = await readShareContent(shareContentRecord(teamSharingState, share), readShareBody);
+    sendJson(res, 200, shareSectionsPayload(req, share, teamSharingState, record));
     return true;
   }
 
@@ -6105,23 +6117,24 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       sendError(res, 400, 'At least one share patch operation is required.');
       return true;
     }
-    ensureShareVersionModel(teamSharingState, share, { makeId, now });
-    const current = shareContentRecord(teamSharingState, share);
+    await ensureShareVersionModel(teamSharingState, share, { makeId, now, readShareBody });
+    const previous = shareContentRecord(teamSharingState, share);
     const baseVersionId = String(body.baseVersionId || body.base_version_id || '').trim();
     if (!baseVersionId) {
       sendJson(res, 400, { ok: false, reason: 'base_version_required', error: 'baseVersionId is required.' });
       return true;
     }
-    if (baseVersionId !== String(current.version?.id || '').trim()) {
+    if (baseVersionId !== String(previous.version?.id || '').trim()) {
       sendJson(res, 409, {
         ok: false,
         reason: 'version_conflict',
         error: 'Shared page has changed since this patch was prepared.',
-        currentVersionId: current.version?.id || '',
+        currentVersionId: previous.version?.id || '',
       });
       return true;
     }
     try {
+      const current = await readShareContent(previous, readShareBody);
       const currentContentType = current.contentType || normalizeShareContentType(share.contentType, current.content);
       const patched = applySharePatchOperations(current.content, currentContentType, operations);
       const metadataOperation = operations.find((operation) => String(operation?.op || operation?.type || '') === 'set_metadata') || {};
@@ -6140,7 +6153,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
         ...current.assetIds,
         ...asArray(body.assetIds).map(String).filter(Boolean),
       ]));
-      let contentForFallback = current.content;
+      let updatedContent = current.content;
       if (!contentChanged && current.content && !blob) {
         blob = upsertShareContentBlob(teamSharingState, {
           workspaceId: share.workspaceId || workspaceId,
@@ -6181,7 +6194,17 @@ export async function handleTeamSharingApi(req, res, url, deps) {
           makeId,
         });
         contentHash = blob.contentHash;
-        contentForFallback = optimized.content;
+        updatedContent = optimized.content;
+      }
+      const liveShare = asArray(state.teamSharing?.shares).find((item) => item.id === shareId);
+      if (liveShare !== share || share.revokedAt || share.currentVersionId !== baseVersionId) {
+        sendJson(res, 409, {
+          ok: false,
+          reason: 'version_conflict',
+          error: 'Shared page has changed since this patch was prepared.',
+          currentVersionId: liveShare?.currentVersionId || '',
+        });
+        return true;
       }
       const updatedAt = now();
       const version = {
@@ -6212,8 +6235,14 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       share.assetIds = assetIds;
       share.updatedAt = updatedAt;
       share.updatedBy = { id: access.editorId || access.actorId || '', via: access.editVia || '' };
-      if (contentForFallback) share.content = contentForFallback;
-      const shareDocuments = refreshShareVectorDocuments(teamSharingState, share);
+      if (blob?.bodyFile) {
+        delete share.content;
+        delete share.bodyFile;
+      } else if (updatedContent) {
+        delete share.bodyFile;
+        share.content = updatedContent;
+      }
+      const shareDocuments = refreshShareVectorDocuments(teamSharingState, share, updatedContent);
       let indexedDocumentCount = 0;
       if (typeof indexTeamSharingDocuments === 'function' && shareDocuments.length) {
         try {
@@ -6339,14 +6368,15 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       return true;
     }
     const hadVersion = Boolean(share.currentVersionId);
-    ensureShareVersionModel(teamSharingState, share, { makeId, now });
+    await ensureShareVersionModel(teamSharingState, share, { makeId, now, readShareBody });
     if (!hadVersion) await persistState({ workspaceId: share.workspaceId || workspaceId, reason: 'team_sharing_share_migrated' });
     addSystemEvent('team_sharing_share_api_read', `Team sharing share read: ${compactText(share.title || shareId, 90)}`, {
       workspaceId: share.workspaceId || workspaceId,
       shareId,
       actorId: access.actorId || '',
     });
-    sendJson(res, 200, shareReadPayload(req, share, teamSharingState));
+    const record = await readShareContent(shareContentRecord(teamSharingState, share), readShareBody);
+    sendJson(res, 200, shareReadPayload(req, share, teamSharingState, record));
     return true;
   }
 
@@ -6433,7 +6463,7 @@ export async function handleTeamSharingApi(req, res, url, deps) {
       updatedAt: createdAt,
     };
     ensureTeamSharingShares(teamSharingState).push(share);
-    const shareDocuments = refreshShareVectorDocuments(teamSharingState, share);
+    const shareDocuments = refreshShareVectorDocuments(teamSharingState, share, content);
     let indexedDocumentCount = 0;
     if (typeof indexTeamSharingDocuments === 'function' && shareDocuments.length) {
       try {

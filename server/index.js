@@ -566,6 +566,8 @@ function resilientCloudRepository(repository) {
         await disable(error);
       }
     },
+    readShareBody: (reference) => repository.readShareBody(reference),
+    adoptStoredShareBodyReferences: (stateSnapshot, workspaceId) => repository.adoptStoredShareBodyReferences(stateSnapshot, workspaceId),
     async loadConversationWindowIntoState(stateSnapshot, options = {}) {
       if (disabled || typeof repository.loadConversationWindowIntoState !== 'function') return null;
       try {
@@ -801,8 +803,16 @@ const realtimeWorkspaceReloads = new Set();
 function scheduleRealtimeReload(event = {}) {
   if (!cloudRepository?.isEnabled?.()) return;
   if (event.sourceId && event.sourceId === REALTIME_SOURCE_ID) return;
-  if (event.authReload) realtimeAuthReloadPending = true;
   const workspaceId = String(event.workspaceId || '').trim();
+  if (event.type === 'team_share_bodies_compacted' && workspaceId) {
+    // A storage migration changes no share metadata. Adopt the references
+    // without replacing workspace state that may contain an in-flight edit.
+    cloudRepository.adoptStoredShareBodyReferences(state, workspaceId).catch((error) => {
+      console.warn(`[cloud-postgres] Team Sharing body reference refresh failed code=${error.code || 'unknown'}`);
+    });
+    return;
+  }
+  if (event.authReload) realtimeAuthReloadPending = true;
   if (workspaceId && !event.fullReload) {
     realtimeWorkspaceReloads.add(workspaceId);
   } else if (event.fullReload) {
@@ -1979,6 +1989,7 @@ function teamSharingApiDeps() {
     now,
     persistState,
     readJson,
+    readShareBody: cloudRepository?.readShareBody,
     rerank: ({ query, candidates, limit }) => rerankClient.rerank({ query, candidates, limit }),
     saveAttachmentBuffer,
     sendError,

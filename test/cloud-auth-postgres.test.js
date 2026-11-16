@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { gunzipSync } from 'node:zlib';
 import { Client } from 'pg';
+import { createCloudPostgresStore } from '../server/cloud/postgres-store.js';
 import {
   databaseUrlWithName,
   normalizeDatabaseUrl,
@@ -29,13 +32,9 @@ async function dropSchema(schema) {
 
 async function launchIsolatedServer(tmp, schema) {
   const port = nextTestPort++;
-  await mkdir(path.join(tmp, 'public'), { recursive: true });
   await mkdir(path.join(tmp, 'uploads'), { recursive: true });
-  await cp(path.join(ROOT, 'server'), path.join(tmp, 'server'), { recursive: true });
-  await cp(path.join(ROOT, 'public', 'index.html'), path.join(tmp, 'public', 'index.html'));
-  await symlink(path.join(ROOT, 'node_modules'), path.join(tmp, 'node_modules'), 'dir');
 
-  const child = spawn(process.execPath, ['server/index.js'], {
+  const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], {
     cwd: tmp,
     env: {
       ...process.env,
@@ -43,6 +42,7 @@ async function launchIsolatedServer(tmp, schema) {
       HOST: '127.0.0.1',
       CODEX_PATH: '/bin/false',
       MAGCLAW_DEPLOYMENT: 'cloud',
+      MAGCLAW_REQUIRE_POSTGRES: '1',
       MAGCLAW_DATA_DIR: path.join(tmp, '.magclaw'),
       MAGCLAW_UPLOAD_DIR: path.join(tmp, 'uploads'),
       MAGCLAW_ATTACHMENT_STORAGE: 'pvc',
@@ -52,7 +52,7 @@ async function launchIsolatedServer(tmp, schema) {
       MAGCLAW_MAIL_TRANSPORT: 'file',
       MAGCLAW_MAIL_OUTBOX: path.join(tmp, '.magclaw', 'outbox.jsonl'),
       MAGCLAW_MAIL_FROM: 'MagClaw <noreply@example.com>',
-      MAGCLAW_PUBLIC_URL: 'https://magclaw.multiego.me',
+      MAGCLAW_PUBLIC_URL: 'https://pg.magclaw.example',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -64,6 +64,7 @@ async function launchIsolatedServer(tmp, schema) {
   let stopped = false;
 
   for (let attempt = 0; attempt < 300; attempt += 1) {
+    if (child.exitCode !== null || child.signalCode !== null) break;
     try {
       const response = await fetch(`${baseUrl}/api/cloud/auth/status`);
       if (response.ok) {
@@ -327,4 +328,109 @@ test('Postgres-backed cloud auth persists open signup and Console invitation dec
     if (server) await server.stop();
     await dropSchema(schema);
   }
+});
+
+test('large share HTML uses the upload volume, PostgreSQL recovery, and reversible metadata', {
+  skip: TEST_DATABASE_URL ? false : 'set MAGCLAW_TEST_DATABASE_URL to run this integration test',
+}, async (t) => {
+  const schema = `magclaw_share_test_${Date.now()}_${process.pid}`;
+  const tmp = await mkdtemp(path.join(os.tmpdir(), 'magclaw-share-pg-'));
+  const server = await launchIsolatedServer(tmp, schema);
+  const connectionString = databaseUrlWithName(TEST_DATABASE_URL, TEST_DATABASE);
+  const client = new Client({ connectionString });
+  const store = createCloudPostgresStore({
+    databaseUrl: connectionString,
+    database: TEST_DATABASE,
+    schema,
+    attachmentBaseDir: path.join(tmp, 'uploads'),
+  });
+  t.after(async () => {
+    await server.stop();
+    await client.end();
+    await store.close();
+    await dropSchema(schema);
+  });
+  await client.connect();
+
+  const auth = await request(server.baseUrl, '/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Share Owner', email: 'share-owner@example.com', password: 'password123' }),
+  });
+  const cookie = auth.cookie.split(';')[0];
+  await request(server.baseUrl, '/api/console/servers', {
+    method: 'POST', cookie, body: JSON.stringify({ name: 'Test Team', slug: 'share-team' }),
+  });
+  const sharesPath = '/api/team-sharing/shares';
+  const content = `<!doctype html><html><head><title>Sample</title></head><body><section id="story"><h1>正文样本</h1><p>首个版本</p></section><script>const data="${'数据'.repeat(75_000)}";</script></body></html>`;
+  const publish = (body) => request(server.baseUrl, sharesPath, {
+    method: 'POST', cookie, expectStatus: 201,
+    body: JSON.stringify({ title: 'Share sample', contentType: 'html', content: body, optimizeAssets: false }),
+  });
+  const { data: share } = await publish(content);
+  await publish('<p>Small share</p>');
+  const sharePath = `${sharesPath}/${share.shareId}`;
+  const readShare = () => request(server.baseUrl, sharePath, { cookie });
+  const readSharingState = async () => {
+    const { rows } = await client.query(
+      `SELECT payload FROM ${quoteIdent(schema)}.cloud_state_records WHERE kind = 'teamSharing' AND payload ? 'shares'`,
+    );
+    return rows[0].payload;
+  };
+  const previous = await readSharingState();
+  assert.ok(previous.shareContents.some((blob) => blob.content === content));
+  assert.equal((await readShare()).data.content, content);
+
+  const activated = await store.manageShareBodyStorage('enable');
+  assert.equal(activated.backupBodies, 1);
+  assert.equal(activated.changedRecords, 1);
+  const compact = await readSharingState();
+  const legacyBlob = compact.shareContents.find((blob) => blob.contentHash === share.share.contentHash);
+  assert.equal(legacyBlob.content, undefined);
+  assert.equal(legacyBlob.bodyFile.bytes, Buffer.byteLength(content));
+  assert.ok(compact.shareContents.some((blob) => blob.content === '<p>Small share</p>'));
+  const { workspaceId, sha256 } = legacyBlob.bodyFile;
+  const workspaceHash = createHash('sha256').update(workspaceId).digest('hex');
+  const file = path.join(tmp, 'uploads', '.team-sharing-bodies', workspaceHash, sha256.slice(0, 2), `${sha256}.html.gz`);
+  assert.equal(gunzipSync(await readFile(file)).toString('utf8'), content);
+  assert.equal((await request(server.baseUrl, sharesPath, { cookie })).data.count, 2);
+  const html = await fetch(`${server.baseUrl}/s/${share.shareId}`, { headers: { cookie } });
+  assert.equal(html.status, 200);
+  assert.match(html.headers.get('content-security-policy'), /sandbox/);
+  assert.match(await html.text(), /首个版本/);
+  assert.equal((await request(server.baseUrl, `${sharePath}/sections`, { cookie })).data.sections[0].sectionId, 'story');
+  await request(server.baseUrl, sharePath, { expectStatus: 401 });
+
+  await writeFile(file, 'broken gzip');
+  assert.equal(await store.readShareBody(legacyBlob.bodyFile), content);
+  assert.equal((await readShare()).data.content, content);
+
+  const editedContent = content.replace('首个版本', '第二个版本');
+  const edits = await Promise.all(['Edited title', 'Concurrent edit'].map(async (title) => {
+    const response = await fetch(`${server.baseUrl}${sharePath}`, {
+      method: 'PATCH',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        baseVersionId: share.share.versionId,
+        operations: [{ op: 'replace_content', content: editedContent }],
+        optimizeAssets: false,
+      }),
+    });
+    await response.text();
+    return response.status;
+  }));
+  assert.deepEqual(edits.sort(), [200, 409]);
+  const edited = (await readShare()).data;
+  assert.equal(edited.content, editedContent);
+  assert.notEqual(edited.versionId, share.share.versionId);
+  assert.equal((await store.manageShareBodyStorage('status')).backupBodies, 2);
+  const restored = await store.manageShareBodyStorage('restore');
+  assert.equal(restored.enabled, false);
+  const restoredState = await readSharingState();
+  assert.ok(restoredState.shareContents.some((blob) => blob.content === content));
+  assert.ok(restoredState.shareContents.some((blob) => blob.content === editedContent));
+  assert.equal((await readShare()).data.content, editedContent);
+
+  await request(server.baseUrl, sharePath, { method: 'DELETE', cookie });
+  await request(server.baseUrl, sharePath, { cookie, expectStatus: 404 });
 });

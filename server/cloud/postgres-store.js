@@ -19,6 +19,8 @@ import {
 import { normalizeReleaseNotes, RELEASE_CATEGORY_KEYS, RELEASE_COMPONENTS } from '../release-notes.js';
 import { normalizeStoredConversationReferences } from '../conversation-references.js';
 import { safePathWithin } from '../path-utils.js';
+import { shareContentPreviewText } from '../api/team-sharing-routes.js';
+import { adoptShareBodyReferences, applyCommittedShareBodies, createTeamShareBodyStore } from './team-share-bodies.js';
 import {
   filterKnowledgeSpaceStateForWorkspace,
   hasKnowledgeSpaceContent,
@@ -88,8 +90,16 @@ function cloneShareContent(record) {
 }
 
 function cloneTeamSharingMetadata(value) {
-  const { shareContents, ...metadata } = jsonObject(value);
-  return cloneJsonValue(metadata);
+  const { shareContents, shares, ...metadata } = jsonObject(value);
+  const clone = cloneJsonValue(metadata);
+  if (Array.isArray(shares)) clone.shares = shares.map(cloneShareWithVersions);
+  return clone;
+}
+
+function cloneShareWithVersions(share) {
+  if (!share || !Array.isArray(share.versions)) return cloneShareContent(share);
+  const { versions, ...record } = share;
+  return { ...cloneShareContent(record), versions: versions.map(cloneShareContent) };
 }
 
 function clonePersistenceState(state) {
@@ -162,7 +172,9 @@ function teamSharingArrayIdentity(key, item, index) {
 
 function mergeTeamSharingArrays(key, ...arrays) {
   const merged = new Map();
-  const clone = key === 'shareContents' ? cloneShareContent : cloneJsonValue;
+  const clone = key === 'shareContents' ? cloneShareContent
+    : key === 'shares' ? cloneShareWithVersions
+      : cloneJsonValue;
   let index = 0;
   for (const array of arrays) {
     for (const item of safeArray(array)) {
@@ -356,7 +368,7 @@ function filterTeamSharingStateForWorkspace(teamSharingState, workspaceId, optio
       return keep(matches);
     }).map(cloneJsonValue),
   };
-  const shares = safeArray(source.shares).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  const shares = safeArray(source.shares).filter((record) => keep(matchesRecord(record))).map(cloneShareWithVersions);
   if (shares.length) result.shares = shares;
   const assets = safeArray(source.assets).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
   if (assets.length) result.assets = assets;
@@ -1210,6 +1222,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
     2000,
   );
   const attachmentBaseDir = String(options.attachmentBaseDir || process.env.MAGCLAW_UPLOAD_DIR || '').trim();
+  const teamShareBodies = createTeamShareBodyStore({
+    uploadDir: attachmentBaseDir,
+    table,
+    withClient,
+    previewText: shareContentPreviewText,
+  });
   const knowledgeSecretLogger = typeof options.knowledgeSecretLogger === 'function'
     ? options.knowledgeSecretLogger
     : console.info;
@@ -2779,6 +2797,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
       ? requestedIds.filter((id) => allWorkspaceIds.includes(id))
       : allWorkspaceIds;
     if (!ids.length) return;
+    const shareBodyStorageEnabled = await teamShareBodies.storageEnabled(client);
+    const committedShareBodies = [];
     const inScope = (workspaceId) => ids.includes(String(workspaceId || ''));
     const computerIds = new Set(safeArray(state.computers).map((computer) => computer.id).filter(Boolean));
     const agentIds = new Set(safeArray(state.agents).map((agent) => agent.id).filter(Boolean));
@@ -3108,6 +3128,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
             includeUnscoped: ids.length === 1 || defaultTeamSharingWorkspaceId === workspaceId,
           });
           if (!hasTeamSharingContent(scoped)) continue;
+          const changes = await teamShareBodies.prepare(client, workspaceId, scoped, shareBodyStorageEnabled);
+          committedShareBodies.push(...changes);
           const { shareContents, ...metadata } = scoped;
           if (shareContents?.length) teamSharingContents.set(workspaceId, shareContents);
           stateRecordRows.push([
@@ -3372,6 +3394,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     ], dedupeRowsByColumn(attachmentRows), { metadata: '::jsonb' });
     await batchUpsertStateRecords(client, stateRecordRows);
     await writeTeamSharingContents(client, teamSharingContents);
+    return committedShareBodies;
   }
 
   async function pruneEphemeralActivityRows(client) {
@@ -3389,8 +3412,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   async function persistFromStateNow(state) {
     const cloud = state.cloud || {};
-    await withClient(async (client) => {
-      await withTransaction(client, 'persistFromState', async () => {
+    return withClient((client) => (
+      withTransaction(client, 'persistFromState', async () => {
         for (const user of safeArray(cloud.users)) {
           await upsertUserSnapshot(client, user);
         }
@@ -3654,7 +3677,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
           metadata: '::jsonb',
         }, computerAuthConflictSuffix());
 
-        await replaceWorkspaceRuntimeRows(client, state, cloud);
+        const committedShareBodies = await replaceWorkspaceRuntimeRows(client, state, cloud);
 
         const computerTokenRows = [];
         for (const token of safeArray(cloud.computerTokens)) {
@@ -3852,19 +3875,20 @@ export function createCloudPostgresStore(optionsInput = {}) {
             created_at = EXCLUDED.created_at
         `);
 
-      });
-    });
+        return committedShareBodies;
+      })
+    ));
   }
 
   async function persistWorkspaceFromStateNow(state, workspaceId) {
     const cloud = state.cloud || {};
     const cleanWorkspaceId = String(workspaceId || '').trim();
     if (!cleanWorkspaceId) return;
-    await withClient(async (client) => {
-      await withTransaction(client, 'persistWorkspaceFromState', async () => {
-        await replaceWorkspaceRuntimeRows(client, state, cloud, [cleanWorkspaceId]);
-      });
-    });
+    return withClient((client) => (
+      withTransaction(client, 'persistWorkspaceFromState', () => (
+        replaceWorkspaceRuntimeRows(client, state, cloud, [cleanWorkspaceId])
+      ))
+    ));
   }
 
   async function persistFromStateWithRetry(state) {
@@ -3887,13 +3911,19 @@ export function createCloudPostgresStore(optionsInput = {}) {
 
   function persistFromState(state) {
     const snapshot = clonePersistenceState(state);
-    return enqueueControlPlanePersist(() => persistFromStateWithRetry(snapshot));
+    return enqueueControlPlanePersist(async () => {
+      const changes = await persistFromStateWithRetry(snapshot);
+      applyCommittedShareBodies(state.teamSharing, changes);
+    });
   }
 
   function persistWorkspaceFromState(state, workspaceId) {
     const snapshot = clonePersistenceState(state);
     const cleanWorkspaceId = String(workspaceId || '').trim();
-    return enqueueWorkspacePersist(cleanWorkspaceId, () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId));
+    return enqueueWorkspacePersist(cleanWorkspaceId, async () => {
+      const changes = await persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId);
+      applyCommittedShareBodies(state.teamSharing, changes);
+    });
   }
 
   async function deleteComputerNow(computerId, workspaceId = '') {
@@ -4681,6 +4711,62 @@ export function createCloudPostgresStore(optionsInput = {}) {
     };
   }
 
+  async function manageShareBodyStorage(action) {
+    if (!['status', 'enable', 'restore'].includes(action)) throw new Error('Expected status, enable, or restore.');
+    if (action !== 'status') {
+      await withClient((client) => teamShareBodies.setEnabled(client, action === 'enable'));
+    }
+    const records = table('cloud_state_records');
+    const { rows: workspaces } = await withClient((client) => client.query(`
+      SELECT workspace_id FROM ${records} WHERE kind = 'teamSharing' AND id = 'value' ORDER BY workspace_id
+    `));
+    let changedRecords = 0;
+    for (const { workspace_id: workspaceId } of workspaces) {
+      if (action === 'status') break;
+      const changed = await withClient((client) => withTransaction(client, 'manageShareBodyStorage', async () => {
+        const enabled = await teamShareBodies.storageEnabled(client);
+        if (enabled !== (action === 'enable')) throw new Error('Team Sharing storage mode changed during migration.');
+        const { rows: [row] } = await client.query(`
+          SELECT payload FROM ${records} WHERE workspace_id = $1 AND kind = 'teamSharing' AND id = 'value' FOR UPDATE
+        `, [workspaceId]);
+        if (!row) return 0;
+        const changes = await teamShareBodies.prepare(client, workspaceId, row.payload, enabled);
+        if (!changes.length) return 0;
+        const { shareContents, ...metadata } = row.payload;
+        await client.query(`
+          UPDATE ${records} SET payload = $2::jsonb WHERE workspace_id = $1 AND kind = 'teamSharing' AND id = 'value'
+        `, [workspaceId, JSON.stringify(metadata)]);
+        if (shareContents?.length) await writeTeamSharingContents(client, new Map([[workspaceId, shareContents]]));
+        return changes.length;
+      }));
+      if (changed) {
+        changedRecords += changed;
+        if (action === 'enable') await publishRealtimeEvent({ workspaceId, type: 'team_share_bodies_compacted' });
+      }
+    }
+    return withClient(async (client) => {
+      const { rows: [backup] } = await client.query(`
+        SELECT count(*)::int AS count, COALESCE(sum(octet_length(body)), 0)::bigint AS bytes
+        FROM ${table('cloud_team_share_bodies')}
+      `);
+      return {
+        enabled: await teamShareBodies.storageEnabled(client),
+        workspaces: workspaces.length,
+        changedRecords,
+        backupBodies: backup.count,
+        backupBytes: Number(backup.bytes),
+      };
+    });
+  }
+
+  async function adoptStoredShareBodyReferences(state, workspaceId) {
+    const { rows: [row] } = await withClient((client) => client.query(`
+      SELECT jsonb_build_object('shares', payload->'shares', 'shareContents', payload->'shareContents') AS payload
+      FROM ${table('cloud_state_records')} WHERE workspace_id = $1 AND kind = 'teamSharing' AND id = 'value'
+    `, [workspaceId]));
+    if (row) adoptShareBodyReferences(state.teamSharing, row.payload);
+  }
+
   async function close() {
     if (realtimeStopper) await realtimeStopper();
     clearRealtimeReconnect();
@@ -4696,6 +4782,9 @@ export function createCloudPostgresStore(optionsInput = {}) {
     loadIntoState,
     loadAuthIntoState,
     loadWorkspaceIntoState,
+    readShareBody: teamShareBodies.read,
+    manageShareBodyStorage,
+    adoptStoredShareBodyReferences,
     ensureKnowledgeSecret,
     loadConversationWindowIntoState,
     listSpaceMessagesPage,
