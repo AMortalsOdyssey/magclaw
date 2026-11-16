@@ -81,6 +81,31 @@ function cloneJsonValue(value) {
   return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : value;
 }
 
+function cloneShareContent(record) {
+  if (typeof record?.content !== 'string') return cloneJsonValue(record);
+  const { content, ...metadata } = record;
+  return { ...cloneJsonValue(metadata), content };
+}
+
+function cloneTeamSharingMetadata(value) {
+  const { shareContents, ...metadata } = jsonObject(value);
+  return cloneJsonValue(metadata);
+}
+
+function clonePersistenceState(state) {
+  const { teamSharing, ...rest } = state;
+  const snapshot = cloneJsonValue(rest);
+  if (teamSharing && typeof teamSharing === 'object' && !Array.isArray(teamSharing)) {
+    snapshot.teamSharing = cloneTeamSharingMetadata(teamSharing);
+    if (Array.isArray(teamSharing.shareContents)) {
+      snapshot.teamSharing.shareContents = teamSharing.shareContents.map(cloneShareContent);
+    }
+  } else if (teamSharing !== undefined) {
+    snapshot.teamSharing = cloneJsonValue(teamSharing);
+  }
+  return snapshot;
+}
+
 function objectHasKeys(value) {
   return Object.keys(jsonObject(value)).length > 0;
 }
@@ -111,18 +136,18 @@ function teamSharingRecordTime(record = {}) {
   return Number.isFinite(time) ? time : 0;
 }
 
-function preferTeamSharingRecord(existing, next) {
-  if (!existing) return cloneJsonValue(next);
-  if (!next) return cloneJsonValue(existing);
+function preferTeamSharingRecord(existing, next, clone = cloneJsonValue) {
+  if (!existing) return clone(next);
+  if (!next) return clone(existing);
   const existingVersion = teamSharingRecordVersion(existing);
   const nextVersion = teamSharingRecordVersion(next);
-  if (nextVersion < existingVersion) return cloneJsonValue(existing);
-  if (nextVersion > existingVersion) return cloneJsonValue(next);
+  if (nextVersion < existingVersion) return clone(existing);
+  if (nextVersion > existingVersion) return clone(next);
   const existingTime = teamSharingRecordTime(existing);
   const nextTime = teamSharingRecordTime(next);
-  if (nextTime < existingTime) return cloneJsonValue(existing);
-  if (nextTime > existingTime) return cloneJsonValue(next);
-  return { ...cloneJsonValue(existing), ...cloneJsonValue(next) };
+  if (nextTime < existingTime) return clone(existing);
+  if (nextTime > existingTime) return clone(next);
+  return { ...clone(existing), ...clone(next) };
 }
 
 function teamSharingArrayIdentity(key, item, index) {
@@ -137,11 +162,12 @@ function teamSharingArrayIdentity(key, item, index) {
 
 function mergeTeamSharingArrays(key, ...arrays) {
   const merged = new Map();
+  const clone = key === 'shareContents' ? cloneShareContent : cloneJsonValue;
   let index = 0;
   for (const array of arrays) {
     for (const item of safeArray(array)) {
       const identity = teamSharingArrayIdentity(key, item, index);
-      merged.set(identity, preferTeamSharingRecord(merged.get(identity), item));
+      merged.set(identity, preferTeamSharingRecord(merged.get(identity), item, clone));
       index += 1;
     }
   }
@@ -206,8 +232,8 @@ function mergeTeamSharingState(leftValue, rightValue) {
   const left = jsonObject(leftValue);
   const right = jsonObject(rightValue);
   const merged = {
-    ...cloneJsonValue(left),
-    ...cloneJsonValue(right),
+    ...cloneTeamSharingMetadata(left),
+    ...cloneTeamSharingMetadata(right),
     sessions: mergeTeamSharingRecordMap(left.sessions, right.sessions),
     events: mergeTeamSharingEventsMap(left.events, right.events),
     syncLedger: mergeTeamSharingRecordMap(left.syncLedger, right.syncLedger),
@@ -334,7 +360,7 @@ function filterTeamSharingStateForWorkspace(teamSharingState, workspaceId, optio
   if (shares.length) result.shares = shares;
   const assets = safeArray(source.assets).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
   if (assets.length) result.assets = assets;
-  const shareContents = safeArray(source.shareContents).filter((record) => keep(matchesRecord(record))).map(cloneJsonValue);
+  const shareContents = safeArray(source.shareContents).filter((record) => keep(matchesRecord(record))).map(cloneShareContent);
   if (shareContents.length) result.shareContents = shareContents;
   const auth = filterTeamSharingAuthForWorkspace(source.auth, cleanWorkspaceId, includeMatches);
   if (auth) result.auth = auth;
@@ -2078,6 +2104,50 @@ export function createCloudPostgresStore(optionsInput = {}) {
     `);
   }
 
+  async function writeTeamSharingContents(client, workspaceContents) {
+    if (!workspaceContents.size) return;
+    const batchBytesLimit = 8 * 1024 * 1024;
+    // Keep each PostgreSQL bind bounded while preserving the JSONB layout
+    // that existing replicas read. The temp table lives in this transaction.
+    await client.query(`
+      CREATE TEMP TABLE magclaw_share_content_batch (
+        workspace_id text NOT NULL, position integer NOT NULL, payload jsonb NOT NULL
+      ) ON COMMIT DROP
+    `);
+    for (const [workspaceId, contents] of workspaceContents) {
+      let position = 0;
+      let batch = [];
+      let batchBytes = 2;
+      const flush = async () => {
+        await client.query(`
+          INSERT INTO pg_temp.magclaw_share_content_batch (workspace_id, position, payload)
+          SELECT $1, $2::integer + ordinality - 1, value
+          FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY
+        `, [workspaceId, position, `[${batch.join(',')}]`]);
+        position += batch.length;
+        batch = [];
+        batchBytes = 2;
+      };
+      for (const content of contents) {
+        const payload = JSON.stringify(content);
+        const bytes = Buffer.byteLength(payload);
+        if (batch.length && batchBytes + bytes + 1 > batchBytesLimit) await flush();
+        batchBytes += bytes + (batch.length ? 1 : 0);
+        batch.push(payload);
+      }
+      if (batch.length) await flush();
+      await client.query(`
+        UPDATE ${table('cloud_state_records')}
+        SET payload = jsonb_set(payload, '{shareContents}', (
+          SELECT jsonb_agg(payload ORDER BY position)
+          FROM pg_temp.magclaw_share_content_batch
+          WHERE workspace_id = $1
+        ))
+        WHERE workspace_id = $1 AND kind = 'teamSharing' AND id = 'value'
+      `, [workspaceId]);
+    }
+  }
+
   function pageFromDescendingRows(rows, limit, mapper, key) {
     const pageRows = rows.slice(0, limit);
     const records = pageRows.map(mapper).sort(compareRecordCreatedAsc);
@@ -2746,6 +2816,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
     const workItemRows = [];
     const attachmentRows = [];
     const stateRecordRows = [];
+    const teamSharingContents = new Map();
 
     for (const human of safeArray(state.humans)) {
       const workspaceId = workspaceIdForRuntimeRecord(human, cloud);
@@ -3037,6 +3108,8 @@ export function createCloudPostgresStore(optionsInput = {}) {
             includeUnscoped: ids.length === 1 || defaultTeamSharingWorkspaceId === workspaceId,
           });
           if (!hasTeamSharingContent(scoped)) continue;
+          const { shareContents, ...metadata } = scoped;
+          if (shareContents?.length) teamSharingContents.set(workspaceId, shareContents);
           stateRecordRows.push([
             workspaceId,
             key,
@@ -3044,7 +3117,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
             0,
             null,
             null,
-            JSON.stringify(scoped),
+            JSON.stringify(metadata),
           ]);
         }
         continue;
@@ -3298,6 +3371,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
       'metadata',
     ], dedupeRowsByColumn(attachmentRows), { metadata: '::jsonb' });
     await batchUpsertStateRecords(client, stateRecordRows);
+    await writeTeamSharingContents(client, teamSharingContents);
   }
 
   async function pruneEphemeralActivityRows(client) {
@@ -3812,12 +3886,12 @@ export function createCloudPostgresStore(optionsInput = {}) {
   }
 
   function persistFromState(state) {
-    const snapshot = cloneRecord(state);
+    const snapshot = clonePersistenceState(state);
     return enqueueControlPlanePersist(() => persistFromStateWithRetry(snapshot));
   }
 
   function persistWorkspaceFromState(state, workspaceId) {
-    const snapshot = cloneRecord(state);
+    const snapshot = clonePersistenceState(state);
     const cleanWorkspaceId = String(workspaceId || '').trim();
     return enqueueWorkspacePersist(cleanWorkspaceId, () => persistWorkspaceFromStateNow(snapshot, cleanWorkspaceId));
   }
@@ -4330,7 +4404,7 @@ export function createCloudPostgresStore(optionsInput = {}) {
   }
 
   function persistAuthFromState(state) {
-    const snapshot = cloneRecord(state);
+    const snapshot = cloneRecord({ cloud: state.cloud, computers: state.computers });
     return enqueueControlPlanePersist(() => persistAuthFromStateNow(snapshot));
   }
 

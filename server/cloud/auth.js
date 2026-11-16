@@ -378,9 +378,7 @@ export function createCloudAuth(deps) {
   async function persistAuthOperation(operation) {
     try {
       if (cloudRepository?.isEnabled?.() && typeof cloudRepository.persistAuthOperation === 'function') {
-        const payload = cloneRecord(operation);
-        payload.stateSnapshot = cloneRecord(getState());
-        await cloudRepository.persistAuthOperation(payload);
+        await cloudRepository.persistAuthOperation(cloneRecord(operation));
         await persistState({ skipExternal: true });
         await cloudRepository.publishRealtimeEvent?.({
           ...(realtimeSourceId ? { sourceId: realtimeSourceId } : {}),

@@ -664,15 +664,7 @@ function resilientCloudRepository(repository) {
     async persistAuthOperation(operation) {
       if (disabled) return;
       try {
-        if (typeof repository.persistAuthOperation === 'function') {
-          await repository.persistAuthOperation(operation);
-        } else if (operation?.stateSnapshot && typeof repository.persistAuthFromState === 'function') {
-          await repository.persistAuthFromState(operation.stateSnapshot);
-        } else if (operation?.stateSnapshot && typeof repository.persistFromState === 'function') {
-          await repository.persistFromState(operation.stateSnapshot);
-        } else {
-          throw new Error('Cloud repository does not support auth operation persistence.');
-        }
+        await repository.persistAuthOperation(operation);
       } catch (error) {
         if (postgresStrictlyRequired() || isPostgresIntegrityError(error)) throw error;
         await disable(error);

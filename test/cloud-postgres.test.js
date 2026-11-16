@@ -1328,7 +1328,8 @@ test('postgres store persists scoped team sharing state to the requested workspa
         { id: 'asset_other', workspaceId: 'wsp_other', filename: 'other.mp4', updatedAt: createdAt },
       ],
       shareContents: [
-        { id: 'shc_main', workspaceId: 'wsp_main', contentHash: 'hash_main', content: '<h1>Main</h1>', updatedAt: createdAt },
+        { id: 'shc_main', workspaceId: 'wsp_main', contentHash: 'hash_main', content: '啊'.repeat(1500000), updatedAt: createdAt },
+        { id: 'shc_second', workspaceId: 'wsp_main', contentHash: 'hash_second', content: '乙'.repeat(1500000), updatedAt: createdAt },
         { id: 'shc_other', workspaceId: 'wsp_other', contentHash: 'hash_other', content: '<h1>Other</h1>', updatedAt: createdAt },
       ],
     },
@@ -1363,7 +1364,20 @@ test('postgres store persists scoped team sharing state to the requested workspa
   assert.equal(payload.vectorDocuments.some((doc) => doc.sessionId === 'sess_other'), false);
   assert.deepEqual(payload.shares.map((share) => share.id), ['share_main']);
   assert.deepEqual(payload.assets.map((asset) => asset.id), ['asset_main']);
-  assert.deepEqual(payload.shareContents.map((blob) => blob.id), ['shc_main']);
+  assert.equal(payload.shareContents, undefined);
+  const contentBatches = queries.filter(({ sql }) => sql.includes('INSERT INTO pg_temp.magclaw_share_content_batch'));
+  assert.deepEqual(contentBatches.map(({ params }) => [params[0], params[1], JSON.parse(params[2])[0].id]), [
+    ['wsp_main', 0, 'shc_main'],
+    ['wsp_main', 1, 'shc_second'],
+  ]);
+  for (const { params } of contentBatches) {
+    assert.ok(Buffer.byteLength(params[2]) <= 8 * 1024 * 1024);
+    assert.equal(JSON.parse(params[2]).length, 1);
+  }
+  const mergeIndex = queries.findIndex(({ sql }) => sql.includes('jsonb_agg(payload ORDER BY position)'));
+  assert.ok(mergeIndex > queries.indexOf(contentBatches[1]));
+  assert.deepEqual(queries[mergeIndex].params, ['wsp_main']);
+  assert.equal(queries[mergeIndex + 1].sql, 'COMMIT');
 });
 
 test('postgres store skips default local placeholder workspace runtime persistence', async () => {
