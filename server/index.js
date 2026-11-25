@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   lstat,
   chmod,
@@ -917,6 +917,7 @@ const {
   searchProjectItems,
   sendError,
   sendJson,
+  sendStaticFile,
 } = serverIo;
 
 const geminiLiveDemoUpgrade = createGeminiLiveDemoUpgradeHandler({
@@ -2509,8 +2510,7 @@ async function serveStatic(req, res, url) {
   } else if (compressibleStaticPath(filePath)) {
     headers.vary = 'accept-encoding';
   }
-  res.writeHead(200, headers);
-  createReadStream(compressed?.filePath || filePath).pipe(res);
+  await sendStaticFile(res, compressed?.filePath || filePath, headers);
 }
 
 async function handleRequest(req, res) {

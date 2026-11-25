@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, open, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { gzip } from 'node:zlib';
 import {
   baseNameFromProjectPath,
@@ -28,6 +29,7 @@ export function createServerIo(deps) {
     now,
     ATTACHMENTS_DIR,
     MAX_JSON_BYTES,
+    openStaticFile = open,
   } = deps;
   const state = new Proxy({}, {
     get(_target, prop) { return getState()[prop]; },
@@ -71,6 +73,38 @@ export function createServerIo(deps) {
   
   function sendError(res, statusCode, message) {
     sendJson(res, statusCode, { error: message });
+  }
+
+  async function sendStaticFile(res, filePath, headers) {
+    let file;
+    try {
+      file = await openStaticFile(filePath, 'r');
+      const info = await file.stat();
+      if (res.destroyed) return;
+      if (!info.isFile()) {
+        sendError(res, 404, 'Static file not found.');
+        return;
+      }
+
+      const stream = file.createReadStream();
+      res.writeHead(200, headers);
+      await pipeline(stream, res);
+    } catch (error) {
+      if (error.code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+      const missingFile = error.code === 'ENOENT' || error.code === 'ENOTDIR';
+      if (!missingFile || res.headersSent) console.error('[static-file] Read failed', error);
+      // A streaming failure closes the response through pipeline.
+      // A file that failed to open can still receive an HTTP error.
+      if (!res.destroyed && !res.headersSent) {
+        sendError(
+          res,
+          missingFile ? 404 : 500,
+          missingFile ? 'Static file not found.' : 'Unable to read the static file.',
+        );
+      }
+    } finally {
+      await file?.close().catch((error) => console.error('[static-file] Close failed', error));
+    }
   }
   
   function cloudBearerToken(req) {
@@ -245,5 +279,6 @@ export function createServerIo(deps) {
     searchProjectItems,
     sendError,
     sendJson,
+    sendStaticFile,
   };
 }

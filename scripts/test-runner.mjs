@@ -42,6 +42,7 @@ const suites = {
     'test/project-routes.test.js',
     'test/release-notes.test.js',
     'test/reminder-scheduler.test.js',
+    'test/server-io.test.js',
     'test/state-core.test.js',
     'test/state-sync-client.test.js',
     'test/submit-startup-sync.test.js',
